@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(start \"\" \"C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" --auto-open-devtools-for-tabs --new-window \"http://localhost:3000\")",
+      "Bash(start \"\" \"C:\\\\Program Files \\(x86\\)\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe\" --auto-open-devtools-for-tabs --new-window \"http://localhost:3000\")",
+      "Bash(start msedge *)",
+      "Bash(start \"\" \"\")",
+      "Bash(npx tauri *)",
+      "Bash(taskkill *)",
+      "Bash(netstat -ano)",
+      "Bash(powershell *)",
+      "Bash(npm install *)",
+      "Bash(npx kill-port *)",
+      "Bash(cmd *)",
+      "Bash(cargo --version)",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c ' *)",
+      "Bash(awk '{print $5}')",
+      "Bash(node -e \"console.log\\(require\\('@tauri-apps/api/package.json'\\).version\\)\")",
+      "Bash(npx tsc *)",
+      "Bash(node *)",
+      "Bash(npx vite *)",
+      "Bash(cargo check *)",
+      "Bash(cargo build *)"
+    ]
+  }
+}

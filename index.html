@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh" class="h-full antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="OpenPaw" />
+    <link rel="manifest" href="/manifest.json" />
+    <title>OpenPaw</title>
+    <style>
+      html, body { height: 100%; margin: 0; padding: 0; }
+      body { background: #fff; color: #171717; font-family: system-ui, -apple-system, sans-serif; }
+      @media (prefers-color-scheme: dark) {
+        body { background: #0a0a0a; color: #ededed; }
+      }
+      *, ::before, ::after { box-sizing: border-box; border-width: 0; border-style: solid; border-color: #e5e7eb; }
+      #root { height: 100%; }
+    </style>
+  </head>
+  <body class="h-full">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
