@@ -913,6 +913,53 @@ export async function clearGoalDecompositionCache(): Promise<void> {
   await db.execute('DELETE FROM goal_decomposition_cache');
 }
 
+// ── Multi-agent task tree queries ──
+
+export async function getAllTaskTreeProjects(): Promise<Array<{ project_name: string; task_count: number; latest_updated: string }>> {
+  const db = await getDB();
+  return db.query<{ project_name: string; task_count: number; latest_updated: string }>(
+    `SELECT project_name, COUNT(*) AS task_count, MAX(updated_at) AS latest_updated
+     FROM task_tree GROUP BY project_name ORDER BY latest_updated DESC`,
+  );
+}
+
+export async function getTaskTreeByProject(projectName: string): Promise<import('@/db/types').TaskTreeRow[]> {
+  const db = await getDB();
+  return db.query<import('@/db/types').TaskTreeRow>(
+    'SELECT * FROM task_tree WHERE project_name = ? ORDER BY depth ASC, sort_order ASC',
+    [projectName],
+  );
+}
+
+export async function getAgentProcessLogsByTask(taskId: string): Promise<import('@/db/types').AgentProcessLogRow[]> {
+  const db = await getDB();
+  return db.query<import('@/db/types').AgentProcessLogRow>(
+    'SELECT * FROM agent_process_log WHERE task_id = ? ORDER BY step_order ASC',
+    [taskId],
+  );
+}
+
+export async function getAgentMessagesByTask(taskId: string): Promise<import('@/db/types').AgentMessageRow[]> {
+  const db = await getDB();
+  return db.query<import('@/db/types').AgentMessageRow>(
+    'SELECT * FROM agent_messages WHERE task_id = ? ORDER BY created_at ASC',
+    [taskId],
+  );
+}
+
+export async function deleteTaskTreeProject(projectName: string): Promise<void> {
+  const db = await getDB();
+  // Get all task IDs for this project
+  const tasks = await db.query<{ id: string }>('SELECT id FROM task_tree WHERE project_name = ?', [projectName]);
+  const ids = tasks.map(t => t.id);
+  if (ids.length > 0) {
+    const placeholders = ids.map(() => '?').join(',');
+    await db.execute(`DELETE FROM agent_process_log WHERE task_id IN (${placeholders})`, ids);
+    await db.execute(`DELETE FROM agent_messages WHERE task_id IN (${placeholders})`, ids);
+    await db.execute('DELETE FROM task_tree WHERE project_name = ?', [projectName]);
+  }
+}
+
 // ── CacheServiceImpl: ICacheService 实现类，委托给模块级函数 ──
 
 class CacheServiceImpl implements ICacheService {

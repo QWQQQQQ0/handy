@@ -76,6 +76,8 @@ export interface TaskTreeRow {
   error_info: string | null;
   created_at: string;
   updated_at: string;
+  target_window_hwnd?: number | null;  // 目标窗口句柄（避免浮窗遮挡）
+  target_window_title?: string | null; // 目标窗口标题（便于调试）
 }
 
 export interface AgentProcessLogRow {

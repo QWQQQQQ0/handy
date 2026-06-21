@@ -11,6 +11,7 @@ interface AppSettings {
   disabledTools: Set<string>;
   favoriteTools: Set<string>;
   locale: string | null; // 'en', 'zh', or null for system
+  enableGlobalListener: boolean; // 是否启用全局输入监听
 }
 
 interface SettingsState extends AppSettings {
@@ -25,6 +26,7 @@ interface SettingsState extends AppSettings {
   setFavoriteTools: (tools: Set<string>) => void;
   isFavorite: (toolName: string) => boolean;
   setLocale: (locale: string | null) => void;
+  setEnableGlobalListener: (enable: boolean) => void;
 }
 
 function readSet(key: string): Set<string> {
@@ -46,12 +48,14 @@ export const useSettingsStore = create<SettingsState>()(
     disabledTools: new Set(),
     favoriteTools: new Set(),
     locale: null,
+    enableGlobalListener: true, // 默认启用
     loaded: false,
 
     load: () => {
       const theme = localStorage.getItem('theme_mode') as ThemeMode | null;
       const defaultProvider = localStorage.getItem('default_model_provider_id');
       const locale = localStorage.getItem('locale');
+      const enableGlobalListener = localStorage.getItem('enable_global_listener');
 
       set({
         themeMode: theme === 'dark' || theme === 'light' ? theme : 'system',
@@ -59,6 +63,7 @@ export const useSettingsStore = create<SettingsState>()(
         disabledTools: readSet('disabled_tools'),
         favoriteTools: readSet('favorite_tools'),
         locale: locale || null,
+        enableGlobalListener: enableGlobalListener !== 'false', // 默认 true
         loaded: true,
       });
     },
@@ -108,6 +113,11 @@ export const useSettingsStore = create<SettingsState>()(
     setLocale: (locale) => {
       localStorage.setItem('locale', locale ?? '');
       set({ locale });
+    },
+
+    setEnableGlobalListener: (enable) => {
+      localStorage.setItem('enable_global_listener', String(enable));
+      set({ enableGlobalListener: enable });
     },
   }))
 );

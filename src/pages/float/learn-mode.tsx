@@ -52,8 +52,8 @@ export default function LearnMode({ onProgressChange }: Props) {
       const list = await desktopService.listWindows();
       const filtered = list.filter(w =>
         w.is_visible &&
-        !w.title.includes('OpenPaw') &&
-        !w.title.includes('openpaw') &&
+        !w.title.includes('Handy') &&
+        !w.title.includes('handy') &&
         w.title.trim().length > 0
       );
       setWindows(filtered);

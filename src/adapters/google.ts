@@ -30,11 +30,24 @@ export class GoogleAdapter implements LLMAdapter {
       body['tools'] = [{ functionDeclarations: convertTools(tools) }];
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      clearTimeout(timeout);
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        throw new Error('Gemini API request timed out (120s).');
+      }
+      throw e;
+    }
+    clearTimeout(timeout);
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => '(no body)');
@@ -122,14 +135,15 @@ function convertMessagesForGemini(messages: LLMMessage[]): [Array<Record<string,
 
     const parts: Array<Record<string, unknown>> = [];
 
-    // Tool result with multimodal content (images + text)
+    // Tool result with multimodal content (images + audio + video + text)
     if (msg.role === 'tool' && Array.isArray(content)) {
       const textParts: string[] = [];
       for (const part of content) {
         const p = part as Record<string, unknown>;
-        if (p['type'] === 'image_url') {
-          const iu = p['image_url'] as Record<string, unknown>;
-          let url = iu['url'] as string;
+        if (p['type'] === 'image_url' || p['type'] === 'input_audio') {
+          const srcKey = p['type'] === 'image_url' ? 'image_url' : 'input_audio';
+          const src = p[srcKey] as Record<string, unknown>;
+          let url = (src['url'] ?? src['data']) as string;
           let mimeType: string | undefined;
           let data: string;
           if (url.startsWith('data:')) {
@@ -147,10 +161,13 @@ function convertMessagesForGemini(messages: LLMMessage[]): [Array<Record<string,
           }
           parts.push({
             inlineData: {
-              mimeType: mimeType ?? 'image/png',
+              mimeType: mimeType ?? (p['type'] === 'input_audio' ? 'audio/wav' : 'image/png'),
               data,
             },
           });
+        } else if (p['type'] === 'video_url') {
+          const vu = p['video_url'] as Record<string, unknown>;
+          textParts.push(`[Video: ${vu['url'] ?? ''}]`);
         } else if (p['type'] === 'text') {
           textParts.push(p['text'] as string);
         }
@@ -162,13 +179,14 @@ function convertMessagesForGemini(messages: LLMMessage[]): [Array<Record<string,
         },
       });
     }
-    // Multimodal user message
+    // Multimodal user message (images + audio + video + text)
     else if (Array.isArray(content)) {
       for (const part of content) {
         const p = part as Record<string, unknown>;
-        if (p['type'] === 'image_url') {
-          const iu = p['image_url'] as Record<string, unknown>;
-          let url = iu['url'] as string;
+        if (p['type'] === 'image_url' || p['type'] === 'input_audio') {
+          const srcKey = p['type'] === 'image_url' ? 'image_url' : 'input_audio';
+          const src = p[srcKey] as Record<string, unknown>;
+          let url = (src['url'] ?? src['data']) as string;
           let mimeType: string | undefined;
           let data: string;
           if (url.startsWith('data:')) {
@@ -186,10 +204,13 @@ function convertMessagesForGemini(messages: LLMMessage[]): [Array<Record<string,
           }
           parts.push({
             inlineData: {
-              mimeType: mimeType ?? 'image/png',
+              mimeType: mimeType ?? (p['type'] === 'input_audio' ? 'audio/wav' : 'image/png'),
               data,
             },
           });
+        } else if (p['type'] === 'video_url') {
+          const vu = p['video_url'] as Record<string, unknown>;
+          parts.push({ text: `[Video URL: ${vu['url'] ?? ''}]` });
         } else if (p['type'] === 'text') {
           parts.push({ text: p['text'] });
         }

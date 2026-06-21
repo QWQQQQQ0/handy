@@ -162,6 +162,37 @@ async fn bridge_call_async(
 // Tauri commands — all async to keep the UI responsive
 // ═══════════════════════════════════════════════════════════════
 
+/// Pre-warm the Python engine on app startup.
+/// This starts the Python child process and its extension WebSocket server
+/// (port 19840) so the Chrome extension can connect immediately.
+#[tauri::command]
+pub async fn prewarm_python_engine(
+    state: tauri::State<'_, BridgeState>,
+) -> Result<String, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "prewarm".into(),
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok("Python engine started".into())
+}
+
+/// Check if the Chrome extension is connected via WebSocket.
+/// Returns { connected: bool, url?: string }
+#[tauri::command]
+pub async fn get_extension_status(
+    state: tauri::State<'_, BridgeState>,
+) -> Result<serde_json::Value, String> {
+    let data = bridge_call_async(
+        state.bridge.clone(),
+        "browser_status".into(),
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(data)
+}
+
 // ── Desktop UIA commands ──
 
 #[tauri::command]
@@ -284,11 +315,29 @@ pub async fn web_launch(
     state: tauri::State<'_, BridgeState>,
     headless: Option<bool>,
     channel: Option<String>,
+    connect_existing: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     bridge_call_async(
         state.bridge.clone(),
         "web_launch".into(),
-        serde_json::json!({ "headless": headless.unwrap_or(false), "channel": channel }),
+        serde_json::json!({
+            "headless": headless.unwrap_or(false),
+            "channel": channel,
+            "connect_existing": connect_existing.unwrap_or(true)
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn web_connect_cdp(
+    state: tauri::State<'_, BridgeState>,
+    cdp_url: Option<String>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "web_connect_cdp".into(),
+        serde_json::json!({ "cdp_url": cdp_url.unwrap_or_else(|| "http://localhost:9222".into()) }),
     )
     .await
 }
@@ -296,12 +345,13 @@ pub async fn web_launch(
 #[tauri::command]
 pub async fn web_navigate(
     state: tauri::State<'_, BridgeState>,
-    url: String,
+    url: Option<String>,
+    action: Option<String>,
 ) -> Result<serde_json::Value, String> {
     bridge_call_async(
         state.bridge.clone(),
         "web_navigate".into(),
-        serde_json::json!({ "url": url }),
+        serde_json::json!({ "url": url.unwrap_or_default(), "action": action.unwrap_or_else(|| "goto".into()) }),
     )
     .await
 }
@@ -314,6 +364,31 @@ pub async fn web_get_interactive(
         state.bridge.clone(),
         "web_get_interactive".into(),
         serde_json::json!({}),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn ext_get_recorded_events(
+    state: tauri::State<'_, BridgeState>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "ext_get_recorded_events".into(),
+        serde_json::json!({}),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn ext_set_capture(
+    state: tauri::State<'_, BridgeState>,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "ext_set_capture".into(),
+        serde_json::json!({ "enabled": enabled }),
     )
     .await
 }
@@ -380,6 +455,23 @@ pub async fn web_close(
         state.bridge.clone(),
         "web_close".into(),
         serde_json::json!({}),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn web_launch_browser(
+    state: tauri::State<'_, BridgeState>,
+    browser: Option<String>,
+    port: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "web_launch_browser".into(),
+        serde_json::json!({
+            "browser": browser.unwrap_or_else(|| "msedge".into()),
+            "port": port.unwrap_or(9222)
+        }),
     )
     .await
 }
@@ -472,7 +564,7 @@ pub async fn ocr_recognize(
 pub async fn global_listener_start(
     state: tauri::State<'_, BridgeState>,
 ) -> Result<serde_json::Value, String> {
-    let parent_pid = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
+    let parent_pid = std::process::id();
     bridge_call_async(
         state.bridge.clone(),
         "global_listener_start".into(),
@@ -502,6 +594,55 @@ pub async fn global_listener_poll(
         state.bridge.clone(),
         "global_listener_poll".into(),
         serde_json::json!({ "max_events": max_events.unwrap_or(100) }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn event_collector_poll(
+    state: tauri::State<'_, BridgeState>,
+    max_events: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let result = bridge_call_async(
+        state.bridge.clone(),
+        "event_collector_poll".into(),
+        serde_json::json!({ "max_events": max_events.unwrap_or(50) }),
+    )
+    .await?;
+    let count = result.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
+    if count > 0 {
+        if let Some(events) = result.get("events").and_then(|e| e.as_array()) {
+            eprintln!("[bridge] event_collector_poll returning {} events:", events.len());
+            for (i, evt) in events.iter().enumerate() {
+                let src = evt.get("_source").and_then(|s| s.as_str()).unwrap_or("?");
+                let etype = evt.get("type").or(evt.get("event_type")).and_then(|t| t.as_str()).unwrap_or("?");
+                eprintln!("[bridge]   [{}] _source={} type={}", i, src, etype);
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn event_collector_start(
+    state: tauri::State<'_, BridgeState>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "event_collector_start".into(),
+        serde_json::json!({}),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn event_collector_stop(
+    state: tauri::State<'_, BridgeState>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "event_collector_stop".into(),
+        serde_json::json!({}),
     )
     .await
 }
@@ -570,6 +711,220 @@ pub async fn ppt_generate(
             "markdown": markdown,
             "author": author,
             "save_path": save_path,
+        }),
+    )
+    .await
+}
+
+// ── Office COM automation commands ──
+
+#[tauri::command]
+pub async fn office_detect(
+    state: tauri::State<'_, BridgeState>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "office_detect".into(),
+        serde_json::json!({}),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn ppt_com_read(
+    state: tauri::State<'_, BridgeState>,
+    slide_start: Option<usize>,
+    slide_end: Option<usize>,
+    slide_index: Option<usize>,
+    slide_info: Option<bool>,
+    find_text: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "ppt_com_read".into(),
+        serde_json::json!({
+            "slide_start": slide_start,
+            "slide_end": slide_end,
+            "slide_index": slide_index,
+            "slide_info": slide_info,
+            "find_text": find_text,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn ppt_com_edit(
+    state: tauri::State<'_, BridgeState>,
+    operation: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut payload = params.as_object().cloned().unwrap_or_default();
+    payload.insert("operation".into(), serde_json::Value::String(operation));
+    bridge_call_async(
+        state.bridge.clone(),
+        "ppt_com_edit".into(),
+        serde_json::Value::Object(payload),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn word_com_read(
+    state: tauri::State<'_, BridgeState>,
+    paragraph_start: Option<usize>,
+    paragraph_end: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "word_com_read".into(),
+        serde_json::json!({
+            "paragraph_start": paragraph_start,
+            "paragraph_end": paragraph_end,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn word_com_edit(
+    state: tauri::State<'_, BridgeState>,
+    operation: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut payload = params.as_object().cloned().unwrap_or_default();
+    payload.insert("operation".into(), serde_json::Value::String(operation));
+    bridge_call_async(
+        state.bridge.clone(),
+        "word_com_edit".into(),
+        serde_json::Value::Object(payload),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn excel_com_read(
+    state: tauri::State<'_, BridgeState>,
+    range: Option<String>,
+    sheet: Option<String>,
+    get_selection: Option<bool>,
+    sheet_info: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "excel_com_read".into(),
+        serde_json::json!({
+            "range": range,
+            "sheet": sheet,
+            "get_selection": get_selection,
+            "sheet_info": sheet_info,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn excel_com_edit(
+    state: tauri::State<'_, BridgeState>,
+    operation: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let mut payload = params.as_object().cloned().unwrap_or_default();
+    payload.insert("operation".into(), serde_json::Value::String(operation));
+    bridge_call_async(
+        state.bridge.clone(),
+        "excel_com_edit".into(),
+        serde_json::Value::Object(payload),
+    )
+    .await
+}
+
+// ── Web search commands ──
+
+#[tauri::command]
+pub async fn web_search(
+    state: tauri::State<'_, BridgeState>,
+    query: String,
+    max_results: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "web_search".into(),
+        serde_json::json!({
+            "query": query,
+            "max_results": max_results.unwrap_or(10),
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn web_fetch(
+    state: tauri::State<'_, BridgeState>,
+    url: String,
+    timeout: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "web_fetch".into(),
+        serde_json::json!({
+            "url": url,
+            "timeout": timeout.unwrap_or(25),
+        }),
+    )
+    .await
+}
+
+// ── Doc code exec (document sandbox) ──
+
+#[tauri::command]
+pub async fn doc_code_exec(
+    state: tauri::State<'_, BridgeState>,
+    code: String,
+    timeout_sec: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "doc_code_exec".into(),
+        serde_json::json!({
+            "code": code,
+            "timeout_sec": timeout_sec.unwrap_or(60),
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn web_code_exec(
+    state: tauri::State<'_, BridgeState>,
+    code: String,
+    timeout_sec: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "web_code_exec".into(),
+        serde_json::json!({
+            "code": code,
+            "timeout_sec": timeout_sec.unwrap_or(60),
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn exec_python(
+    state: tauri::State<'_, BridgeState>,
+    code: String,
+    timeout_sec: Option<u64>,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "exec_python".into(),
+        serde_json::json!({
+            "code": code,
+            "timeout_sec": timeout_sec.unwrap_or(30),
+            "params": params.unwrap_or(serde_json::json!({})),
         }),
     )
     .await

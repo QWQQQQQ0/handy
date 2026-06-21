@@ -68,13 +68,17 @@ Interact with Windows UI elements via UI Automation (UIA). No coordinates needed
 [
   {
     "name": "uia_get_interactive",
-    "description": "Get all interactive UI elements (buttons, inputs, links, etc.) from a window via UI Automation. Returns element roles, names, and properties. Use this FIRST before uia_click/uia_type to discover available elements.",
+    "description": "Get all interactive UI elements (buttons, inputs, links, etc.) from a window via UI Automation. Returns element roles, names, and properties. Use this FIRST before uia_click/uia_type to discover available elements. NOTE: UIA only works with standard Win32/WPF/WinUI controls. Custom-drawn UIs (WeChat, Electron apps, Qt, Java Swing) return 0 elements. If empty, fall back to desktop_screenshot + desktop_click with coordinates.",
     "name_cn": "桌面获取可交互元素",
-    "description_cn": "通过 UI Automation 获取窗口中所有可交互的 UI 元素（按钮、输入框、链接等），返回元素的角色、名称和属性。在使用 uia_click/uia_type 前优先调用此工具发现可用元素。",
+    "description_cn": "通过 UI Automation 获取窗口中所有可交互的 UI 元素（按钮、输入框、链接等），返回元素的角色、名称和属性。在使用 uia_click/uia_type 前优先调用此工具发现可用元素。注意：UIA 只支持标准 Win32/WPF/WinUI 控件，自绘界面（微信、Electron 应用、Qt、Java Swing）会返回 0 个元素。如果为空，请回退到 desktop_screenshot + desktop_click 坐标方式操作。",
     "parameters": {
       "type": "object",
       "properties": {
-        "window_hwnd": { "type": "integer", "description": "Optional window handle to scope the search" }
+        "window_hwnd": { "type": "integer", "description": "Optional window handle to scope the search" },
+        "roles": { "type": "array", "items": { "type": "string" }, "description": "Filter by element roles (e.g., [\"Button\", \"Edit\"])" },
+        "name_keyword": { "type": "string", "description": "Filter by element name keyword (partial match)" },
+        "onscreen_only": { "type": "boolean", "description": "Only return elements visible on screen (default true)" },
+        "limit": { "type": "integer", "description": "Max number of elements to return" }
       }
     }
   },

@@ -15,12 +15,13 @@ export class ChatAgent {
     apiKey: string;
     tools?: Record<string, unknown>[];
     goal?: string;
+    noSystemPrompt?: boolean;
   }): AsyncGenerator<string> {
     for await (const chunk of apiStreamCompat(
       AgentEndpoint.chat,
       params.provider,
       params.apiKey,
-      { messages: params.messages, tools: params.tools, goal: params.goal },
+      { messages: params.messages, tools: params.tools, goal: params.goal, noSystemPrompt: params.noSystemPrompt },
     )) {
       yield chunk;
     }

@@ -4,11 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "source scripts/android-env.sh && vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint",
-    "tauri": "tauri"
+    "tauri": "source scripts/android-env.sh && tauri",
+    "tauri:dev": "source scripts/android-env.sh && tauri dev",
+    "tauri:android:dev": "source scripts/android-env.sh && tauri android dev",
+    "tauri:android:build:debug": "source scripts/android-env.sh && npx vite build && cd src-tauri/gen/android && ./gradlew assembleDebug -x rustBuildArm64Debug -x rustBuildArmDebug -x rustBuildX86Debug -x rustBuildX86_64Debug -x rustBuildUniversalDebug",
+    "android:build:debug": "source scripts/android-env.sh && npx vite build && cd src-tauri/gen/android && ./gradlew assembleDebug -x rustBuildArm64Debug -x rustBuildArmDebug -x rustBuildX86Debug -x rustBuildX86_64Debug -x rustBuildUniversalDebug"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

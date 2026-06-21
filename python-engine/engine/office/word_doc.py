@@ -260,7 +260,7 @@ Python是一门*优雅*的编程语言。
 2. 第二步
 3. 第三步
 """
-    docx_bytes = gen.generate("测试文档", md, author="OpenPaw")
+    docx_bytes = gen.generate("测试文档", md, author="Handy")
     with open("test_output.docx", "wb") as f:
         f.write(docx_bytes)
     print("Generated test_output.docx")

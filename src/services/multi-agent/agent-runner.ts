@@ -3,8 +3,7 @@ import { ProcessLogDB } from './process-log-db';
 import { AgentMessageDB } from './agent-message-db';
 import { ContextBuilder } from './context-builder';
 import { codeSandboxService } from '@/services/code-sandbox';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { dirname, resolve, join, relative } from 'node:path';
+import { isTauri } from '@/utils/platform';
 import type { AgentType, LogAction, TaskStatus, ModuleContract, SplitDecision } from './types';
 import type { TaskTreeRow, AgentProcessLogRow } from '@/db/types';
 import type { IModelService } from '@/interfaces/model-service';
@@ -205,7 +204,55 @@ const AGENT_TOOLS: Record<AgentType, string[]> = {
 // Default project output base
 // ---------------------------------------------------------------------------
 
-const PROJECTS_BASE_DIR = resolve(process.cwd(), 'generated');
+// Use app data directory (outside project root) to avoid Tauri dev watcher restarts.
+// Initialized lazily on first use.
+let PROJECTS_BASE_DIR = 'generated';
+
+async function getProjectsBaseDir(): Promise<string> {
+  if (PROJECTS_BASE_DIR !== 'generated') return PROJECTS_BASE_DIR;
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const appDir = await invoke<string>('get_app_data_dir');
+      PROJECTS_BASE_DIR = appDir + '/generated';
+      return PROJECTS_BASE_DIR;
+    } catch { /* fall through */ }
+  }
+  return PROJECTS_BASE_DIR;
+}
+
+// ---------------------------------------------------------------------------
+// Platform-aware file I/O (Tauri invoke in desktop, memory cache in browser)
+// ---------------------------------------------------------------------------
+
+const _fileCache = new Map<string, string>();
+
+async function fsWriteFile(filePath: string, content: string): Promise<void> {
+  _fileCache.set(filePath, content);
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('write_file', { path: filePath, content });
+      return;
+    } catch { /* fall through to memory cache */ }
+  }
+}
+
+async function fsReadFile(filePath: string): Promise<string | null> {
+  if (_fileCache.has(filePath)) return _fileCache.get(filePath)!;
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      return await invoke<string>('read_file', { path: filePath });
+    } catch { /* fall through */ }
+  }
+  return null;
+}
+
+/** Join path segments, normalizing separators. */
+function joinPath(...parts: string[]): string {
+  return parts.join('/').replace(/\/+/g, '/');
+}
 
 // ---------------------------------------------------------------------------
 // AgentRunner
@@ -328,7 +375,18 @@ export class AgentRunner {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ];
-    const toolDefs = AGENT_TOOLS[params.agentType].map((name) => BASE_TOOLS[name]);
+    // Convert Anthropic format (input_schema) → OpenAI format (function.parameters)
+    const toolDefs = AGENT_TOOLS[params.agentType].map((name) => {
+      const t = BASE_TOOLS[name];
+      return {
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.input_schema,
+        },
+      };
+    });
 
     // Track output files
     const outputFilesSet = new Set<string>(existingFiles.map((f) => f.path));
@@ -441,10 +499,11 @@ export class AgentRunner {
   /**
    * Resolve a project-relative path to an absolute filesystem path.
    */
-  private _projectFilePath(projectName: string, filePath: string): string {
+  private async _projectFilePath(projectName: string, filePath: string): Promise<string> {
     // Prevent directory traversal
-    const safe = join('/', filePath);
-    return resolve(PROJECTS_BASE_DIR, projectName, safe.slice(1));
+    const safe = filePath.replace(/\\/g, '/').replace(/\.\./g, '').replace(/^\/+/, '');
+    const baseDir = await getProjectsBaseDir();
+    return joinPath(baseDir, projectName, safe);
   }
 
   /**
@@ -467,9 +526,9 @@ export class AgentRunner {
     const result: Array<{ path: string; content: string }> = [];
     for (const p of paths) {
       try {
-        const fullPath = this._projectFilePath(projectName, p);
-        const content = await readFile(fullPath, 'utf-8');
-        result.push({ path: p, content });
+        const fullPath = await this._projectFilePath(projectName, p);
+        const content = await fsReadFile(fullPath);
+        if (content !== null) result.push({ path: p, content });
       } catch {
         // File may have been deleted or never written; skip.
       }
@@ -502,10 +561,9 @@ export class AgentRunner {
         case 'write_file': {
           const filePath = String(tc.input.path ?? '');
           const content = String(tc.input.content ?? '');
-          const fullPath = this._projectFilePath(projectName, filePath);
+          const fullPath = await this._projectFilePath(projectName, filePath);
 
-          await mkdir(dirname(fullPath), { recursive: true });
-          await writeFile(fullPath, content, 'utf-8');
+          await fsWriteFile(fullPath, content);
 
           const durationMs = Date.now() - startTime;
           await this.logDB.append(taskId, agentId, turn, 'write_file', {
@@ -523,8 +581,11 @@ export class AgentRunner {
 
         case 'read_file': {
           const filePath = String(tc.input.path ?? '');
-          const fullPath = this._projectFilePath(projectName, filePath);
-          const content = await readFile(fullPath, 'utf-8');
+          const fullPath = await this._projectFilePath(projectName, filePath);
+          const content = await fsReadFile(fullPath);
+          if (content === null) {
+            return { success: false, output: `File not found: ${filePath}` };
+          }
 
           await this.logDB.append(taskId, agentId, turn, 'read_file', {
             filePath,

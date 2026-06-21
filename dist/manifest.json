@@ -1,6 +1,6 @@
 {
-  "name": "OpenPaw",
-  "short_name": "OpenPaw",
+  "name": "Handy",
+  "short_name": "Handy",
   "description": "Local-first AI personal assistant",
   "start_url": "/",
   "display": "standalone",

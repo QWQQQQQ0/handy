@@ -3,26 +3,39 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect, ChangeEvent } from 'react';
-import { ImageIcon, ArrowUp, X, Bot } from 'lucide-react';
-import type { MessageContent } from '@/types/message';
+import { ImageIcon, ArrowUp, X, Bot, Music } from 'lucide-react';
+import type { MessageContent, ContentPart } from '@/types/message';
 import type { SemanticAnnotation } from '@/types/cache';
 import { compressImage } from '@/utils/image';
 import type { CompressedImage } from '@/utils/image';
 import { getCacheService } from '@/services/cache-service-singleton';
 import { PageKnowledgeService } from '@/services/page-knowledge';
 
+export interface AudioFile {
+  dataUrl: string;
+  name: string;
+}
+
 export function buildUserContent(
   text: string,
   images: CompressedImage[],
+  audios?: AudioFile[],
 ): MessageContent {
-  if (images.length === 0) return text;
+  const hasImages = images.length > 0;
+  const hasAudios = audios && audios.length > 0;
+  if (!hasImages && !hasAudios) return text;
 
-  const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  const parts: ContentPart[] = [];
   if (text) {
     parts.push({ type: 'text', text });
   }
   for (const img of images) {
     parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+  }
+  if (audios) {
+    for (const a of audios) {
+      parts.push({ type: 'input_audio', input_audio: { data: a.dataUrl } });
+    }
   }
   return parts as MessageContent;
 }
@@ -48,6 +61,23 @@ function ImagePreview({ dataUrl, onRemove }: { dataUrl: string; onRemove: () => 
   );
 }
 
+function AudioPreview({ audio, onRemove }: { audio: AudioFile; onRemove: () => void }) {
+  return (
+    <div className="relative shrink-0 rounded-lg overflow-hidden bg-zinc-100 dark:bg-zinc-800 w-32 h-16 flex items-center justify-center gap-1 px-2">
+      <Music size={14} className="text-purple-500 shrink-0" />
+      <span className="text-[11px] text-zinc-600 dark:text-zinc-400 truncate flex-1" title={audio.name}>
+        {audio.name.length > 12 ? audio.name.slice(0, 10) + '...' : audio.name}
+      </span>
+      <button
+        onClick={onRemove}
+        className="absolute top-0 right-0 w-5 h-5 flex items-center justify-center bg-black/50 text-white rounded-bl"
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
 interface AgentInfo {
   appName: string;
   pageCount: number;
@@ -58,6 +88,7 @@ interface MessageInputProps {
   enabled?: boolean;
   hintText?: string;
   allowImagePaste?: boolean;
+  onStop?: () => void;
 }
 
 async function processImageFiles(files: FileList | File[]): Promise<CompressedImage[]> {
@@ -79,9 +110,26 @@ async function processImageFiles(files: FileList | File[]): Promise<CompressedIm
   return results;
 }
 
-export function MessageInput({ onSend, enabled = true, hintText = '发送消息...', allowImagePaste = true }: MessageInputProps) {
+async function processAudioFiles(files: FileList | File[]): Promise<AudioFile[]> {
+  const results: AudioFile[] = [];
+  const arr = Array.from(files).filter((f) => f.type.startsWith('audio/'));
+  for (const file of arr) {
+    if (file.size > 50 * 1024 * 1024) continue; // 50 MB limit
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+    results.push({ dataUrl, name: file.name });
+  }
+  return results;
+}
+
+export function MessageInput({ onSend, enabled = true, hintText = '发送消息...', allowImagePaste = true, onStop }: MessageInputProps) {
   const [text, setText] = useState('');
   const [pendingImages, setPendingImages] = useState<CompressedImage[]>([]);
+  const [pendingAudios, setPendingAudios] = useState<AudioFile[]>([]);
   const [minHeight, setMinHeight] = useState(() => {
     const saved = localStorage.getItem('msg_input_height');
     return saved ? Math.max(40, Math.min(400, Number(saved))) : 60;
@@ -181,16 +229,17 @@ export function MessageInput({ onSend, enabled = true, hintText = '发送消息.
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
-    if (!trimmed && pendingImages.length === 0) return;
+    if (!trimmed && pendingImages.length === 0 && pendingAudios.length === 0) return;
     if (!enabled) return;
 
-    const content = buildUserContent(trimmed, pendingImages);
+    const content = buildUserContent(trimmed, pendingImages, pendingAudios);
     onSend(content, agentContext);
     setText('');
     setPendingImages([]);
+    setPendingAudios([]);
     setSelectedAgent(null);
     setAgentContext(undefined);
-  }, [text, pendingImages, enabled, onSend, agentContext]);
+  }, [text, pendingImages, pendingAudios, enabled, onSend, agentContext]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -202,8 +251,10 @@ export function MessageInput({ onSend, enabled = true, hintText = '发送消息.
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files?.length) return;
-    const results = await processImageFiles(files);
-    setPendingImages((prev) => [...prev, ...results]);
+    const imageResults = await processImageFiles(files);
+    const audioResults = await processAudioFiles(files);
+    setPendingImages((prev) => [...prev, ...imageResults]);
+    setPendingAudios((prev) => [...prev, ...audioResults]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -212,17 +263,25 @@ export function MessageInput({ onSend, enabled = true, hintText = '发送消息.
     const items = e.clipboardData?.items;
     if (!items) return;
     const imageFiles: File[] = [];
+    const audioFiles: File[] = [];
     for (let i = 0; i < items.length; i++) {
       const file = items[i].getAsFile();
       if (file && file.type.startsWith('image/')) {
         imageFiles.push(file);
+      } else if (file && file.type.startsWith('audio/')) {
+        audioFiles.push(file);
       }
     }
-    if (imageFiles.length === 0) return; // No images, let default paste work for text
+    if (imageFiles.length === 0 && audioFiles.length === 0) return;
     e.preventDefault();
-    processImageFiles(imageFiles).then((results) => {
-      setPendingImages((prev) => [...prev, ...results]);
-    });
+    Promise.all([
+      processImageFiles(imageFiles).then((results) => {
+        setPendingImages((prev) => [...prev, ...results]);
+      }),
+      processAudioFiles(audioFiles).then((results) => {
+        setPendingAudios((prev) => [...prev, ...results]);
+      }),
+    ]);
   }, [allowImagePaste]);
 
   const removeImage = (index: number) => {
@@ -243,7 +302,15 @@ export function MessageInput({ onSend, enabled = true, hintText = '发送消息.
       {pendingImages.length > 0 && (
         <div className="flex gap-2 mb-2 overflow-x-auto pb-1">
           {pendingImages.map((img, i) => (
-            <ImagePreview key={i} dataUrl={img.dataUrl} onRemove={() => removeImage(i)} />
+            <ImagePreview key={`img-${i}`} dataUrl={img.dataUrl} onRemove={() => removeImage(i)} />
+          ))}
+        </div>
+      )}
+
+      {pendingAudios.length > 0 && (
+        <div className="flex gap-2 mb-2 overflow-x-auto pb-1">
+          {pendingAudios.map((audio, i) => (
+            <AudioPreview key={`audio-${i}`} audio={audio} onRemove={() => setPendingAudios((prev) => prev.filter((_, j) => j !== i))} />
           ))}
         </div>
       )}
@@ -281,14 +348,14 @@ export function MessageInput({ onSend, enabled = true, hintText = '发送消息.
           onClick={() => fileInputRef.current?.click()}
           disabled={!enabled}
           className="p-2 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-40 shrink-0"
-          title="上传图片"
+          title="上传图片/音频"
         >
           <ImageIcon size={20} />
         </button>
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,audio/*"
           multiple
           className="hidden"
           onChange={handleFileChange}
@@ -306,13 +373,23 @@ export function MessageInput({ onSend, enabled = true, hintText = '发送消息.
           className="flex-1 resize-none rounded-2xl bg-zinc-100 dark:bg-zinc-800 px-4 py-2.5 text-[14px] text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 outline-none disabled:opacity-40 overflow-y-auto"
         />
 
-        <button
-          onClick={handleSend}
-          disabled={!enabled || (!text.trim() && pendingImages.length === 0)}
-          className="p-2.5 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 shrink-0"
-        >
-          <ArrowUp size={20} />
-        </button>
+        {!enabled && onStop ? (
+          <button
+            onClick={onStop}
+            className="p-2.5 rounded-full bg-red-600 text-white hover:bg-red-700 shrink-0"
+            title="停止"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!enabled || (!text.trim() && pendingImages.length === 0 && pendingAudios.length === 0)}
+            className="p-2.5 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 shrink-0"
+          >
+            <ArrowUp size={20} />
+          </button>
+        )}
       </div>
     </div>
   );

@@ -2,9 +2,9 @@
 // Template variables are passed via ActionContext.variables map.
 // Supports workflow template fast path: replay cached steps, only call LLM for dynamic parts.
 
-import type { TaskActionConfig } from '@/types/scheduler';
+import type { TaskActionConfig, AgentExecuteTaskAction } from '@/types/scheduler';
 import type { TaskExecutionResult } from '@/types/scheduler';
-import type { MonitorTarget, WorkflowStep } from '@/types/watcher';
+import type { MonitorTarget, WorkflowStep, WorkflowTemplate } from '@/types/watcher';
 import { appEventBus } from '@/services/event-bus';
 import { loadProviderAndKey } from '@/services/watcher/watcher-utils';
 import { ModelScenario } from '@/services/llm-gateway/gateway';
@@ -28,9 +28,11 @@ export interface ActionContext {
   /** 取消信号，用于中断正在执行的 agent */
   signal?: AbortSignal;
   /** 已有的工作流模板（从 TaskActionConfig 传入） */
-  workflowTemplate?: WorkflowStep[];
+  workflowTemplate?: import('@/types/watcher').WorkflowTemplate;
   /** 上次执行的摘要（注入 currentState，帮助 Agent 了解历史） */
   lastExecutionSummary?: string;
+  /** 聊天上下文：用于聊天回复场景 */
+  chatContext?: import('@/types/watcher').ChatContext;
 }
 
 /** 动作执行结果，可选携带学到的工作流模板 */
@@ -50,47 +52,28 @@ export async function executeAction(
   try {
     switch (action.type) {
       case 'agent_execute': {
-        // ── 快速路径：有工作流模板时直接回放 ──
+        const executionCount = action.executionCount ?? 0;
         const workflowTemplate = ctx.workflowTemplate ?? action.workflowTemplate;
-        if (workflowTemplate && workflowTemplate.length > 0) {
-          const { executeWorkflow } = await import('@/services/watcher/workflow-executor');
-          const { provider, apiKey } = await loadProviderAndKey();
-          const { getModelService } = await import('@/services/model-service-singleton');
-          const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
-          const { getCacheService } = await import('@/services/cache-service-singleton');
 
-          const modelService = getModelService();
-          const skillExecutor = getBuiltinExecutor();
-          const cacheService = getCacheService();
-          if (!cacheService) throw new Error('getCacheService() returned undefined');
-
-          const result = await executeWorkflow(workflowTemplate, {
-            skillExecutor: skillExecutor as unknown as import('@/interfaces/skill-executor').ISkillExecutor,
-            modelService,
-            cacheService,
-            provider, apiKey,
-            windowHwnd: ctx.monitorTarget?.windowHwnd,
-            variables: ctx.variables,
-            signal: ctx.signal,
-          });
-
-          if (result.success) {
-            return { ...result, duration: Date.now() - start };
-          }
-          // 回放失败 → 降级到完整 agent 流程
+        // ── 路径 1：有工作流模板 → 回放模板 ──
+        if (workflowTemplate && workflowTemplate.steps.length > 0 && executionCount > 0) {
+          console.log(`[scheduler:action] 回放工作流模板 (executionCount=${executionCount})`);
+          return await executeWorkflowTemplate(action, ctx, workflowTemplate, start);
         }
 
-        // ── 完整 agent 流程 ──
+        // ── 路径 2：首次执行 → 录制模式 ──
+        console.log(`[scheduler:action] 首次执行，启用录制模式 (executionCount=${executionCount})`);
+
+        // 构建 goal
         let goal = fillTemplate(action.goalTemplate, ctx);
-        // 注入 actionGoal — 分解出的详细动作描述
         if (ctx.actionGoal) {
           goal = `${goal}\n\n详细动作要求：${ctx.actionGoal}`;
         }
 
+        // 使用原有的 DesktopAutomationAgent 执行
         const { DesktopAutomationAgent } = await import('@/services/desktop-automation-agent');
         const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
         const { getCacheService } = await import('@/services/cache-service-singleton');
-
         const { provider, apiKey } = await loadProviderAndKey();
 
         const skillExecutor = getBuiltinExecutor();
@@ -124,7 +107,6 @@ export async function executeAction(
           signal: ctx.signal,
           scenario: ModelScenario.watcherResponse,
           // 首次执行（无模板）：跳过缓存/规划，强制逐轮 LLM 决策+验证
-          // 有模板时走回放快路径，不会到这里
           skipPlanning: !workflowTemplate,
           // 首次执行需要更多轮次：每步 LLM 观察截图后决策
           maxTurns: workflowTemplate ? 3 : 8,
@@ -155,7 +137,7 @@ export async function executeAction(
       case 'notify': {
         const msg = fillTemplate(action.notifyTemplate, ctx);
         if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-          new Notification('OpenPaw Task', { body: msg });
+          new Notification('Handy Task', { body: msg });
         }
         return { success: true, duration: Date.now() - start, detail: msg };
       }
@@ -238,4 +220,116 @@ function buildEnrichedState(ctx: ActionContext): string | undefined {
   if (ctx.lastExecutionSummary) parts.push(`上次执行结果: ${ctx.lastExecutionSummary}`);
 
   return parts.length > 0 ? parts.join('\n') : undefined;
+}
+
+/**
+ * 回放工作流模板
+ * 执行已录制的工作流步骤，LLM 调用是固定动作但内容动态
+ */
+async function executeWorkflowTemplate(
+  action: AgentExecuteTaskAction,
+  ctx: ActionContext,
+  template: WorkflowTemplate,
+  startTime: number,
+): Promise<ActionResult> {
+  const { executeWorkflowSteps } = await import('@/services/watcher/workflow-executor-v2');
+  const { provider, apiKey } = await loadProviderAndKey();
+
+  try {
+    const result = await executeWorkflowSteps(template.steps, {
+      goal: action.goalTemplate,
+      provider,
+      apiKey,
+      snapshot: ctx.variables['snapshot'],
+      diffDetail: ctx.variables['diff'],
+      chatContext: ctx.chatContext,
+      windowHwnd: ctx.monitorTarget?.windowHwnd,
+      signal: ctx.signal,
+    });
+
+    return {
+      success: result.success,
+      duration: Date.now() - startTime,
+      detail: result.detail,
+      executionSummary: result.summary,
+    };
+  } catch (e) {
+    console.error(`[scheduler:action] 工作流回放失败，降级到录制模式:`, e);
+    // 回放失败 → 降级到录制模式
+    return await executeWithRecording(action, ctx, startTime);
+  }
+}
+
+/**
+ * 首次执行：录制模式
+ * 逐步执行并录制每一步，最后生成工作流模板
+ */
+async function executeWithRecording(
+  action: AgentExecuteTaskAction,
+  ctx: ActionContext,
+  startTime: number,
+): Promise<ActionResult> {
+  // 使用原有的 DesktopAutomationAgent 执行，但记录步骤
+  const { DesktopAutomationAgent } = await import('@/services/desktop-automation-agent');
+  const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
+  const { getCacheService } = await import('@/services/cache-service-singleton');
+  const { provider, apiKey } = await loadProviderAndKey();
+
+  const skillExecutor = getBuiltinExecutor();
+  const cacheService = getCacheService();
+  if (!cacheService) throw new Error('getCacheService() returned undefined');
+
+  // 构建 goal
+  let goal = fillTemplate(action.goalTemplate, ctx);
+  if (ctx.actionGoal) {
+    goal = `${goal}\n\n详细动作要求：${ctx.actionGoal}`;
+  }
+
+  // 执行 Agent
+  const agent = new DesktopAutomationAgent(
+    skillExecutor as unknown as import('@/interfaces/skill-executor').ISkillExecutor,
+    cacheService,
+  );
+
+  const windows = await buildWindowsFromMonitorTarget(ctx.monitorTarget);
+  const enrichedState = buildEnrichedState(ctx);
+
+  const turns = await agent.executeCommand({
+    goal, provider, apiKey,
+    screenshotBase64: ctx.variables['snapshot'],
+    windows,
+    targetWindowHwnd: ctx.monitorTarget?.windowHwnd,
+    toolFilter: ctx.toolFilter,
+    context: ctx.variables['diff'] || ctx.variables['ocr'],
+    currentState: enrichedState,
+    signal: ctx.signal,
+    scenario: ModelScenario.watcherResponse,
+    skipPlanning: true,
+    maxTurns: 8,
+  });
+
+  // 从 Agent 执行中提取工作流模板（使用原有的提取逻辑）
+  let learnedWorkflow: WorkflowStep[] | undefined;
+  if (turns && turns.length > 0) {
+    const { extractWorkflowFromTurns } = await import('@/services/watcher/workflow-recorder');
+    learnedWorkflow = extractWorkflowFromTurns(turns, action.goalTemplate, ctx.context);
+    if (learnedWorkflow.length === 0) {
+      learnedWorkflow = undefined;
+    }
+  }
+
+  // 生成执行摘要
+  const toolNames = turns?.flatMap(t => t.toolCalls.map(tc => tc.name)) ?? [];
+  const uniqueActions = [...new Set(toolNames)].slice(0, 5).join(', ');
+  const executionSummary = turns && turns.length > 0
+    ? `完成"${goal.substring(0, 60)}"(${turns.length}轮, 操作: ${uniqueActions || '无'})`
+    : `完成"${goal.substring(0, 60)}"`;
+
+  return {
+    success: true,
+    duration: Date.now() - startTime,
+    detail: goal,
+    learnedWorkflow,
+    executionSummary,
+  };
 }

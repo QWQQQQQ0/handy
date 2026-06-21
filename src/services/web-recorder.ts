@@ -17,6 +17,15 @@ interface DomEvent {
   timestamp: number;
   x: number;
   y: number;
+  // Screen coordinates (from browser API)
+  screenX?: number;
+  screenY?: number;
+  // Browser's logical screen size
+  screenWidth?: number;
+  screenHeight?: number;
+  // Physical screen size from backend (for coordinate correction)
+  physicalWidth?: number;
+  physicalHeight?: number;
   element?: {
     tag: string;
     text: string;
@@ -165,6 +174,29 @@ class WebRecorder {
       pageUrl: raw.url || '',
       platform: 'dom',
     };
+
+    // Fix Y coordinate scaling using physical screen size
+    // Browser's screen.height is logical pixels (affected by DPI scaling)
+    // Physical screen size is the actual pixel count
+    // Formula: correctedY = (screenY / (screenHeight - 1)) * physicalHeight
+    if (raw.screenY != null &&
+        raw.screenHeight && raw.screenHeight > 1 &&
+        raw.physicalHeight && raw.physicalHeight > 0) {
+      const scaleY = raw.physicalHeight / (raw.screenHeight - 1);
+      const correctedY = Math.round(raw.screenY * scaleY);
+
+      console.log(`[WebRecorder] Y coord fix: screenY=${raw.screenY}, screenHeight=${raw.screenHeight}, physicalHeight=${raw.physicalHeight}, scaleY=${scaleY.toFixed(6)}, correctedY=${correctedY}`);
+
+      context.screenSize = {
+        width: raw.physicalWidth || 0,
+        height: raw.physicalHeight,
+      };
+
+      // Store corrected Y coordinate in action
+      if (action.target?.coordinate) {
+        (action.target as Record<string, unknown>).correctedY = correctedY;
+      }
+    }
 
     return {
       id: crypto.randomUUID(),

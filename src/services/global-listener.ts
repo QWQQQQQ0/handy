@@ -11,14 +11,21 @@ import type { UnifiedAction } from '@/types/unified-action';
 import type { UnifiedElement } from '@/types/unified-element';
 import { UI_ROLE } from '@/types/unified-element';
 
+/** 修饰键集合 — 这些键的 press/release 作为独立事件记录，不参与 hotkey 组合 */
+const MODIFIER_KEY_SET = new Set([
+  'Shift', 'LShift', 'RShift',
+  'Ctrl', 'LCtrl', 'RCtrl',
+  'Alt', 'LAlt', 'RAlt',
+  'Win', 'LWin', 'RWin',
+]);
+
 /**
  * 全局输入事件（来自 Python pynput 引擎）
  */
 export interface GlobalInputEvent {
   event_type:
-    | 'mouse_click'
-    | 'mouse_double_click'
-    | 'mouse_right_click'
+    | 'mouse_down'
+    | 'mouse_up'
     | 'mouse_drag_start'
     | 'mouse_drag_end'
     | 'mouse_scroll'
@@ -49,6 +56,7 @@ class GlobalListener {
   private callbacks: Set<GlobalEventCallback> = new Set();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private pollInterval = 100; // ms
+  private cachedScreenSize: { width: number; height: number } | null = null;
 
   /**
    * 启动全局监听（通过 Python bridge）
@@ -120,15 +128,22 @@ class GlobalListener {
   }
 
   /**
-   * 轮询 Python bridge 获取事件
+   * 轮询 Python bridge 获取事件（统一接口：global + extension）
    */
+  private _pollCount = 0;
   private async pollEvents(): Promise<void> {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<{ events: GlobalInputEvent[]; count: number }>(
-        'global_listener_poll',
-        { maxEvents: 100 },
+        'event_collector_poll',
+        { maxEvents: 50 },
       );
+
+      this._pollCount++;
+      const evtCount = result.events?.length || 0;
+      if (evtCount > 0) {
+        console.log(`[GlobalListener] poll#${this._pollCount} events=${evtCount} count=${result.count} callbacks=${this.callbacks.size}`);
+      }
 
       if (result.events && result.events.length > 0) {
         for (const event of result.events) {
@@ -144,6 +159,12 @@ class GlobalListener {
    * 处理事件
    */
   private handleEvent(event: GlobalInputEvent): void {
+    // 打印鼠标/手势事件（event_type 可能为 undefined，扩展事件用 type 字段）
+    const evtType = event.event_type || (event as any).type || '';
+    if (evtType && (evtType.startsWith('mouse_') || evtType === 'mousedown' || evtType === 'mouseup')) {
+      console.log(`[GlobalListener] event_type=${event.event_type} extType=${(event as any).type} _source=${(event as any)._source} callbacks=${this.callbacks.size}`);
+    }
+
     // 通知所有回调
     for (const callback of this.callbacks) {
       try {
@@ -155,20 +176,40 @@ class GlobalListener {
   /**
    * 将全局事件转换为语义化事件（含 UIA 元素信息）
    */
-  async toSemanticEvent(event: GlobalInputEvent): Promise<SemanticEvent> {
+  async toSemanticEvent(event: GlobalInputEvent, opts?: { skipUIA?: boolean }): Promise<SemanticEvent> {
     const action = this.buildAction(event);
 
-    const context = {
+    const context: SemanticEvent['context'] = {
       windowTitle: event.window_title,
       windowHwnd: event.hwnd,
-      platform: 'global' as const,
+      platform: 'global',
     };
 
-    // 尝试获取 UIA 元素信息
+    // 坐标上下文：窗口位置、相对坐标、百分比、屏幕尺寸（仅鼠标事件需要）
+    if (!opts?.skipUIA && event.hwnd && event.event_type?.startsWith('mouse')) {
+      try {
+        const { desktopService } = await import('./desktop-service');
+        const bounds = await desktopService.getWindowBounds(event.hwnd);
+        context.windowRect = bounds;
+        context.relativeCoord = {
+          x: event.x - bounds.x,
+          y: event.y - bounds.y,
+        };
+        context.percentCoord = {
+          x: Math.round(((event.x - bounds.x) / bounds.width) * 10000) / 100,
+          y: Math.round(((event.y - bounds.y) / bounds.height) * 10000) / 100,
+        };
+        context.screenSize = await this.getScreenSize();
+      } catch { /* ignore */ }
+    }
+
+    // 尝试获取 UIA 元素信息（仅鼠标事件 + 非 skipUIA 模式。recorder 不需要精准定位）
     let element: UnifiedElement | null = null;
-    try {
-      element = await this.getElementAtPoint(event.x, event.y, event.hwnd);
-    } catch { /* ignore */ }
+    if (!opts?.skipUIA && event.event_type?.startsWith('mouse')) {
+      try {
+        element = await this.getElementAtPoint(event.x, event.y, event.hwnd);
+      } catch { /* ignore */ }
+    }
 
     return {
       id: crypto.randomUUID(),
@@ -183,23 +224,22 @@ class GlobalListener {
    * 构建动作
    */
   private buildAction(event: GlobalInputEvent): UnifiedAction {
-    switch (event.event_type) {
-      case 'mouse_click':
+    const evtType = event.event_type || (event as any).type || '';
+    switch (evtType) {
+      case 'mouse_down': {
+        // 右键 → right_click
+        if ((event as any).button === 2) {
+          return { type: 'right_click', target: { coordinate: { x: event.x, y: event.y } } };
+        }
         return {
-          type: 'click',
-          target: { coordinate: { x: event.x, y: event.y } },
-          params: { modifiers: event.modifiers },
-        };
-
-      case 'mouse_double_click':
-        return {
-          type: 'double_click',
+          type: 'mouse_down',
           target: { coordinate: { x: event.x, y: event.y } },
         };
+      }
 
-      case 'mouse_right_click':
+      case 'mouse_up':
         return {
-          type: 'right_click',
+          type: 'mouse_up',
           target: { coordinate: { x: event.x, y: event.y } },
         };
 
@@ -237,7 +277,18 @@ class GlobalListener {
         };
 
       case 'key_down': {
-        // Combine modifiers + key into a single combo string (e.g. "Alt+a")
+        // 修饰键本身（Ctrl/Shift/Alt/Win）不被当作 hotkey 的一部分
+        // 它们作为独立的 key_down/key_up 事件记录，构成"按住修饰键→操作→释放"的动作链
+        if (MODIFIER_KEY_SET.has(event.key || '')) {
+          return {
+            type: 'key_down',
+            params: {
+              key: event.key,
+              modifiers: event.modifiers,
+            },
+          };
+        }
+        // 普通键：如果有修饰键按下，组合成 hotkey（如 "Ctrl+c"）
         const combo = event.modifiers.length > 0
           ? [...event.modifiers, event.key].join('+')
           : event.key;
@@ -250,7 +301,17 @@ class GlobalListener {
         };
       }
 
-      case 'key_up':
+      case 'key_up': {
+        // 修饰键释放：保持 key_up 类型
+        if (MODIFIER_KEY_SET.has(event.key || '')) {
+          return {
+            type: 'key_up',
+            params: {
+              key: event.key,
+              modifiers: event.modifiers,
+            },
+          };
+        }
         return {
           type: 'key_up',
           params: {
@@ -258,9 +319,25 @@ class GlobalListener {
             modifiers: event.modifiers,
           },
         };
+      }
 
       default:
         return { type: event.event_type as UnifiedAction['type'] };
+    }
+  }
+
+  /**
+   * 获取指定坐标的元素（带超时）
+   */
+  private async getScreenSize(): Promise<{ width: number; height: number }> {
+    if (this.cachedScreenSize) return this.cachedScreenSize;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await invoke<{ width: number; height: number }>('get_screen_size');
+      this.cachedScreenSize = result;
+      return result;
+    } catch {
+      return { width: window.screen.width, height: window.screen.height };
     }
   }
 

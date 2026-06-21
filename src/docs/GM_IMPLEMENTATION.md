@@ -2,7 +2,7 @@
 
 ## 目标
 
-在 OpenPaw 系统内内置一个 GM 角色 AI，负责：
+在 Handy 系统内内置一个 GM 角色 AI，负责：
 - **监控**整个项目的进展
 - **拆解**用户模糊目标为可执行子任务
 - **调度**现有自动化 agent（Desktop/Web）执行具体操作
@@ -133,7 +133,7 @@ class GMAgent {
 在 `src/config/system-prompts.json` 中新增 `gm` 条目：
 
 ```
-You are an AI project manager (GM) for the OpenPaw automation system.
+You are an AI project manager (GM) for the Handy automation system.
 Your goal is: {goal}
 
 You have access to these tools:

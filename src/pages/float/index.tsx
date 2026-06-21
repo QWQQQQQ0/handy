@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { GripHorizontal, X, Minus, MessageSquare, Wrench, Eye, Circle, BookOpen, Cpu, Link, ImageIcon, Trash2, Sparkles, Settings } from 'lucide-react';
-import { Switch } from '@/components/ui/switch';
+import { GripHorizontal, X, Minus, MessageSquare, Wrench, Eye, Circle, BookOpen, Cpu, Link, ImageIcon, Trash2, Sparkles, Settings, Globe, LoaderCircle } from 'lucide-react';
 import { ToolMode } from '@/stores/chat-store';
 import { useSettingsStore } from '@/stores/settings-store';
 import { getBuiltinSkill, getBuiltinExecutor, initBuiltinExecutor } from '@/skills/builtin-executor';
@@ -15,7 +14,33 @@ import TaskMode from './task-mode';
 import WatcherMode from './watcher-mode';
 import LearnMode from './learn-mode';
 
+// 初始化全局状态管理器（浮窗也需要，因为是独立的 JS 上下文）
+import { globalState } from '@/services/global-state';
+
 export default function FloatPage() {
+  // ── 主题支持 ──
+  const themeMode = useSettingsStore((s) => s.themeMode);
+
+  useEffect(() => {
+    const root = document.documentElement;
+
+    if (themeMode === 'dark') {
+      root.classList.add('dark');
+    } else if (themeMode === 'light') {
+      root.classList.remove('dark');
+    } else {
+      // system
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const apply = () => {
+        if (mq.matches) root.classList.add('dark');
+        else root.classList.remove('dark');
+      };
+      apply();
+      mq.addEventListener('change', apply);
+      return () => mq.removeEventListener('change', apply);
+    }
+  }, [themeMode]);
+
   // ── Shared state ──
   const [mode, setMode] = useState<FloatMode>(() => readLocal('float_mode', 'chat'));
   const [sendToModel, setSendToModel] = useState(() => readLocal('float_send_to_model', true));
@@ -52,6 +77,41 @@ export default function FloatPage() {
 
   // ── Minimized state ──
   const [isMinimized, setIsMinimized] = useState(false);
+
+  // ── Browser launch state ──
+  const [browserLaunching, setBrowserLaunching] = useState(false);
+  const [browserLaunched, setBrowserLaunched] = useState(false);
+  const [extensionConnected, setExtensionConnected] = useState(false);
+
+  const handleLaunchBrowser = useCallback(async () => {
+    if (browserLaunching) return;
+    setBrowserLaunching(true);
+    try {
+      const { desktopService } = await import('@/services/desktop-service');
+      await desktopService.webPwLaunchBrowser('msedge');
+      setBrowserLaunched(true);
+    } catch (e) {
+      console.error('[float] browser launch failed:', e);
+    } finally {
+      setBrowserLaunching(false);
+    }
+  }, [browserLaunching]);
+
+  // Poll extension connection status
+  useEffect(() => {
+    let mounted = true;
+    const checkExtension = async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const result = await invoke<{ connected: boolean; url?: string }>('get_extension_status');
+        if (mounted) setExtensionConnected(result.connected);
+      } catch { /* ignore */ }
+    };
+    // Check immediately, then every 5 seconds
+    checkExtension();
+    const interval = setInterval(checkExtension, 5000);
+    return () => { mounted = false; clearInterval(interval); };
+  }, []);
 
   // ── Settings popover ──
   const [showSettings, setShowSettings] = useState(false);
@@ -172,7 +232,7 @@ export default function FloatPage() {
           {isAutomating && (
             <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
           )}
-          <span className="text-[11px] text-zinc-600 dark:text-zinc-400">{getMinimizedStatusText() || 'OpenPaw'}</span>
+          <span className="text-[11px] text-zinc-600 dark:text-zinc-400">{getMinimizedStatusText() || 'Handy'}</span>
           <button
             onClick={(e) => { e.stopPropagation(); setIsMinimized(false); }}
             className="p-0.5 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-500"
@@ -191,7 +251,7 @@ export default function FloatPage() {
       >
         <div className="flex items-center gap-2">
           <GripHorizontal size={14} className="text-zinc-400" />
-          <span className="text-[12px] font-semibold text-zinc-600 dark:text-zinc-400">OpenPaw</span>
+          <span className="text-[12px] font-semibold text-zinc-600 dark:text-zinc-400">Handy</span>
           {(learningProgress.status === 'learning' || learningProgress.status === 'paused') && (
             <div className={`w-2 h-2 rounded-full ${
               learningProgress.status === 'learning' ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'
@@ -233,28 +293,46 @@ export default function FloatPage() {
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-0.5 shrink-0">
           {mode === 'chat' && (
             <button
               onClick={() => chatModeRef.current?.clearMessages()}
-              className="p-0.5 rounded text-zinc-400 hover:text-red-500 transition-colors"
+              className="p-1 rounded text-zinc-400 hover:text-red-500 transition-colors"
               title="Clear context"
             >
               <Trash2 size={12} />
             </button>
           )}
-          <div className="flex items-center gap-0.5" title={noSystemPrompt ? 'System Prompt: OFF' : 'System Prompt: ON'}>
-            <Cpu size={9} className={noSystemPrompt ? 'text-zinc-400' : 'text-blue-500'} />
-            <Switch checked={!noSystemPrompt} onChange={(v) => persistNoSystemPrompt(!v)} />
-          </div>
-          <div className="flex items-center gap-0.5" title={sendToModel ? 'Model: ON' : 'Model: OFF'}>
-            <Link size={9} className={sendToModel ? 'text-blue-500' : 'text-zinc-400'} />
-            <Switch checked={sendToModel} onChange={persistSendToModel} />
-          </div>
-          <div className="flex items-center gap-0.5" title={allowImagePaste ? 'Image: ON' : 'Image: OFF'}>
-            <ImageIcon size={9} className={allowImagePaste ? 'text-blue-500' : 'text-zinc-400'} />
-            <Switch checked={allowImagePaste} onChange={persistAllowImagePaste} />
-          </div>
+          <button
+            onClick={() => persistNoSystemPrompt(!noSystemPrompt)}
+            className={`p-1 rounded transition-colors ${noSystemPrompt ? 'text-zinc-400 hover:text-zinc-500' : 'text-blue-500 hover:text-blue-400'}`}
+            title={noSystemPrompt ? 'System Prompt: OFF' : 'System Prompt: ON'}
+          >
+            <Cpu size={12} />
+          </button>
+          <button
+            onClick={() => persistSendToModel(!sendToModel)}
+            className={`p-1 rounded transition-colors ${sendToModel ? 'text-blue-500 hover:text-blue-400' : 'text-zinc-400 hover:text-zinc-500'}`}
+            title={sendToModel ? 'Model: ON' : 'Model: OFF'}
+          >
+            <Link size={12} />
+          </button>
+          <button
+            onClick={() => persistAllowImagePaste(!allowImagePaste)}
+            className={`p-1 rounded transition-colors ${allowImagePaste ? 'text-blue-500 hover:text-blue-400' : 'text-zinc-400 hover:text-zinc-500'}`}
+            title={allowImagePaste ? 'Image: ON' : 'Image: OFF'}
+          >
+            <ImageIcon size={12} />
+          </button>
+          <button
+            onClick={handleLaunchBrowser}
+            className={`p-1 rounded transition-colors ${
+              extensionConnected || browserLaunched ? 'text-green-500 hover:text-green-400' : browserLaunching ? 'text-blue-400' : 'text-zinc-400 hover:text-zinc-500'
+            }`}
+            title={extensionConnected ? 'Extension connected' : browserLaunched ? 'Browser launched' : 'Launch browser with extension'}
+          >
+            {browserLaunching ? <LoaderCircle size={12} className="animate-spin" /> : <Globe size={12} />}
+          </button>
         </div>
       </div>
 

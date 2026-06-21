@@ -16,6 +16,8 @@ usage: |
   5. **Iterate code**: iterate_code({task, code, language, max_iterations?}) — auto-fix errors up to 3 iterations
   6. **Save to registry**: save_code({name, code, language, description?, tags?}) — persist for reuse
   7. **Search registry**: list_code({search?, language?, tag?}) — find saved code snippets
+  8. **Run shell command**: run_command({command, cwd?, timeout_ms?}) — execute any CLI tool (npm, git, python, etc.)
+  9. **Search files**: search_files({pattern, path?, glob?, case_sensitive?, max_results?}) — grep-like content search
 
   ## Execution Environment
 
@@ -35,6 +37,8 @@ usage_cn: |
   5. **迭代代码**：iterate_code({task, code, language, max_iterations?}) — 自动修复错误（最多 3 次）
   6. **保存到注册表**：save_code({name, code, language, description?, tags?}) — 持久化以供重用
   7. **搜索注册表**：list_code({search?, language?, tag?}) — 查找已保存的代码片段
+  8. **执行命令**：run_command({command, cwd?, timeout_ms?}) — 执行任意 CLI 工具（npm、git、python 等）
+  9. **搜索文件**：search_files({pattern, path?, glob?, case_sensitive?, max_results?}) — 类 grep 内容搜索
 
   ## 执行环境
 
@@ -52,6 +56,19 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
 
 ```json
 [
+  {
+    "name": "generate_project",
+    "description": "Generate a complete multi-file project using the multi-agent pipeline (Architect → Developer → Reviewer → Integrator). Use this for complex tasks that require multiple files, architectural decisions, or a full project scaffold. For simple single-file code generation, use generate_code instead.",
+    "description_cn": "使用多 Agent 流水线（架构师→开发者→审查员→集成者）生成完整的多文件项目。适用于需要多个文件、架构决策或完整项目脚手架的复杂任务。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "request": { "type": "string", "description": "Detailed description of what to build. Be specific about features, tech stack, and requirements." },
+        "project_name": { "type": "string", "description": "Project name (auto-generated from request if omitted)" }
+      },
+      "required": ["request"]
+    }
+  },
   {
     "name": "write_file",
     "description": "Write code content to a file in the project directory",
@@ -74,15 +91,23 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
   },
   {
     "name": "read_file",
-    "description": "Read file content from the project directory",
+    "description": "Read file content. For large files, use offset/limit to read specific line ranges. Returns total_line_count so you can plan further reads.",
     "name_cn": "读取文件",
-    "description_cn": "从项目目录读取文件内容",
+    "description_cn": "读取文件内容。大文件请用 offset/limit 分页读取，返回 total_line_count 便于规划后续读取。",
     "parameters": {
       "type": "object",
       "properties": {
         "file_path": {
           "type": "string",
           "description": "Relative file path within the project"
+        },
+        "offset": {
+          "type": "number",
+          "description": "Start line number (0-based, inclusive). Default 0."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max number of lines to return. Default 2000."
         }
       },
       "required": ["file_path"]
@@ -225,6 +250,53 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
           "description": "Optional tag filter"
         }
       }
+    }
+  },
+  {
+    "name": "run_command",
+    "description": "Execute a shell command (cmd.exe on Windows, sh on Linux/Mac) and return stdout, stderr, and exit code.",
+    "name_cn": "执行命令",
+    "description_cn": "执行 shell 命令，返回 stdout、stderr 和退出码",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string", "description": "Shell command to execute" },
+        "cwd": { "type": "string", "description": "Working directory (optional)" },
+        "timeout_ms": { "type": "number", "description": "Timeout in milliseconds (default 30000)" }
+      },
+      "required": ["command"]
+    }
+  },
+  {
+    "name": "search_files",
+    "description": "Search file contents by regex pattern (like grep). Returns matching file paths, line numbers, and surrounding context.",
+    "name_cn": "搜索文件",
+    "description_cn": "按正则表达式搜索文件内容（类似 grep），返回匹配的文件路径、行号和上下文。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string", "description": "Regex pattern to search for" },
+        "path": { "type": "string", "description": "Root directory (default: current)" },
+        "glob": { "type": "string", "description": "File filter glob (e.g. \"*.ts\")" },
+        "case_sensitive": { "type": "boolean", "description": "Case sensitive (default false)" },
+        "max_results": { "type": "number", "description": "Max results (default 100)" },
+        "context_lines": { "type": "number", "description": "Number of context lines before/after each match (default 0)" }
+      },
+      "required": ["pattern"]
+    }
+  },
+  {
+    "name": "glob",
+    "description": "Find files matching a glob pattern (e.g. \"**/*.ts\", \"src/**/*.test.*\"). Returns matching file paths sorted by modification time.",
+    "name_cn": "文件名匹配",
+    "description_cn": "按 glob 模式查找文件（如 \"**/*.ts\"），返回匹配的文件路径（按修改时间排序）。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string", "description": "Glob pattern (e.g. \"**/*.tsx\", \"src/**/README*\")" },
+        "path": { "type": "string", "description": "Directory to search in (default: current directory)" }
+      },
+      "required": ["pattern"]
     }
   }
 ]

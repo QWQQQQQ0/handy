@@ -235,6 +235,16 @@ function EventItem({
           {getActionDescription(event)}
         </span>
 
+        {/* 剪贴板内容预览 */}
+        {event.context.clipboardContent && (
+          <span
+            className="px-1 py-0.5 rounded text-[9px] bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400 max-w-[80px] truncate shrink-0"
+            title={event.context.clipboardContent}
+          >
+            📋 {event.context.clipboardContent}
+          </span>
+        )}
+
         {/* 标签 */}
         {event.tags && event.tags.length > 0 && (
           <div className="flex gap-1 shrink-0">
@@ -340,28 +350,26 @@ function EventItem({
             )}
 
             {/* 坐标信息 */}
-            {event.action.type === 'drag' && event.action.params?.start_x !== undefined ? (
-              <div className="mb-2">
-                <div className="font-medium text-zinc-600 dark:text-zinc-400 mb-1">
-                  拖动坐标
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  <span className="text-zinc-500">起点:</span>
-                  <span>({event.action.params.start_x}, {event.action.params.start_y})</span>
-                  <span className="text-zinc-500">终点:</span>
-                  <span>({event.action.params.end_x}, {event.action.params.end_y})</span>
-                </div>
+            <div className="mb-2">
+              <div className="font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                坐标
               </div>
-            ) : event.action.target?.coordinate && (
-              <div className="mb-2">
-                <div className="font-medium text-zinc-600 dark:text-zinc-400 mb-1">
-                  坐标
-                </div>
-                <span>
-                  ({event.action.target.coordinate.x}, {event.action.target.coordinate.y})
-                </span>
+              <div className="grid grid-cols-2 gap-1">
+                {event.action.type === 'drag' && event.action.params?.start_x !== undefined ? (
+                  <>
+                    <span className="text-zinc-500">起点:</span>
+                    <span>({event.action.params.start_x}, {event.action.params.start_y})</span>
+                    <span className="text-zinc-500">终点:</span>
+                    <span>({event.action.params.end_x}, {event.action.params.end_y})</span>
+                  </>
+                ) : event.action.target?.coordinate ? (
+                  <>
+                    <span className="text-zinc-500">全局坐标:</span>
+                    <span>({event.action.target.coordinate.x}, {event.action.target.coordinate.y})</span>
+                  </>
+                ) : null}
               </div>
-            )}
+            </div>
 
             {/* 上下文信息 */}
             <div>
@@ -373,8 +381,71 @@ function EventItem({
                 <span className="truncate" title={event.context.windowTitle || '(未知)'}>{event.context.windowTitle || '(未知)'}</span>
                 <span className="text-zinc-500">平台:</span>
                 <span>{event.context.platform || '(未知)'}</span>
+                {event.context.clipboardContent && (
+                  <>
+                    <span className="text-zinc-500">剪贴板:</span>
+                    <span className="truncate text-emerald-600 dark:text-emerald-400" title={event.context.clipboardContent}>
+                      {event.context.clipboardContent}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
+
+            {/* 窗口坐标详情 */}
+            {event.context.windowRect && (
+              <div className="mt-2">
+                <div className="font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                  窗口信息
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <span className="text-zinc-500">窗口位置:</span>
+                  <span>({(event.context.windowRect as any).x}, {(event.context.windowRect as any).y})</span>
+                  <span className="text-zinc-500">可视区域:</span>
+                  <span>{(event.context.windowRect as any).width} × {(event.context.windowRect as any).height}</span>
+                  {event.context.relativeCoord && (
+                    <>
+                      <span className="text-zinc-500">窗口坐标:</span>
+                      <span>({(event.context.relativeCoord as any).x}, {(event.context.relativeCoord as any).y})</span>
+                    </>
+                  )}
+                  {event.context.percentCoord && (
+                    <>
+                      <span className="text-zinc-500">百分比:</span>
+                      <span>{(event.context.percentCoord as any).x}%, {(event.context.percentCoord as any).y}%</span>
+                    </>
+                  )}
+                  {event.context.screenSize && (
+                    <>
+                      <span className="text-zinc-500">屏幕尺寸:</span>
+                      <span>{(event.context.screenSize as any).width} × {(event.context.screenSize as any).height}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 元素 bounds（扩展事件才有） */}
+            {event.context.platform === 'dom' && event.element?.location?.bounds && (
+              <div className="mt-2">
+                <div className="font-medium text-zinc-600 dark:text-zinc-400 mb-1">
+                  元素位置
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <span className="text-zinc-500">位置:</span>
+                  <span>({event.element.location.bounds.x}, {event.element.location.bounds.y})</span>
+                  <span className="text-zinc-500">尺寸:</span>
+                  <span>{event.element.location.bounds.width} × {event.element.location.bounds.height}</span>
+                  {event.element.location.precisePath && (
+                    <>
+                      <span className="text-zinc-500">选择器:</span>
+                      <span className="truncate" title={event.element.location.precisePath}>{event.element.location.precisePath}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
           </div>
         </div>
       )}

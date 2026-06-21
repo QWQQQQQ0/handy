@@ -3,7 +3,7 @@
 
 use super::gdi_utils::{self, encode_bmp_data_url, is_uniform_pixels};
 use windows::Win32::Graphics::Gdi::{BitBlt, GetDC, GetWindowDC, ReleaseDC, SelectObject, SRCCOPY};
-use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, GetWindowRect, SM_CXSCREEN, SM_CYSCREEN};
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, GetWindowRect, IsIconic, ShowWindow, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_MINIMIZE};
 
 // PrintWindow is not exposed by the `windows` crate; declare via raw FFI.
 // PW_RENDERFULLCONTENT = 0x00000002
@@ -40,6 +40,15 @@ pub fn desktop_screenshot() -> Result<String, String> {
 #[tauri::command]
 pub fn screenshot_window(hwnd: i64) -> Result<String, String> {
     let win_hwnd = windows::Win32::Foundation::HWND(hwnd as isize as *mut std::ffi::c_void);
+
+    // If window is minimized, restore it before capturing
+    let was_minimized = unsafe { IsIconic(win_hwnd) }.as_bool();
+    if was_minimized {
+        eprintln!("[screenshot] window is minimized, restoring before capture");
+        unsafe { let _ = ShowWindow(win_hwnd, SW_RESTORE); }
+        // Wait for the window to actually render
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
 
     // Get window rect
     let mut rect = windows::Win32::Foundation::RECT::default();
@@ -95,6 +104,12 @@ pub fn screenshot_window(hwnd: i64) -> Result<String, String> {
         }
     }
 
+    // If we restored a minimized window, minimize it back
+    if was_minimized {
+        eprintln!("[screenshot] re-minimizing window after capture");
+        unsafe { let _ = ShowWindow(win_hwnd, SW_MINIMIZE); }
+    }
+
     Ok(encode_bmp_data_url(&pixels, width, height))
 }
 
@@ -104,6 +119,14 @@ pub fn screenshot_window(hwnd: i64) -> Result<String, String> {
 #[tauri::command]
 pub fn screenshot_window_region(hwnd: i64, region_x: i32, region_y: i32, region_w: i32, region_h: i32) -> Result<String, String> {
     let win_hwnd = windows::Win32::Foundation::HWND(hwnd as isize as *mut std::ffi::c_void);
+
+    // If window is minimized, restore it before capturing
+    let was_minimized = unsafe { IsIconic(win_hwnd) }.as_bool();
+    if was_minimized {
+        eprintln!("[screenshot] window is minimized, restoring before capture");
+        unsafe { let _ = ShowWindow(win_hwnd, SW_RESTORE); }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
 
     // Get window rect
     let mut rect = windows::Win32::Foundation::RECT::default();
@@ -166,6 +189,11 @@ pub fn screenshot_window_region(hwnd: i64, region_x: i32, region_y: i32, region_
             for i in (0..fallback_pixels.len()).step_by(4) {
                 fallback_pixels[i + 3] = 255;
             }
+            // If we restored a minimized window, minimize it back before early return
+            if was_minimized {
+                eprintln!("[screenshot] re-minimizing window after capture (fallback path)");
+                unsafe { let _ = ShowWindow(win_hwnd, SW_MINIMIZE); }
+            }
             let result = gdi_utils::encode_jpeg_data_url(&fallback_pixels, rw, rh, 80);
             return Ok(result);
         }
@@ -184,6 +212,24 @@ pub fn screenshot_window_region(hwnd: i64, region_x: i32, region_y: i32, region_
         }
     }
 
+    // If we restored a minimized window, minimize it back
+    if was_minimized {
+        eprintln!("[screenshot] re-minimizing window after capture");
+        unsafe { let _ = ShowWindow(win_hwnd, SW_MINIMIZE); }
+    }
+
     let result = gdi_utils::encode_jpeg_data_url(&cropped, rw, rh, 80);
     Ok(result)
+}
+
+/// 获取物理屏幕尺寸（主显示器，不受 DPI 缩放影响）
+#[tauri::command]
+pub fn get_screen_size() -> Result<serde_json::Value, String> {
+    let (width, height) = unsafe {
+        (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN))
+    };
+    Ok(serde_json::json!({
+        "width": width,
+        "height": height,
+    }))
 }

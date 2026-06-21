@@ -5,6 +5,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { Monitor, Camera, Play, StopCircle, Wrench, CheckCircle, XCircle } from 'lucide-react';
 import { useT } from '@/i18n/strings';
+import { isMobile } from '@/utils/platform';
 import { desktopService, type WindowInfo } from '@/services/desktop-service';
 
 interface ActionLog {
@@ -64,6 +65,7 @@ export default function DesktopPage() {
   const handleStartAutomation = useCallback(async () => {
     const goal = goalRef.current?.value.trim();
     if (!goal || isOpening) return;
+    if (isMobile()) return; // Mobile doesn't support multi-window float
 
     setIsOpening(true);
     try {
@@ -73,7 +75,7 @@ export default function DesktopPage() {
       if (!win) {
         win = new WebviewWindow('float', {
           url: '/float',
-          title: 'OpenPaw Assistant',
+          title: 'Handy Assistant',
           width: 360,
           height: 480,
           decorations: false,

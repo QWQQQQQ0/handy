@@ -20,6 +20,7 @@ import type { CodeLanguage, SandboxConfig, SandboxResult } from './sandbox-types
 import { executeJavaScript } from './sandbox-js';
 import { executeSQL } from './sandbox-sql';
 import { executePython } from './sandbox-python';
+import { executeHTML } from './sandbox-html';
 
 // ---------------------------------------------------------------------------
 // Default config
@@ -74,21 +75,17 @@ export class CodeSandboxService {
   }
 
   /**
-   * HTML sandbox placeholder.
+   * HTML sandbox implementation.
    *
-   * TODO: Implement HTML sandbox (iframe with srcdoc, sandbox attribute).
+   * Creates an isolated HTML document suitable for iframe rendering.
+   * Extracts CSS/JS, sanitizes dangerous patterns, and wraps scripts
+   * in a sandboxed environment with console capture.
    */
   private async _executeHTML(
-    _code: string,
-    _config: SandboxConfig,
+    code: string,
+    config: SandboxConfig,
   ): Promise<SandboxResult> {
-    return {
-      success: false,
-      output: '',
-      error: 'HTML sandbox is not yet implemented',
-      durationMs: 0,
-      truncated: false,
-    };
+    return executeHTML(code, config);
   }
 }
 

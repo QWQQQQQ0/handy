@@ -29,6 +29,8 @@ tauri-plugin-fs = "2"
 tauri-plugin-shell = "2.3.5"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png"] }
+
+[target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 clipboard-win = "5"
 windows = { version = "0.58", features = [

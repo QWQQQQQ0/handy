@@ -1,6 +1,6 @@
-// OpenPaw Service Worker — caches static assets for offline use and PWA installability
+// Handy Service Worker — caches static assets for offline use and PWA installability
 
-const CACHE_NAME = 'openpaw-v2';
+const CACHE_NAME = 'handy-v2';
 
 // Resources to pre-cache on install
 const PRE_CACHE_URLS = [

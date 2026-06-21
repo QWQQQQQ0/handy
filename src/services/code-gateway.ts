@@ -121,12 +121,15 @@ export class CodeGateway {
     try {
       // Step 1: Judge complexity
       const judgment = await this.judgeComplexity(userRequest, llmCaller);
+      console.log(`[CodeGateway] Complexity: ${judgment.complexity} (${judgment.reason})`);
 
       // Step 2: Route
       if (judgment.complexity === 'simple') {
+        console.log('[CodeGateway] → Simple path (single-agent, no task tree)');
         return await this.handleSimple(userRequest, projectName, llmCaller);
       }
 
+      console.log('[CodeGateway] → Complex path (multi-agent orchestrator)');
       return await this.handleComplex(userRequest, projectName, llmCaller);
     } catch (e) {
       return {

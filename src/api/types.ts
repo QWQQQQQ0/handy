@@ -21,6 +21,12 @@ export enum AgentEndpoint {
   screenAnalysisInterruption = '/api/agent/screen-analysis/interruption',
   desktopAutomation = '/api/agent/desktop-automation',
   desktopAutomationTools = '/api/agent/desktop-automation/tools',
+  runCommand = '/api/agent/run-command',
+  taskDecomposer = '/api/agent/task-decomposer',
+  taskVerifier = '/api/agent/task-verifier',
+  docAgent = '/api/agent/doc-agent',
+  webAgent = '/api/agent/web-agent',
+  codeAgent = '/api/agent/code-agent',
 }
 
 // ── SSE 流式事件 ──
@@ -54,8 +60,8 @@ export type SSEEvent = SSETextEvent | SSEToolsEvent | SSEErrorEvent | SSEReasoni
 // ── Agent 请求/响应 ──
 
 export interface AgentRequestBody {
-  provider: ProviderConfig;
-  apiKey: string;
+  provider?: ProviderConfig;
+  apiKey?: string;
   params: Record<string, unknown>;
 }
 
@@ -139,4 +145,10 @@ export interface DesktopAutomationParams {
   tools?: Record<string, unknown>[];
   goal: string;
   skipCache?: boolean;
+}
+
+export interface RunCommandParams {
+  command: string;
+  cwd?: string;
+  timeout_ms?: number;
 }

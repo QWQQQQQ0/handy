@@ -1,12 +1,12 @@
-# OpenPaw 通用底层原语设计
+# Handy 通用底层原语设计
 
-> 目标：让 OpenPaw AI 拥有类似 Claude Code 的自由度 —— 能执行任意 shell 命令、读写文件、搜索文件系统，而非仅限预定义的 UI 自动化工具。
+> 目标：让 Handy AI 拥有类似 Claude Code 的自由度 —— 能执行任意 shell 命令、读写文件、搜索文件系统，而非仅限预定义的 UI 自动化工具。
 
 ## 1. 动机
 
 ### 当前局限
 
-OpenPaw 的 AI 只能调用 Skill 系统中预定义的具名工具（~40个），每个工具只做一件特定的事：
+Handy 的 AI 只能调用 Skill 系统中预定义的具名工具（~40个），每个工具只做一件特定的事：
 
 ```
 desktop_click(x, y)     → 只做坐标点击
@@ -37,8 +37,8 @@ Claude Code 只用 6 个通用原语就能操作几乎所有电脑数据：
 ### 设计哲学
 
 ```
-OpenPaw 当前:  AI → 从菜单选菜 → 吃到固定的菜
-OpenPaw 目标:  AI → 有刀和锅 → 自己做什么都行
+Handy 当前:  AI → 从菜单选菜 → 吃到固定的菜
+Handy 目标:  AI → 有刀和锅 → 自己做什么都行
 
 保留现有 UI 工具作为"预制菜"(快捷方式)，新增通用原语作为"生食材"(无限可能)。
 ```
@@ -528,6 +528,6 @@ shell_block_destructive: 1      -- 是否阻止不可逆操作（默认是）
 ## 10. 参考
 
 - Claude Code 工具定义：在其系统内部，Bash/Read/Write/Edit/Glob/Grep 为 6 个核心工具
-- OpenPaw Skill 系统：`src/skills/skill.ts` (Skill 接口), `src/skills/executor.ts` (SkillExecutor)
+- Handy Skill 系统：`src/skills/skill.ts` (Skill 接口), `src/skills/executor.ts` (SkillExecutor)
 - 现有技能定义格式：`public/skills/desktop_screen.md`
 - System prompt 新增条目：`src/config/system-prompts.json` → `desktopAutomationFreeform`

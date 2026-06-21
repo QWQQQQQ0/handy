@@ -180,6 +180,30 @@ pub fn get_window_bounds(hwnd: i64) -> Result<WindowBounds, String> {
     }
 }
 
+/// 获取当前活动窗口的物理位置和尺寸
+#[tauri::command]
+pub fn get_foreground_window_bounds() -> Result<WindowBounds, String> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return Err("No foreground window".into());
+        }
+        let mut rect = Default::default();
+        let result = GetWindowRect(hwnd, &mut rect);
+        if result.is_err() {
+            return Err("GetWindowRect failed".into());
+        }
+        Ok(WindowBounds {
+            x: rect.left,
+            y: rect.top,
+            width: rect.right - rect.left,
+            height: rect.bottom - rect.top,
+        })
+    }
+}
+
 #[tauri::command]
 pub fn desktop_minimize_window(hwnd: i64) -> Result<bool, String> {
     let hwnd = HWND(hwnd as isize as *mut std::ffi::c_void);

@@ -167,6 +167,7 @@ export interface LoopContext {
   currentIndex: number;
   variable: string;
   bodyStartIndex: number;
+  startIndex: number;
 }
 
 /**

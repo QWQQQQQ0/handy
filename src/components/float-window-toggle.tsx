@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { MonitorUp } from 'lucide-react';
-import { isTauri } from '@/utils/platform';
+import { isTauri, isMobile } from '@/utils/platform';
 
 export function FloatWindowToggle() {
   const [mounted, setMounted] = useState(false);
@@ -11,9 +11,9 @@ export function FloatWindowToggle() {
   // Defer render until after mount to avoid SSR hydration mismatch
   useEffect(() => { setMounted(true); }, []);
 
-  // Check if float window already exists on mount
+  // Check if float window already exists on mount (desktop only)
   useEffect(() => {
-    if (!mounted || !isTauri()) return;
+    if (!mounted || !isTauri() || isMobile()) return;
     let cancelled = false;
     (async () => {
       try {
@@ -29,7 +29,7 @@ export function FloatWindowToggle() {
   }, [mounted]);
 
   const handleToggle = useCallback(async () => {
-    if (!isTauri()) return;
+    if (!isTauri() || isMobile()) return;
 
     try {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
@@ -58,7 +58,7 @@ export function FloatWindowToggle() {
       // Create new float window
       const win = new WebviewWindow('float', {
         url: '/float',
-        title: 'OpenPaw Assistant',
+        title: 'Handy Assistant',
         width: 360,
         height: 480,
         decorations: false,
@@ -103,9 +103,9 @@ export function FloatWindowToggle() {
     }
   }, [isOpen]);
 
-  // Listen for tray toggle event
+  // Listen for tray toggle event (desktop only)
   useEffect(() => {
-    if (!mounted || !isTauri()) return;
+    if (!mounted || !isTauri() || isMobile()) return;
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
@@ -119,8 +119,15 @@ export function FloatWindowToggle() {
     return () => { unlisten?.(); };
   }, [mounted, handleToggle]);
 
-  // Return null during SSR and first render to match server HTML
-  if (!mounted || !isTauri()) return null;
+  // Auto-create float window on mount (desktop only — mobile doesn't support multi-window well)
+  useEffect(() => {
+    if (!mounted || !isTauri() || isMobile()) return;
+    if (!isOpen) handleToggle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted]);
+
+  // Return null during SSR, first render, or on mobile (float window not supported)
+  if (!mounted || !isTauri() || isMobile()) return null;
 
   return (
     <button

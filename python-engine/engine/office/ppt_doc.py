@@ -288,7 +288,7 @@ if __name__ == "__main__":
 - Q2：用户测试与反馈
 - Q3：正式发布
 """
-    pptx_bytes = gen.generate_from_markdown("项目介绍", md, author="OpenPaw")
+    pptx_bytes = gen.generate_from_markdown("项目介绍", md, author="Handy")
     with open("test_output.pptx", "wb") as f:
         f.write(pptx_bytes)
     print("Generated test_output.pptx")

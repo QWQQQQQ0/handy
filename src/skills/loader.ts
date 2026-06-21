@@ -81,7 +81,7 @@ export function parseSkillMarkdown(md: string): SkillConfig {
   };
 }
 
-const skillFiles = ['desktop_screen', 'desktop_uia', 'web_screen', 'phone_screen', 'app_builder', 'office_doc'];
+const skillFiles = ['desktop_screen', 'desktop_uia', 'web_screen', 'phone_screen', 'app_builder', 'office_doc', 'code_tools'];
 
 export async function loadSkills(): Promise<SkillConfig[]> {
   const skills: SkillConfig[] = [];
@@ -91,8 +91,8 @@ export async function loadSkills(): Promise<SkillConfig[]> {
       if (!res.ok) continue;
       const text = await res.text();
       skills.push(parseSkillMarkdown(text));
-    } catch {
-      console.debug(`Failed to load skill: ${name}`);
+    } catch (err) {
+      console.warn(`Failed to load skill: ${name}`, err);
     }
   }
   return skills;

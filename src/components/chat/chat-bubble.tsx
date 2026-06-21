@@ -3,7 +3,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronDown, ChevronUp, Loader2, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, AlertCircle, Music } from 'lucide-react';
 import type { ChatMessage } from '@/types/message';
 import { MarkdownBody } from './markdown-body';
 import { StreamingText } from './streaming-text';
@@ -114,6 +114,16 @@ function UserBubble({ message }: { message: ChatMessage }) {
                 </div>
               );
             }
+            if ('type' in part && part.type === 'input_audio' && 'input_audio' in part && part.input_audio) {
+              const audio = part.input_audio as { data: string };
+              return (
+                <div key={i} className="mb-2 last:mb-0">
+                  <audio controls className="w-full max-w-[280px] h-8" src={audio.data}>
+                    <track kind="captions" />
+                  </audio>
+                </div>
+              );
+            }
             if ('type' in part && part.type === 'text' && 'text' in part) {
               return <p key={i} className="text-[14px] leading-relaxed">{part.text as string}</p>;
             }
@@ -186,6 +196,9 @@ function AssistantBubble({ message, userImage }: { message: ChatMessage; userIma
 }
 
 export function ChatBubble({ message, previousMessage }: { message: ChatMessage; previousMessage?: ChatMessage }) {
+  // Hide internal messages (system-injected screenshots)
+  if (message._internal) return null;
+
   if (message.role === 'tool' || (message.role as string) === 'tool_call') {
     return <ToolBubble message={message} />;
   }

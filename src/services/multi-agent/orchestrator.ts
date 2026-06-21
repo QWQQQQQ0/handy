@@ -6,6 +6,8 @@ import type { SplitDecision, AgentType } from './types';
 import type { TaskTreeRow } from '@/db/types';
 import type { IModelService } from '@/interfaces/model-service';
 import type { ProviderConfig } from '@/types/provider';
+import { getDB } from '@/db';
+import { appEvents, APP_EVENTS } from '@/services/app-events';
 
 // ---------------------------------------------------------------------------
 // Orchestrator — top-level entry point for complex code generation tasks
@@ -390,6 +392,8 @@ export class Orchestrator {
 
     // Check if integration was already done
     if (rootTask.status === 'done' && rootTask.agent_type === 'integrator') {
+      // Auto-save project to Apps database
+      await this._saveProjectToApps(projectName, allFiles);
       return {
         success: true,
         taskId: rootTask.id,
@@ -406,10 +410,83 @@ export class Orchestrator {
       maxTurns: 10,
     });
 
+    const outputFiles = result.outputFiles.length > 0 ? result.outputFiles : allFiles;
+
+    // Auto-save project to Apps database on success
+    if (result.success) {
+      await this._saveProjectToApps(projectName, outputFiles);
+    }
+
     return {
       ...result,
-      outputFiles: result.outputFiles.length > 0 ? result.outputFiles : allFiles,
+      outputFiles,
     };
+  }
+
+  /**
+   * Save a completed project to the Apps database for preview.
+   */
+  private async _saveProjectToApps(projectName: string, outputFiles: string[]): Promise<void> {
+    try {
+      // Read file contents from the task tree or file system
+      const files: Record<string, string> = {};
+
+      // Try to read files from the task tree
+      const allTasks = await this.taskDB.getByProject(projectName);
+      for (const task of allTasks) {
+        if (task.output_files_json) {
+          try {
+            const taskFiles = JSON.parse(task.output_files_json) as string[];
+            // File contents are stored in the agent runner's memory cache
+            // We'll need to reconstruct from the task context
+          } catch {
+            // Skip
+          }
+        }
+      }
+
+      // For now, create a simple HTML entry point that references the project
+      // The actual file contents will be loaded from the agent runner's cache
+      const entryFile = outputFiles.find(f => f.endsWith('index.html')) ||
+                        outputFiles.find(f => f.endsWith('.html')) ||
+                        outputFiles[0];
+
+      // Create a placeholder entry - actual implementation would read from file cache
+      const db = await getDB();
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+
+      // Check if project already exists
+      const existing = await db.query<{ id: string }>(
+        'SELECT id FROM savedApps WHERE name = ? AND project_type = ?',
+        [projectName, 'multi']
+      );
+
+      if (existing.length > 0) {
+        // Update existing project
+        await db.execute(
+          'UPDATE savedApps SET files_json = ?, entry_file = ?, updated_at = ? WHERE id = ?',
+          [JSON.stringify(outputFiles), entryFile, now, existing[0].id]
+        );
+      } else {
+        // Insert new project
+        await db.execute(
+          `INSERT INTO savedApps (id, name, code, description, project_type, files_json, entry_file, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, projectName, '', `Multi-file project with ${outputFiles.length} files`, 'multi', JSON.stringify(outputFiles), entryFile, now, now]
+        );
+      }
+
+      // Emit event for real-time preview
+      appEvents.emit(APP_EVENTS.APP_CREATED, {
+        id: existing.length > 0 ? existing[0].id : id,
+        name: projectName,
+        code: '',
+        created_at: now,
+      });
+    } catch (err) {
+      console.error('[Orchestrator] Failed to save project to apps:', err);
+    }
   }
 
   // ---- Private: Helpers --------------------------------------------------

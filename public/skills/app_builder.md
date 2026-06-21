@@ -4,8 +4,8 @@ name: App Builder
 name_cn: 应用构建器
 category: Application
 category_cn: 应用程序
-description: Save, list, update, and delete generated applications. Generated apps run in a WebView with access to native device capabilities via the window.OpenPaw.call() JavaScript API.
-description_cn: 保存、列出、更新和删除生成的应用。生成的应用在 WebView 中运行，可通过 window.OpenPaw.call() JavaScript API 访问原生设备能力。
+description: Save, list, update, and delete generated applications. Generated apps run in a WebView with access to native device capabilities via the window.Handy.call() JavaScript API.
+description_cn: 保存、列出、更新和删除生成的应用。生成的应用在 WebView 中运行，可通过 window.Handy.call() JavaScript API 访问原生设备能力。
 usage: |
   ## Quick Start
 
@@ -18,7 +18,7 @@ usage: |
   ## Generated App Capabilities
 
   - Runs in a WebView sandbox
-  - Access native APIs via `window.OpenPaw.call(method, params)`
+  - Access native APIs via `window.Handy.call(method, params)`
   - Supports multi-page apps
   - Persistent storage per app
 usage_cn: |
@@ -33,13 +33,13 @@ usage_cn: |
   ## 生成应用的能力
 
   - 在 WebView 沙箱中运行
-  - 通过 `window.OpenPaw.call(method, params)` 访问原生 API
+  - 通过 `window.Handy.call(method, params)` 访问原生 API
   - 支持多页面应用
   - 每个应用独立持久化存储
 ---
 
 Save, list, update, and delete generated applications.
-Generated apps run in a WebView with access to native device capabilities via the window.OpenPaw.call() JavaScript API.
+Generated apps run in a WebView with access to native device capabilities via the window.Handy.call() JavaScript API.
 Match the app complexity to what the user asks for.
 
 ## Tools
@@ -48,9 +48,9 @@ Match the app complexity to what the user asks for.
 [
   {
     "name": "save_app",
-    "description": "Save a new generated application. The code should be complete, working HTML/CSS/JS. Native device capabilities (camera, GPS, storage, notifications, etc.) are available via the global window.OpenPaw.call() JavaScript function. Phone tools (tap, swipe, type, scroll) can be invoked via screen automations. The app uses phone screen monitoring and notifications to keep data fresh. Multi-page support is available. Include all required pages for complex apps. Make sure to use the full capabilities available.",
+    "description": "Save a new generated application. The code should be complete, working HTML/CSS/JS. Native device capabilities (camera, GPS, storage, notifications, etc.) are available via the global window.Handy.call() JavaScript function. Phone tools (tap, swipe, type, scroll) can be invoked via screen automations. The app uses phone screen monitoring and notifications to keep data fresh. Multi-page support is available. Include all required pages for complex apps. Make sure to use the full capabilities available.",
     "name_cn": "保存应用",
-    "description_cn": "保存新生成的应用。代码应为完整可运行的 HTML/CSS/JS。原生设备能力（摄像头、GPS、存储、通知等）可通过 window.OpenPaw.call() JavaScript 函数调用。支持多页面应用，请为复杂应用包含所有必需页面。",
+    "description_cn": "保存新生成的应用。代码应为完整可运行的 HTML/CSS/JS。原生设备能力（摄像头、GPS、存储、通知等）可通过 window.Handy.call() JavaScript 函数调用。支持多页面应用，请为复杂应用包含所有必需页面。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -83,16 +83,17 @@ Match the app complexity to what the user asks for.
   },
   {
     "name": "update_app",
-    "description": "Update an existing application's code.",
+    "description": "Update an existing application's code and/or name.",
     "name_cn": "更新应用",
-    "description_cn": "更新已有应用的代码。",
+    "description_cn": "更新已有应用的代码和/或名称。",
     "parameters": {
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "App ID" },
-        "code": { "type": "string", "description": "New HTML/CSS/JS source code" }
+        "code": { "type": "string", "description": "New HTML/CSS/JS source code (optional, keeps existing if omitted)" },
+        "name": { "type": "string", "description": "New app name (optional, keeps existing if omitted)" }
       },
-      "required": ["id", "code"]
+      "required": ["id"]
     }
   },
   {

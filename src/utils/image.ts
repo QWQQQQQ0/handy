@@ -22,9 +22,19 @@ export function compressImage(
   maxDimension = MAX_DIMENSION,
   quality = JPEG_QUALITY,
 ): Promise<CompressedImage> {
+  console.log('[compressImage] Called with:', {
+    sourcePrefix: source.substring(0, 50),
+    sourceLength: source.length,
+    startsWithData: source.startsWith('data:'),
+    startsWithBmp: source.startsWith('data:image/bmp'),
+    maxDimension,
+    quality,
+  });
+
   return new Promise((resolve, reject) => {
     // Node.js / non-browser: pass through without compression
     if (typeof Image === 'undefined') {
+      console.log('[compressImage] Node.js environment, passing through');
       const dataUrl = source.startsWith('data:')
         ? source
         : `data:image/png;base64,${source}`;
@@ -33,20 +43,28 @@ export function compressImage(
 
     // BMP 格式浏览器不支持 <img> 加载，交给 Rust compress_to_jpeg 处理
     if (source.startsWith('data:image/bmp')) {
+      console.log('[compressImage] BMP format detected, using Rust compress_to_jpeg');
       import('@tauri-apps/api/core').then(({ invoke }) =>
         invoke<{ data_url: string; original_width: number; original_height: number; compressed_width: number; compressed_height: number }>('compress_to_jpeg', {
           imageBmp: source,
           maxDimension,
           quality: Math.round(quality * 100),
         })
-      ).then(r =>
-        resolve({ dataUrl: r.data_url, originalWidth: r.original_width, originalHeight: r.original_height, compressedWidth: r.compressed_width, compressedHeight: r.compressed_height })
-      ).catch(reject);
+      ).then(r => {
+        console.log('[compressImage] Rust compress_to_jpeg success:', {
+          dataUrlLength: r.data_url?.length,
+          originalWidth: r.original_width,
+          originalHeight: r.original_height,
+        });
+        resolve({ dataUrl: r.data_url, originalWidth: r.original_width, originalHeight: r.original_height, compressedWidth: r.compressed_width, compressedHeight: r.compressed_height });
+      }).catch(reject);
       return;
     }
 
+    console.log('[compressImage] Using browser Image() for compression');
     const img = new Image();
     img.onload = () => {
+      console.log('[compressImage] Image loaded:', { width: img.width, height: img.height });
       const origW = img.width;
       const origH = img.height;
 
@@ -69,6 +87,11 @@ export function compressImage(
       ctx.drawImage(img, 0, 0, w, h);
 
       const output = canvas.toDataURL('image/jpeg', quality);
+      console.log('[compressImage] Compression complete:', {
+        originalSize: `${origW}x${origH}`,
+        compressedSize: `${w}x${h}`,
+        outputLength: output.length,
+      });
       resolve({
         dataUrl: output,
         originalWidth: origW,
@@ -77,7 +100,10 @@ export function compressImage(
         compressedHeight: h,
       });
     };
-    img.onerror = () => reject(new Error('Failed to load image for compression'));
+    img.onerror = (e) => {
+      console.error('[compressImage] Image load error:', e);
+      reject(new Error('Failed to load image for compression'));
+    };
 
     // Ensure data URL prefix exists so Image can load it
     if (source.startsWith('data:')) {

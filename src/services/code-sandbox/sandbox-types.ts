@@ -5,6 +5,10 @@ export interface SandboxConfig {
   allowNetwork?: boolean;
   allowDDL?: boolean;
   maxRows?: number;
+  /** For HTML sandbox: allow external resources (images, scripts, styles) */
+  allowExternalResources?: boolean;
+  /** For HTML sandbox: base URL for resolving relative paths */
+  baseUrl?: string;
 }
 
 export interface SandboxResult {
@@ -14,4 +18,8 @@ export interface SandboxResult {
   result?: unknown;
   durationMs: number;
   truncated: boolean;
+  /** For HTML sandbox: sanitized HTML content ready for iframe rendering */
+  htmlContent?: string;
+  /** For HTML sandbox: isolated document with all resources inlined */
+  isolatedDocument?: string;
 }

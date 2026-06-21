@@ -28,20 +28,33 @@ class ScreenshotEngine:
             )
         self._sct = mss.mss()
 
+    def _capture_to_base64(self, img) -> tuple[str, int, int]:
+        """将 mss 截图转换为 base64，及时释放中间缓冲区"""
+        # 直接从 raw 数据创建 PIL Image，避免额外拷贝
+        pil = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
+        # 使用较低质量的 PNG 压缩减少内存
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG", optimize=True, compress_level=6)
+        # 立即释放 PIL Image
+        del pil
+        # 获取 PNG 数据并编码为 base64
+        png_data = buf.getvalue()
+        data_url = "data:image/png;base64," + base64.b64encode(png_data).decode()
+        # 释放缓冲区
+        del buf, png_data
+        return data_url, img.size[0], img.size[1]
+
     def full(self) -> dict[str, Any]:
         """Capture the entire primary monitor."""
         try:
             monitor = self._sct.monitors[1]  # primary
             img = self._sct.grab(monitor)
-            pil = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
-            buf = io.BytesIO()
-            pil.save(buf, format="PNG", optimize=True)
-            data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+            data_url, width, height = self._capture_to_base64(img)
             return {
                 "image_data": data_url,
                 "format": "png",
-                "width": pil.width,
-                "height": pil.height,
+                "width": width,
+                "height": height,
             }
         except Exception:
             return {"image_data": "", "error": traceback.format_exc()}
@@ -51,15 +64,12 @@ class ScreenshotEngine:
         try:
             region = {"left": left, "top": top, "width": width, "height": height}
             img = self._sct.grab(region)
-            pil = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
-            buf = io.BytesIO()
-            pil.save(buf, format="PNG", optimize=True)
-            data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+            data_url, w, h = self._capture_to_base64(img)
             return {
                 "image_data": data_url,
                 "format": "png",
-                "width": pil.width,
-                "height": pil.height,
+                "width": w,
+                "height": h,
                 "region": {"left": left, "top": top, "width": width, "height": height},
             }
         except Exception:

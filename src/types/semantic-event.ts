@@ -37,9 +37,30 @@ export interface EventContext {
   windowHwnd?: number;                 // 窗口句柄 (Windows)
   pageUrl?: string;                    // 页面 URL (Web)
   screenshot?: string;                 // 截图 (base64)
+  clipboardContent?: string;           // 剪贴板内容（复制/粘贴时捕获）
 
   // 平台信息
   platform?: 'dom' | 'uia' | 'accessibility' | 'global' | 'custom';
+
+  // ── 坐标上下文（录制时自动填充） ──
+  windowRect?: {                       // 窗口位置和尺寸
+    x: number;                         // 窗口左上角 X（屏幕坐标）
+    y: number;                         // 窗口左上角 Y（屏幕坐标）
+    width: number;                     // 窗口宽度
+    height: number;                    // 窗口高度
+  };
+  relativeCoord?: {                    // 相对于窗口的坐标
+    x: number;                         // 窗口内 X
+    y: number;                         // 窗口内 Y
+  };
+  percentCoord?: {                     // 窗口内百分比位置
+    x: number;                         // 0~100
+    y: number;                         // 0~100
+  };
+  screenSize?: {                       // 全屏尺寸
+    width: number;
+    height: number;
+  };
 
   // 附加信息
   [key: string]: unknown;
@@ -102,4 +123,26 @@ export interface EventStats {
   tagCounts: Record<string, number>;
   duration: number;                    // 录制时长 (ms)
   averageInterval: number;             // 平均操作间隔 (ms)
+}
+
+/**
+ * 用户手动插入的步骤（录制后、分析前添加）
+ * 可以是已有 skill tool 调用或自定义 LLM 调用
+ */
+export interface ManualStep {
+  id: string;
+  /** 步骤类型 */
+  stepType: 'tool_call' | 'llm_call';
+  /** 插入位置（afterEventId 对应的录制事件之后，undefined 表示最前面） */
+  afterEventId?: string;
+  /** tool_call: 调用的 skill tool */
+  toolName?: string;
+  toolDescription?: string;
+  toolArgs?: Record<string, unknown>;
+  /** llm_call: 自定义提示词 */
+  llmPrompt?: string;
+  /** 人工写的步骤描述 */
+  description: string;
+  /** 该步骤需要的可用 skills（LLM 分析时参考） */
+  requiredTools?: Array<{ name: string; description: string }>;
 }

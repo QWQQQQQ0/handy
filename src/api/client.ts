@@ -18,6 +18,8 @@ const ENDPOINT_PROMPT_KEY: Record<string, keyof typeof systemPrompts> = {
   [AgentEndpoint.desktopAutomationTools]: 'desktopAutomation',
   [AgentEndpoint.codeGeneration]: 'codeGeneration',
   [AgentEndpoint.codeIteration]: 'codeIteration',
+  [AgentEndpoint.docAgent]: 'docAgent',
+  [AgentEndpoint.webAgent]: 'webAutomation',
 };
 
 function injectSystemPrompt(endpoint: string, messages: LLMMessage[], goal?: string): LLMMessage[] {
@@ -93,17 +95,19 @@ export async function* apiStreamCompat(
   apiKey: string,
   params: Record<string, unknown>,
 ): AsyncGenerator<string> {
-  // 前端注入系统提示词
+  // 前端注入系统提示词（noSystemPrompt 时跳过）
   const rawMessages = (params['messages'] as LLMMessage[]) ?? [];
   const goal = params['goal'] as string | undefined;
-  if (rawMessages.length > 0) {
+  const skipPrompt = params['noSystemPrompt'] === true;
+  if (rawMessages.length > 0 && !skipPrompt) {
     params = { ...params, messages: injectSystemPrompt(endpoint, rawMessages, goal) };
   }
   const messages = (params['messages'] as LLMMessage[]) ?? [];
 
-  const skipCache = params['skipCache'] === true;
+  // LLM 缓存已全局禁用（前端 + 后端）
+  // 如需重新启用，将 false 改为 params['skipCache'] !== true
+  const skipCache = true;
 
-  // 前端缓存命中检查（查 openpaw.db，与其他缓存同一数据库）
   if (!skipCache) {
     try {
       const tools = (params['tools'] as Record<string, unknown>[]) ?? [];

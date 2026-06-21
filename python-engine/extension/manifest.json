@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "OpenPaw Web Bridge",
+  "version": "1.0.0",
+  "description": "Bridge between OpenPaw desktop app and web pages",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["stealth.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}

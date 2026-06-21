@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Menu, Terminal, Bug, MessageSquarePlus, Trash2, Plus, MessageCircle } from 'lucide-react';
+import { Menu, Terminal, Bug, MessageSquarePlus, Trash2, Plus, MessageCircle, ShieldCheck, ShieldX, ChevronDown, ChevronUp, Loader2, CheckCircle, XCircle } from 'lucide-react';
 import { useChatStore, ToolMode } from '@/stores/chat-store';
 import { useT, formatRelativeTime } from '@/i18n/strings';
 import { ChatBubble } from '@/components/chat/chat-bubble';
@@ -10,7 +10,112 @@ import { ToolModeBar } from '@/components/chat/tool-mode-bar';
 import { ToolSelectorPanel } from '@/components/chat/tool-selector-panel';
 import { useSettingsStore } from '@/stores/settings-store';
 import { getBuiltinExecutor, initBuiltinExecutor } from '@/skills/builtin-executor';
-import type { MessageContent } from '@/types/message';
+import type { MessageContent, ChatMessage } from '@/types/message';
+
+/** Agent 内部日志折叠组 */
+function AgentLogGroup({ messages: agentMessages }: { messages: ChatMessage[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const startMsg = agentMessages.find((m) => m._isAgentStart);
+  const isRunning = startMsg?.status === 'streaming';
+  const agentType = startMsg?._agentType ?? 'computeruse';
+  const label = { computeruse: '🖥️ 计算机操作', web: '🌐 浏览器', document: '📄 文档', code: '💻 代码' }[agentType] ?? agentType;
+
+  // 统计工具调用
+  const toolCalls = agentMessages.filter((m) => m._toolCallInfo);
+  const toolResults = agentMessages.filter((m) => m.role === 'tool' && m._agentInternal);
+  const successCount = toolResults.filter((m) => typeof m.content === 'string' && m.content.startsWith('✅')).length;
+  const failCount = toolResults.filter((m) => typeof m.content === 'string' && m.content.startsWith('❌')).length;
+
+  return (
+    <div className="mx-3 my-2">
+      {/* 折叠标题 */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium transition-colors ${
+          isRunning
+            ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
+            : failCount > 0
+            ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+            : 'bg-zinc-50 dark:bg-zinc-900/50 text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700'
+        }`}
+      >
+        {isRunning ? (
+          <Loader2 size={14} className="animate-spin" />
+        ) : failCount > 0 ? (
+          <XCircle size={14} />
+        ) : (
+          <CheckCircle size={14} />
+        )}
+        <span className="flex-1 text-left truncate">
+          {(typeof startMsg?.content === 'string' ? startMsg.content : null) ?? `${label} Agent 执行中...`}
+        </span>
+        {toolCalls.length > 0 && (
+          <span className="text-[11px] opacity-70">
+            {successCount}✅ {failCount > 0 && `${failCount}❌`}
+          </span>
+        )}
+        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {/* 折叠内容 */}
+      {expanded && (
+        <div className="mt-1 ml-3 pl-3 border-l-2 border-zinc-200 dark:border-zinc-700 space-y-1.5 py-1">
+          {agentMessages.filter((m) => !m._isAgentStart).map((msg) => {
+            const text = typeof msg.content === 'string' ? msg.content : '';
+
+            // 工具调用信息
+            if (msg._toolCallInfo) {
+              const info = msg._toolCallInfo;
+              return (
+                <div key={msg.id} className="flex items-start gap-2 py-0.5">
+                  <Terminal size={12} className="mt-0.5 text-zinc-400 shrink-0" />
+                  <div className="min-w-0">
+                    <span className="text-[12px] font-mono text-zinc-500 dark:text-zinc-400">
+                      {info.name}
+                    </span>
+                    {info.status === 'running' && (
+                      <span className="ml-1 text-[11px] text-blue-500">运行中...</span>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+
+            // 工具结果
+            if (msg.role === 'tool') {
+              return (
+                <div key={msg.id} className="text-[12px] font-mono text-zinc-500 dark:text-zinc-400">
+                  {text}
+                </div>
+              );
+            }
+
+            // LLM 思考
+            if (msg.role === 'assistant') {
+              return (
+                <div key={msg.id} className="text-[12px] text-zinc-600 dark:text-zinc-400">
+                  {msg.reasoning_content && (
+                    <div className="mb-1 text-[11px] text-amber-600 dark:text-amber-400 italic">
+                      💭 {msg.reasoning_content.substring(0, 150)}{msg.reasoning_content.length > 150 && '...'}
+                    </div>
+                  )}
+                  {text && <div className="whitespace-pre-wrap">{text.substring(0, 300)}{text.length > 300 && '...'}</div>}
+                </div>
+              );
+            }
+
+            // 其他（轮次信息等）
+            return (
+              <div key={msg.id} className="text-[12px] text-zinc-400 dark:text-zinc-500">
+                {text}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ConversationsPanel({
   open,
@@ -203,12 +308,15 @@ export default function ChatPage() {
     error,
     toolMode,
     customTools,
+    awaitingConfirmation,
     sendMessage,
     clearError,
     setToolMode,
     setCustomTools,
     toggleCustomTool,
     loadConversations,
+    confirmToolCall,
+    rejectToolCall,
   } = useChatStore();
   const { favoriteTools, setFavoriteTools } = useSettingsStore();
 
@@ -263,16 +371,21 @@ export default function ChatPage() {
     [sendMessage],
   );
 
-  const allTools = executorReady ? getBuiltinExecutor().allTools : [];
+  const allTools = useMemo(() => executorReady ? getBuiltinExecutor().allTools : [], [executorReady]);
 
   const handleToolModeChange = useCallback(
     (mode: ToolMode) => {
       setToolMode(mode);
       if (mode === ToolMode.custom) {
-        // Single-click custom: open selector panel
+        // Sync customTools with current executor: init if empty, prune stale names if not
+        const currentTools = getBuiltinExecutor().allTools;
+        const currentNames = new Set(currentTools.map((t) => t.name));
         if (customTools.size === 0) {
-          const tools = getBuiltinExecutor().allTools;
-          setCustomTools(new Set(tools.map((t) => t.name)));
+          setCustomTools(new Set(currentTools.map((t) => t.name)));
+        } else {
+          // Remove tool names that no longer exist in the executor
+          const pruned = new Set([...customTools].filter((n) => currentNames.has(n)));
+          if (pruned.size !== customTools.size) setCustomTools(pruned);
         }
         setShowSelectorPanel(true);
       } else {
@@ -369,9 +482,52 @@ export default function ChatPage() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {hasMessages ? (
           <div className="py-2">
-            {messages.map((msg, i) => (
-              <ChatBubble key={msg.id} message={msg} previousMessage={i > 0 ? messages[i - 1] : undefined} />
-            ))}
+            {(() => {
+              // 过滤内部消息（截图等），但保留 Agent 内部消息
+              const visibleMessages = messages.filter((m) => !(m as any)._internal);
+
+              // 将消息分组：连续的 Agent 内部消息分为一组
+              const groups: Array<{ type: 'agent' | 'normal'; messages: ChatMessage[] }> = [];
+              let currentGroup: ChatMessage[] = [];
+              let currentType: 'agent' | 'normal' | null = null;
+
+              for (const msg of visibleMessages) {
+                const isAgentInternal = msg._agentInternal || msg._isAgentStart;
+                const groupType = isAgentInternal ? 'agent' : 'normal';
+
+                if (groupType !== currentType) {
+                  if (currentGroup.length > 0) {
+                    groups.push({ type: currentType!, messages: currentGroup });
+                  }
+                  currentGroup = [msg];
+                  currentType = groupType;
+                } else {
+                  currentGroup.push(msg);
+                }
+              }
+              if (currentGroup.length > 0 && currentType) {
+                groups.push({ type: currentType, messages: currentGroup });
+              }
+
+              return groups.map((group, groupIdx) => {
+                // Agent 内部消息组：折叠展示
+                if (group.type === 'agent') {
+                  return <AgentLogGroup key={`agent-${groupIdx}`} messages={group.messages} />;
+                }
+
+                // 普通消息：用 ChatBubble 渲染
+                return group.messages.map((msg, i) => {
+                  const allIdx = visibleMessages.indexOf(msg);
+                  return (
+                    <ChatBubble
+                      key={msg.id}
+                      message={msg}
+                      previousMessage={allIdx > 0 ? visibleMessages[allIdx - 1] : undefined}
+                    />
+                  );
+                });
+              });
+            })()}
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center h-full text-zinc-400 dark:text-zinc-500 px-4">
@@ -420,11 +576,45 @@ export default function ChatPage() {
         />
       )}
 
+      {/* Command confirmation bar */}
+      {awaitingConfirmation && (
+        <div className="mx-3 mb-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3">
+          <div className="flex items-start gap-3">
+            <ShieldCheck size={20} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[13px] font-medium text-amber-800 dark:text-amber-200 mb-1">
+                请求执行命令
+              </p>
+              <pre className="text-[12px] font-mono text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/50 rounded px-2 py-1.5 whitespace-pre-wrap break-all overflow-x-auto">
+                {awaitingConfirmation.command}
+              </pre>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-3">
+            <button
+              onClick={() => rejectToolCall()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium text-zinc-600 dark:text-zinc-400 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors"
+            >
+              <ShieldX size={14} />
+              拒绝
+            </button>
+            <button
+              onClick={() => confirmToolCall()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors"
+            >
+              <ShieldCheck size={14} />
+              允许执行
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Message input */}
       <MessageInput
         enabled={!isStreaming}
         hintText={t('chat.input.hint')}
         onSend={handleSend}
+        onStop={() => useChatStore.getState().stopChat()}
       />
 
       {/* Debug panel */}

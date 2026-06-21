@@ -7,7 +7,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEINPUT, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_MOVE, MOUSEEVENTF_ABSOLUTE,
-    VIRTUAL_KEY,
+    VIRTUAL_KEY, GetAsyncKeyState, VK_LBUTTON,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SetCursorPos, SM_CXSCREEN, SM_CYSCREEN};
 
@@ -325,6 +325,20 @@ pub fn desktop_move_cursor(
         waypoints[0].x, waypoints[0].y,
         waypoints[waypoints.len()-1].x, waypoints[waypoints.len()-1].y,
     );
+    // Debug: print sample waypoints to verify path is not degenerate
+    let mid = total as usize / 2;
+    eprintln!("[rust:move_cursor] sample: [1]=({},{}) [1/4]=({},{}) [1/2]=({},{}) [3/4]=({},{})",
+        waypoints[1].x, waypoints[1].y,
+        waypoints[total as usize / 4].x, waypoints[total as usize / 4].y,
+        waypoints[mid].x, waypoints[mid].y,
+        waypoints[3 * total as usize / 4].x, waypoints[3 * total as usize / 4].y,
+    );
+    // Detect degenerate path: all waypoints at the same position
+    let all_same = waypoints.iter().all(|p| p.x == waypoints[0].x && p.y == waypoints[0].y);
+    if all_same && total > 1 {
+        eprintln!("[rust:move_cursor] ⚠ DEGENERATE PATH: all {} waypoints are at ({},{}) — no movement will occur!",
+            total, waypoints[0].x, waypoints[0].y);
+    }
 
     // ── Press button at start ──
     let down_flag = if let Some(ref btn) = hold_button {
@@ -335,9 +349,20 @@ pub fn desktop_move_cursor(
             _ => return Err(format!("Unknown button: {btn}")),
         };
         move_cursor(waypoints[0].x, waypoints[0].y)?;
+        // 检查按钮在 LEFTDOWN 之前是否已经按下
+        let pre_state = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) };
+        let pre_pressed = (pre_state & 0x8000u16 as i16) != 0;
         std::thread::sleep(std::time::Duration::from_millis(30));
         let sent = send_mouse_input(flag, 0);
+        // 等待 LEFTDOWN 被目标窗口处理
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let post_state = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) };
+        let post_pressed = (post_state & 0x8000u16 as i16) != 0;
+        eprintln!("[rust:move_cursor] LEFTDOWN sent={}, pre_pressed={}, post_pressed={}, cursor=({},{}), flag={:?}",
+            sent, pre_pressed, post_pressed, waypoints[0].x, waypoints[0].y, flag);
         if sent == 0 { eprintln!("[rust:move_cursor] ⚠ SendInput LEFTDOWN returned 0 — BLOCKED!"); }
+        if !post_pressed { eprintln!("[rust:move_cursor] ⚠ LEFT BUTTON NOT PRESSED after SendInput LEFTDOWN!"); }
+        if pre_pressed { eprintln!("[rust:move_cursor] ⚠ LEFT BUTTON WAS ALREADY PRESSED before LEFTDOWN!"); }
         std::thread::sleep(std::time::Duration::from_millis(10));
         Some(flag)
     } else {
@@ -378,9 +403,14 @@ pub fn desktop_move_cursor(
             _ => MOUSEEVENTF_LEFTUP,
         };
         let sent_up = send_mouse_input(up_flag, 0);
-        eprintln!("[rust:move_cursor] release: up_flag={:?}, pos=({},{}), final_move_sent={}, up_sent={}",
-            up_flag, last.x, last.y, sent_move, sent_up);
+        // 验证按钮是否真的释放了
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let final_state = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) };
+        let final_pressed = (final_state & 0x8000u16 as i16) != 0;
+        eprintln!("[rust:move_cursor] release: up_flag={:?}, pos=({},{}), final_move_sent={}, up_sent={}, btn_still_pressed={}",
+            up_flag, last.x, last.y, sent_move, sent_up, final_pressed);
         if sent_up == 0 { eprintln!("[rust:move_cursor] ⚠ SendInput LEFTUP returned 0 — BLOCKED!"); }
+        if final_pressed { eprintln!("[rust:move_cursor] ⚠ LEFT BUTTON STILL PRESSED after LEFTUP!"); }
     } else {
         eprintln!("[rust:move_cursor] no hold_button — move only, no press/release");
     }

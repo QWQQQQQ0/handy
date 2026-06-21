@@ -7,13 +7,18 @@ export class TaskTreeDB {
    * Create a root task node for a project.
    * Returns the generated UUID.
    */
-  async createRoot(projectName: string, agentId: string): Promise<string> {
+  async createRoot(
+    projectName: string,
+    agentId: string,
+    targetWindowHwnd?: number | null,
+    targetWindowTitle?: string | null,
+  ): Promise<string> {
     const db = await getDB();
     const id = crypto.randomUUID();
     await db.execute(
-      `INSERT INTO task_tree (id, project_name, module_name, module_path, agent_id, agent_type, status, depth, sort_order)
-       VALUES (?, ?, ?, ?, ?, 'orchestrator', 'analyzing', 0, 0)`,
-      [id, projectName, projectName, projectName, agentId],
+      `INSERT INTO task_tree (id, project_name, module_name, module_path, agent_id, agent_type, status, depth, sort_order, target_window_hwnd, target_window_title)
+       VALUES (?, ?, ?, ?, ?, 'orchestrator', 'analyzing', 0, 0, ?, ?)`,
+      [id, projectName, projectName, projectName, agentId, targetWindowHwnd ?? null, targetWindowTitle ?? null],
     );
     return id;
   }
@@ -41,8 +46,8 @@ export class TaskTreeDB {
 
     const id = crypto.randomUUID();
     await db.execute(
-      `INSERT INTO task_tree (id, project_name, module_name, module_path, parent_module_id, agent_type, depth, sort_order, contract_json, status)
-       SELECT ?, project_name, ?, ?, ?, ?, ?, ?, ?, 'pending' FROM task_tree WHERE id = ?`,
+      `INSERT INTO task_tree (id, project_name, module_name, module_path, parent_module_id, agent_type, depth, sort_order, contract_json, status, target_window_hwnd, target_window_title)
+       SELECT ?, project_name, ?, ?, ?, ?, ?, ?, ?, 'pending', target_window_hwnd, target_window_title FROM task_tree WHERE id = ?`,
       [id, moduleName, modulePath, parentId, agentType, depth, sortOrder, contractJson ?? null, parentId],
     );
     return id;

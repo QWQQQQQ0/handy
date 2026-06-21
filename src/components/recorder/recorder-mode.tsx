@@ -28,18 +28,22 @@ import {
   Globe,
   AlertCircle,
   X,
+  Edit3,
+  Plus,
 } from 'lucide-react';
 import { unifiedRecorder } from '@/services/unified-recorder';
 import { unifiedAnalyzer } from '@/services/unified-analyzer';
 import { unifiedExecutor } from '@/services/unified-executor';
 import { webRecorder } from '@/services/web-recorder';
-import type { SemanticEvent, EventTag } from '@/types/semantic-event';
+import type { SemanticEvent, EventTag, ManualStep } from '@/types/semantic-event';
 import type { RecordingSession } from '@/types/recording-session';
 import type { AutomationTemplate } from '@/types/automation-template';
 import type { DetectedPattern } from '@/types/recording-session';
 import { EventList } from './event-list';
 import { TemplatePreview } from './template-preview';
 import { ManualRecorder } from './manual-recorder';
+import { loadTemporaryTasks, saveTemporaryTask, deleteTemporaryTask } from '@/services/temporary-task-store';
+import { Zap, History, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
 
 /**
  * 录制模式状态
@@ -52,7 +56,8 @@ type RecorderMode =
   | 'analyzing'      // 分析中
   | 'preview'        // 预览模板
   | 'executing'      // 执行中
-  | 'completed';     // 完成
+  | 'completed'      // 完成
+  | 'editing-template'; // 编辑已保存的模板
 
 /**
  * 格式化时长
@@ -87,14 +92,32 @@ export function RecorderMode() {
   const [webBrowserOpen, setWebBrowserOpen] = useState(false);
   const [webBrowserLoading, setWebBrowserLoading] = useState(false);
   const [eventLoading, setEventLoading] = useState(false);
+  const [taskType, setTaskType] = useState<'temporary' | 'reusable'>('temporary');
+  const [temporaryTasks, setTemporaryTasks] = useState<AutomationTemplate[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  // ── 手动插入步骤 ──
+  const [manualSteps, setManualSteps] = useState<ManualStep[]>([]);
+  const [showInsertDialog, setShowInsertDialog] = useState(false);
+  const [insertAfterEventId, setInsertAfterEventId] = useState<string | undefined>();
+  const [insertType, setInsertType] = useState<'tool_call' | 'llm_call'>('tool_call');
+  const [insertToolName, setInsertToolName] = useState('');
+  const [insertLLMPrompt, setInsertLLMPrompt] = useState('');
+  const [insertDesc, setInsertDesc] = useState('');
+  const [availableTools, setAvailableTools] = useState<Array<{ skillName: string; toolName: string; description: string }>>([]);
+
+  // ── 模板编辑 ──
+  const [editTemplate, setEditTemplate] = useState<AutomationTemplate | null>(null);
 
   // ── 定时器 & 退订 ──
   const [durationTimer, setDurationTimer] = useState<ReturnType<typeof setInterval> | null>(null);
+  const [reasoning, setReasoning] = useState('');
+  const [analyzeProgress, setAnalyzeProgress] = useState('');
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
   // ── 初始化 ──
   useEffect(() => {
     unifiedRecorder.initialize().catch(() => {});
+    setTemporaryTasks(loadTemporaryTasks());
 
     return () => {
       if (durationTimer) {
@@ -102,6 +125,57 @@ export function RecorderMode() {
       }
       unsubscribeRef.current?.();
     };
+  }, []);
+
+  // ── 手动步骤管理 ──
+
+  const handleOpenInsertDialog = useCallback(async (afterEventId?: string) => {
+    setInsertAfterEventId(afterEventId);
+    setInsertType('tool_call');
+    setInsertToolName('');
+    setInsertLLMPrompt('');
+    setInsertDesc('');
+    // 加载可用 tools
+    try {
+      const { useSkillStore } = await import('@/stores/skill-store');
+      const store = useSkillStore.getState();
+      if (!store.loaded) {
+        await store.initializeSkills();
+      }
+      const configs = store.allConfigs;
+      const tools: Array<{ skillName: string; toolName: string; description: string }> = [];
+      for (const s of configs) {
+        for (const t of s.tools) {
+          tools.push({ skillName: s.name, toolName: t.name, description: t.description });
+        }
+      }
+      setAvailableTools(tools);
+    } catch (e) {
+      console.warn('[RecorderMode] Failed to load tools:', e);
+    }
+    setShowInsertDialog(true);
+  }, []);
+
+  const handleInsertStep = useCallback(() => {
+    const step: ManualStep = {
+      id: crypto.randomUUID(),
+      stepType: insertType,
+      afterEventId: insertAfterEventId,
+      description: insertDesc || (insertType === 'tool_call' ? `调用 ${insertToolName}` : 'LLM 调用'),
+    };
+    if (insertType === 'tool_call') {
+      const tool = availableTools.find(t => t.toolName === insertToolName);
+      step.toolName = insertToolName;
+      step.toolDescription = tool?.description || '';
+    } else {
+      step.llmPrompt = insertLLMPrompt;
+    }
+    setManualSteps(prev => [...prev, step]);
+    setShowInsertDialog(false);
+  }, [insertType, insertAfterEventId, insertToolName, insertLLMPrompt, insertDesc, availableTools]);
+
+  const handleDeleteManualStep = useCallback((stepId: string) => {
+    setManualSteps(prev => prev.filter(s => s.id !== stepId));
   }, []);
 
   // ── 录制控制 ──
@@ -118,6 +192,7 @@ export function RecorderMode() {
 
       const newSession = await unifiedRecorder.startRecording({
         description,
+        taskType,
         autoTag: true,
       });
 
@@ -174,7 +249,7 @@ export function RecorderMode() {
     } catch (err) {
       setError(`启动录制失败: ${err}`);
     }
-  }, [description, webBrowserOpen]);
+  }, [description, webBrowserOpen, taskType]);
 
   const handleStopRecording = useCallback(async () => {
     try {
@@ -202,14 +277,14 @@ export function RecorderMode() {
     }
   }, [durationTimer]);
 
-  const handlePauseRecording = useCallback(() => {
-    unifiedRecorder.pauseRecording();
+  const handlePauseRecording = useCallback(async () => {
+    await unifiedRecorder.pauseRecording();
     webRecorder.pauseRecording();
     setMode('paused');
   }, []);
 
   const handleResumeRecording = useCallback(async () => {
-    unifiedRecorder.resumeRecording();
+    await unifiedRecorder.resumeRecording();
     await webRecorder.resumeRecording();
     setMode('recording');
   }, []);
@@ -302,8 +377,23 @@ export function RecorderMode() {
         session.metadata.userDescription = description;
       }
 
+      // 把手动插入的步骤挂到 session 上，供分析器使用
+      if (manualSteps.length > 0) {
+        session.manualSteps = manualSteps;
+      }
+
+      // UI 的 events 是准确数据源，分析前同步回 session
+      if (session) {
+        session.events = [...events];
+      }
+
       // 分析录制会话
-      const result = await unifiedAnalyzer.analyze(session);
+      setReasoning('');
+      setAnalyzeProgress('正在分析操作模式...');
+      const result = await unifiedAnalyzer.analyze(session, {
+        onReasoning: (text) => setReasoning(text),
+        onProgress: (text) => setAnalyzeProgress(text),
+      });
 
       setTemplate(result);
       setPattern(result.dataFlow ? {
@@ -319,7 +409,7 @@ export function RecorderMode() {
       setError(`分析失败: ${err}`);
       setMode('recorded');
     }
-  }, [session, description]);
+  }, [session, description, events]);
 
   // ── 执行 ──
 
@@ -327,7 +417,12 @@ export function RecorderMode() {
     if (!template) return;
     // 如果模板有参数，先弹出参数输入
     if (template.parameters && template.parameters.length > 0) {
-      setParamValues({});
+      const defaults: Record<string, string> = {};
+      for (const p of template.parameters) {
+        const d = (p as Record<string, unknown>)['default'];
+        if (d !== undefined) defaults[p.name] = String(d);
+      }
+      setParamValues(defaults);
       setShowParamDialog(true);
       return;
     }
@@ -344,14 +439,19 @@ export function RecorderMode() {
       setShowParamDialog(false);
 
       const context = await unifiedExecutor.execute(template, params, {
-        dryRun: true,
+        dryRun: false,
         verbose: true,
-        onStepStart: () => {},
-        onStepEnd: () => {},
+        onStepStart: (step, index) => {
+          console.log(`[TestExecute] step ${index}: ${step.action} ${step.target?.name ?? ''}`);
+        },
+        onStepEnd: (step, index, success) => {
+          console.log(`[TestExecute] step ${index} ${success ? '✓' : '✗'}`);
+        },
       });
 
       if (context.status === 'completed') {
-        setMode('completed');
+        // 测试执行完成 → 回到预览页，用户可以继续测试或保存
+        setMode('preview');
       } else {
         setError(`执行失败: ${context.error?.message}`);
         setMode('preview');
@@ -414,6 +514,163 @@ export function RecorderMode() {
     }
   }, [template]);
 
+  // ── 保存到临时任务历史 ──
+
+  const handleSaveToHistory = useCallback(() => {
+    if (!template) return;
+    saveTemporaryTask(template);
+    setTemporaryTasks(loadTemporaryTasks());
+    setMode('completed');
+  }, [template]);
+
+  // ── 从历史任务执行 ──
+
+  const handleExecuteFromHistory = useCallback((t: AutomationTemplate) => {
+    setTemplate(t);
+    if (t.parameters && t.parameters.length > 0) {
+      const defaults: Record<string, string> = {};
+      for (const p of t.parameters) {
+        const d = (p as Record<string, unknown>)['default'];
+        if (d !== undefined) defaults[p.name] = String(d);
+      }
+      setParamValues(defaults);
+      setShowParamDialog(true);
+    } else {
+      doTestExecute({});
+    }
+  }, [doTestExecute]);
+
+  // ── 删除历史任务 ──
+
+  const handleDeleteHistoryTask = useCallback((id: string) => {
+    deleteTemporaryTask(id);
+    setTemporaryTasks(loadTemporaryTasks());
+  }, []);
+
+  // ── 编辑历史任务 ──
+
+  const handleEditFromHistory = useCallback(async (t: AutomationTemplate) => {
+    try {
+      // 通过 Tauri 全局事件通知主窗口跳转（localStorage 在不同 Webview 间不共享）
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit('navigate-main', { path: `/tasks?edit=${t.id}` });
+    } catch {
+      // Web 环境回退：浮窗内编辑
+      setEditTemplate(t);
+      setMode('editing-template');
+    }
+  }, []);
+
+  const handleEditStepField = useCallback((stepId: string, field: string, value: unknown) => {
+    setEditTemplate(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        steps: prev.steps.map(s => {
+          if (s.id !== stepId) return s;
+          if (field === 'coordinate_x') {
+            return { ...s, target: { ...s.target, coordinate: { ...s.target?.coordinate, x: value as number } } };
+          }
+          if (field === 'coordinate_y') {
+            return { ...s, target: { ...s.target, coordinate: { ...s.target?.coordinate, y: value as number } } };
+          }
+          if (field === 'waitBefore') {
+            return { ...s, waitBefore: value as number };
+          }
+          if (field === 'description') {
+            return { ...s, description: value as string };
+          }
+          if (field === 'key') {
+            return { ...s, params: { ...s.params, key: value as string } };
+          }
+          return s;
+        }),
+      };
+    });
+  }, []);
+
+  const handleDeleteEditStep = useCallback((stepId: string) => {
+    setEditTemplate(prev => {
+      if (!prev) return prev;
+      return { ...prev, steps: prev.steps.filter(s => s.id !== stepId) };
+    });
+  }, []);
+
+  const handleInsertEditStep = useCallback((afterIndex: number) => {
+    if (!editTemplate) return;
+    // 复用已有的插入对话框，但记录插入位置
+    setInsertAfterEventId(String(afterIndex));
+    // 加载 tools
+    (async () => {
+      try {
+        const { useSkillStore } = await import('@/stores/skill-store');
+        const store = useSkillStore.getState();
+        if (!store.loaded) await store.initializeSkills();
+        const configs = store.allConfigs;
+        const tools: Array<{ skillName: string; toolName: string; description: string }> = [];
+        for (const s of configs) {
+          for (const t of s.tools) {
+            tools.push({ skillName: s.name, toolName: t.name, description: t.description });
+          }
+        }
+        setAvailableTools(tools);
+      } catch (e) { console.warn('[RecorderMode] Failed to load tools:', e); }
+    })();
+    setShowInsertDialog(true);
+  }, [editTemplate]);
+
+  const handleConfirmInsertStep = useCallback(() => {
+    const step: ManualStep = {
+      id: crypto.randomUUID(),
+      stepType: insertType === 'tool_call' ? 'tool_call' : 'llm_call',
+      description: insertDesc || (insertType === 'tool_call' ? `调用 ${insertToolName}` : 'LLM 调用'),
+    };
+    if (insertType === 'tool_call') {
+      const tool = availableTools.find(t => t.toolName === insertToolName);
+      step.toolName = insertToolName;
+      step.toolDescription = tool?.description || '';
+    } else {
+      step.llmPrompt = insertLLMPrompt;
+    }
+    // 转换为 TemplateStep 并插入
+    const newStep: import('@/types/automation-template').TemplateStep = {
+      id: crypto.randomUUID(),
+      action: insertType === 'tool_call' ? 'tool_call' : 'llm_call',
+      description: step.description || '',
+      params: insertType === 'tool_call'
+        ? { toolName: insertToolName }
+        : { prompt: insertLLMPrompt },
+    };
+    setEditTemplate(prev => {
+      if (!prev) return prev;
+      const steps = [...prev.steps];
+      const afterIdx = parseInt(insertAfterEventId || '0', 10);
+      if (!isNaN(afterIdx) && afterIdx >= 0 && afterIdx < steps.length) {
+        steps.splice(afterIdx + 1, 0, newStep);
+      } else {
+        steps.push(newStep);
+      }
+      return { ...prev, steps };
+    });
+    setShowInsertDialog(false);
+    setInsertToolName('');
+    setInsertLLMPrompt('');
+    setInsertDesc('');
+  }, [insertType, insertToolName, insertLLMPrompt, insertDesc, insertAfterEventId, availableTools]);
+
+  const handleSaveEdit = useCallback(() => {
+    if (!editTemplate) return;
+    saveTemporaryTask(editTemplate);
+    setTemporaryTasks(loadTemporaryTasks());
+    setEditTemplate(null);
+    setMode('idle');
+  }, [editTemplate]);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditTemplate(null);
+    setMode('idle');
+  }, []);
+
   // ── 重置 ──
 
   const handleReset = useCallback(() => {
@@ -427,6 +684,10 @@ export function RecorderMode() {
     setError(null);
     setShowParamDialog(false);
     setParamValues({});
+    setManualSteps([]);
+    setShowInsertDialog(false);
+    setEditTemplate(null);
+    setTemporaryTasks(loadTemporaryTasks());
   }, []);
 
   // ── 渲染 ──
@@ -443,13 +704,14 @@ export function RecorderMode() {
           />
           <span className="text-[12px] font-medium truncate">
             {mode === 'idle' && '语义化录制'}
-            {mode === 'recording' && `录制中 ${formatDuration(duration)}`}
+            {mode === 'recording' && `⚡ 录制中 ${formatDuration(duration)}`}
             {mode === 'paused' && '已暂停'}
             {mode === 'recorded' && `已录制 ${events.length} 个事件`}
             {mode === 'analyzing' && '分析中...'}
             {mode === 'preview' && '模板预览'}
             {mode === 'executing' && '执行中...'}
             {mode === 'completed' && '完成'}
+            {mode === 'editing-template' && '编辑模板'}
           </span>
         </div>
 
@@ -479,14 +741,27 @@ export function RecorderMode() {
       {/* 内容区域 */}
       {mode === 'idle' && (
         <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide p-3 space-y-3">
-          <div className="text-center py-2">
-            <Circle size={36} className="mx-auto text-zinc-300 dark:text-zinc-600 mb-2" />
-            <p className="text-[13px] text-zinc-600 dark:text-zinc-400 mb-0.5">
-              录制用户操作
-            </p>
-            <p className="text-[11px] text-zinc-400">
-              系统将自动识别语义并生成自动化模板
-            </p>
+          {/* 任务类型选择 */}
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => setTaskType('temporary')}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[12px] font-medium transition-colors ${
+                taskType === 'temporary'
+                  ? 'bg-amber-600 text-white'
+                  : 'border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:border-zinc-300 dark:hover:border-zinc-600'
+              }`}
+            >
+              <Zap size={13} />
+              临时任务
+            </button>
+            <button
+              disabled
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 text-[12px] text-zinc-400 cursor-not-allowed"
+              title="可复用任务开发中"
+            >
+              <RotateCcw size={13} />
+              可复用（开发中）
+            </button>
           </div>
 
           <div className="bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg p-2">
@@ -550,6 +825,64 @@ export function RecorderMode() {
             <Circle size={14} fill="white" />
             开始录制
           </button>
+
+          {/* 历史任务列表 */}
+          {temporaryTasks.length > 0 && (
+            <div>
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className="flex items-center gap-1.5 text-[11px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 w-full"
+              >
+                <History size={12} />
+                <span>历史任务 ({temporaryTasks.length})</span>
+                {showHistory ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+
+              {showHistory && (
+                <div className="mt-1.5 space-y-1 max-h-[150px] overflow-y-auto scrollbar-hide">
+                  {temporaryTasks.map((t) => (
+                    <div
+                      key={t.id}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-medium text-zinc-900 dark:text-zinc-100 truncate">
+                          {t.name || t.description || '未命名任务'}
+                        </div>
+                        <div className="text-[10px] text-zinc-400">
+                          {t.parameters.length > 0
+                            ? `参数: ${t.parameters.map(p => p.name).join(', ')}`
+                            : '无参数'}
+                          {t.steps.length > 0 && ` · ${t.steps.length} 步`}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleExecuteFromHistory(t)}
+                        className="p-1 rounded hover:bg-green-100 dark:hover:bg-green-900 text-green-600 dark:text-green-400 shrink-0"
+                        title="执行"
+                      >
+                        <Play size={12} />
+                      </button>
+                      <button
+                        onClick={() => handleEditFromHistory(t)}
+                        className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900 text-blue-600 dark:text-blue-400 shrink-0"
+                        title="编辑"
+                      >
+                        <Edit3 size={12} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteHistoryTask(t.id)}
+                        className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900 text-red-400 shrink-0"
+                        title="删除"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -630,6 +963,34 @@ export function RecorderMode() {
             />
           </div>
 
+          {/* 手动插入的步骤 */}
+          {manualSteps.length > 0 && (
+            <div className="px-2 pt-1 shrink-0">
+              <div className="text-[10px] text-zinc-500 mb-1">手动添加的步骤:</div>
+              {manualSteps.map((step, i) => (
+                <div key={step.id} className="flex items-center gap-1.5 px-2 py-1 mb-1 rounded bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
+                  <span className="text-[10px] font-medium text-amber-700 dark:text-amber-300 shrink-0">
+                    {step.stepType === 'tool_call' ? '🔧' : '🤖'}
+                  </span>
+                  <span className="text-[10px] text-amber-600 dark:text-amber-400 truncate flex-1">
+                    {step.stepType === 'tool_call' ? step.toolName : (step.llmPrompt?.substring(0, 30) || 'LLM')}
+                  </span>
+                  <button onClick={() => handleDeleteManualStep(step.id)} className="text-[9px] text-red-400 hover:text-red-600 shrink-0">✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 插入步骤按钮 */}
+          <div className="px-2 shrink-0">
+            <button
+              onClick={() => handleOpenInsertDialog(undefined)}
+              className="w-full flex items-center justify-center gap-1 py-1 rounded border border-dashed border-zinc-300 dark:border-zinc-600 text-[10px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:border-zinc-400"
+            >
+              + 插入步骤（Skill Tool / LLM 调用）
+            </button>
+          </div>
+
           {/* 操作按钮 */}
           <div className="px-2 py-2 border-t border-zinc-200 dark:border-zinc-800 space-y-1.5 shrink-0">
             {/* 录制描述（可编辑） */}
@@ -668,24 +1029,140 @@ export function RecorderMode() {
         </div>
       )}
 
+      {/* 插入步骤对话框 */}
+      {showInsertDialog && (
+        <div className="absolute inset-0 z-20 bg-white dark:bg-zinc-950 flex flex-col">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-zinc-200 dark:border-zinc-800 shrink-0">
+            <span className="text-[12px] font-medium">插入步骤</span>
+            <button onClick={() => setShowInsertDialog(false)} className="p-1 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800">
+              <X size={14} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-3">
+            {/* 类型选择 */}
+            <div>
+              <label className="block text-[11px] text-zinc-500 mb-1">步骤类型</label>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => setInsertType('tool_call')}
+                  className={`flex-1 py-1.5 rounded text-[11px] ${insertType === 'tool_call' ? 'bg-amber-600 text-white' : 'border border-zinc-200 dark:border-zinc-700 text-zinc-500'}`}
+                >
+                  🔧 Skill Tool
+                </button>
+                <button
+                  onClick={() => setInsertType('llm_call')}
+                  className={`flex-1 py-1.5 rounded text-[11px] ${insertType === 'llm_call' ? 'bg-purple-600 text-white' : 'border border-zinc-200 dark:border-zinc-700 text-zinc-500'}`}
+                >
+                  🤖 LLM 调用
+                </button>
+              </div>
+            </div>
+
+            {insertType === 'tool_call' ? (
+              <>
+                {/* Tool 选择 */}
+                <div>
+                  <label className="block text-[11px] text-zinc-500 mb-1">选择 Tool</label>
+                  <select
+                    value={insertToolName}
+                    onChange={(e) => setInsertToolName(e.target.value)}
+                    className="w-full px-2 py-1.5 text-[11px] rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100"
+                  >
+                    <option value="">-- 选择 --</option>
+                    {availableTools.map(t => (
+                      <option key={`${t.skillName}/${t.toolName}`} value={t.toolName}>
+                        [{t.skillName}] {t.toolName} — {t.description.substring(0, 50)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {/* Tool 描述 */}
+                {insertToolName && (
+                  <div className="text-[10px] text-zinc-500 bg-zinc-50 dark:bg-zinc-900 rounded p-2">
+                    {availableTools.find(t => t.toolName === insertToolName)?.description || ''}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div>
+                <label className="block text-[11px] text-zinc-500 mb-1">LLM 提示词</label>
+                <textarea
+                  value={insertLLMPrompt}
+                  onChange={(e) => setInsertLLMPrompt(e.target.value)}
+                  placeholder="描述 LLM 需要做什么..."
+                  rows={4}
+                  className="w-full px-2 py-1.5 text-[11px] rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 resize-none"
+                />
+              </div>
+            )}
+
+            {/* 描述 */}
+            <div>
+              <label className="block text-[11px] text-zinc-500 mb-1">步骤描述（可选）</label>
+              <input
+                type="text"
+                value={insertDesc}
+                onChange={(e) => setInsertDesc(e.target.value)}
+                placeholder="描述这一步的目的..."
+                className="w-full px-2 py-1.5 text-[11px] rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100"
+              />
+            </div>
+          </div>
+          <div className="px-2 py-1.5 border-t border-zinc-200 dark:border-zinc-800 flex gap-1.5 shrink-0">
+            <button
+              onClick={() => setShowInsertDialog(false)}
+              className="flex-1 py-1.5 rounded border border-zinc-200 dark:border-zinc-700 text-[11px] text-zinc-500"
+            >
+              取消
+            </button>
+            <button
+              onClick={mode === 'editing-template' ? handleConfirmInsertStep : handleInsertStep}
+              disabled={insertType === 'tool_call' ? !insertToolName : !insertLLMPrompt}
+              className="flex-1 py-1.5 rounded bg-amber-600 text-white text-[11px] font-medium hover:bg-amber-700 disabled:opacity-50"
+            >
+              插入
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 分析中 */}
       {mode === 'analyzing' && (
-        <div className="flex-1 flex flex-col items-center justify-center min-h-0">
-          <Loader2 size={28} className="animate-spin text-blue-500 mb-3" />
-          <div className="text-[13px] font-medium">正在分析...</div>
-          <div className="text-[11px] text-zinc-500 mt-0.5">
-            LLM 正在分析操作模式
+        <div className="flex-1 flex flex-col min-h-0 p-3">
+          <div className="flex items-center gap-2 mb-3">
+            <Loader2 size={18} className="animate-spin text-blue-500" />
+            <div className="text-[13px] font-medium">{analyzeProgress || '正在分析...'}</div>
           </div>
+          {reasoning && (
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
+              <div className="text-[11px] font-semibold text-zinc-400 uppercase mb-1">思考过程</div>
+              <pre className="text-[11px] text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-words font-mono leading-relaxed bg-zinc-50 dark:bg-zinc-900 rounded-lg p-3 border border-zinc-200 dark:border-zinc-800">
+                {reasoning}
+              </pre>
+            </div>
+          )}
         </div>
       )}
 
       {/* 模板预览 */}
       {mode === 'preview' && template && (
         <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide">
+          {/* 审查提示 */}
+          <div className="mx-2 mt-2 p-2 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
+            <div className="flex items-start gap-1.5">
+              <AlertCircle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+              <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                <p className="font-medium">请检查模板准确性</p>
+                <p className="mt-0.5 text-amber-600 dark:text-amber-400">
+                  建议先「测试运行」验证坐标和步骤是否正确。如发现问题，点击「保存」后可在主应用的「任务」页中编辑修正。
+                </p>
+              </div>
+            </div>
+          </div>
           <TemplatePreview
             template={template}
             pattern={pattern || undefined}
-            onSave={handleSaveTemplate}
+            onSave={taskType === 'temporary' ? handleSaveToHistory : handleSaveTemplate}
             onTest={handleTestExecute}
             onClose={handleReset}
           />
@@ -728,10 +1205,12 @@ export function RecorderMode() {
                 const params: Record<string, unknown> = {};
                 for (const param of template.parameters) {
                   const raw = paramValues[param.name]?.trim();
-                  if (!raw) continue;
-                  if (param.type === 'integer') params[param.name] = parseInt(raw, 10);
-                  else if (param.type === 'number') params[param.name] = parseFloat(raw);
-                  else params[param.name] = raw;
+                  const defaultVal = (param as Record<string, unknown>)['default'];
+                  const value = raw || (defaultVal !== undefined ? String(defaultVal) : '');
+                  if (!value) continue;
+                  if (param.type === 'integer') params[param.name] = parseInt(value, 10);
+                  else if (param.type === 'number') params[param.name] = parseFloat(value);
+                  else params[param.name] = value;
                 }
                 doTestExecute(params);
               }}
@@ -755,6 +1234,130 @@ export function RecorderMode() {
         </div>
       )}
 
+      {/* 编辑模板 */}
+      {mode === 'editing-template' && editTemplate && (
+        <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+          {/* 模板名称 */}
+          <div className="px-2 py-1.5 shrink-0">
+            <input
+              type="text"
+              value={editTemplate.description}
+              onChange={(e) => setEditTemplate(prev => prev ? { ...prev, description: e.target.value } : prev)}
+              placeholder="任务描述..."
+              className="w-full px-2 py-1 text-[11px] rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none"
+            />
+          </div>
+
+          {/* 步骤列表 */}
+          <div className="flex-1 overflow-y-auto min-h-0 px-2 space-y-1">
+            {editTemplate.steps.map((step, i) => (
+              <div key={step.id} className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 p-2">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-[10px] text-zinc-400 w-4 shrink-0">{i + 1}</span>
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 shrink-0">
+                    {step.action}
+                  </span>
+                  <button
+                    onClick={() => handleDeleteEditStep(step.id)}
+                    className="p-0.5 rounded hover:bg-red-100 dark:hover:bg-red-900 text-red-400 shrink-0 ml-auto"
+                    title="删除步骤"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={step.description}
+                  onChange={(e) => handleEditStepField(step.id, 'description', e.target.value)}
+                  placeholder="步骤描述"
+                  className="w-full px-1.5 py-0.5 text-[11px] rounded border border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500 mb-1"
+                />
+                <div className="flex gap-1 flex-wrap">
+                  {step.target?.coordinate && (
+                    <>
+                      <div className="flex items-center gap-0.5">
+                        <span className="text-[9px] text-zinc-400">x:</span>
+                        <input
+                          type="text"
+                          value={String(step.target.coordinate.x)}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const n = parseFloat(v);
+                            handleEditStepField(step.id, 'coordinate_x', isNaN(n) ? v : n);
+                          }}
+                          className="w-16 px-1 py-0.5 text-[10px] rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+                      <div className="flex items-center gap-0.5">
+                        <span className="text-[9px] text-zinc-400">y:</span>
+                        <input
+                          type="text"
+                          value={String(step.target.coordinate.y)}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            const n = parseFloat(v);
+                            handleEditStepField(step.id, 'coordinate_y', isNaN(n) ? v : n);
+                          }}
+                          className="w-16 px-1 py-0.5 text-[10px] rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500 font-mono"
+                        />
+                      </div>
+                    </>
+                  )}
+                  {step.waitBefore !== undefined && (
+                    <div className="flex items-center gap-0.5">
+                      <span className="text-[9px] text-zinc-400">等待:</span>
+                      <input
+                        type="number"
+                        value={step.waitBefore}
+                        onChange={(e) => handleEditStepField(step.id, 'waitBefore', parseInt(e.target.value) || 0)}
+                        className="w-14 px-1 py-0.5 text-[10px] rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
+                      />
+                      <span className="text-[9px] text-zinc-400">ms</span>
+                    </div>
+                  )}
+                  {step.params?.key && (
+                    <div className="flex items-center gap-0.5">
+                      <span className="text-[9px] text-zinc-400">键:</span>
+                      <input
+                        type="text"
+                        value={String(step.params.key)}
+                        onChange={(e) => handleEditStepField(step.id, 'key', e.target.value)}
+                        className="w-20 px-1 py-0.5 text-[10px] rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500 font-mono"
+                      />
+                    </div>
+                  )}
+                </div>
+                {/* 插入按钮 */}
+                <button
+                  onClick={() => handleInsertEditStep(i)}
+                  className="w-full mt-1 flex items-center justify-center gap-0.5 py-0.5 rounded border border-dashed border-zinc-200 dark:border-zinc-700 text-[9px] text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:border-zinc-400"
+                >
+                  <Plus size={10} />
+                  在此后插入步骤
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* 操作按钮 */}
+          <div className="px-2 py-1.5 border-t border-zinc-200 dark:border-zinc-800 flex gap-1.5 shrink-0">
+            <button
+              onClick={handleCancelEdit}
+              className="flex-1 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-[11px] text-zinc-500"
+            >
+              取消
+            </button>
+            <button
+              onClick={handleSaveEdit}
+              className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-medium hover:bg-blue-700"
+            >
+              <Save size={12} />
+              保存修改
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 完成 */}
       {mode === 'completed' && (
         <div className="flex-1 flex flex-col items-center justify-center min-h-0 p-3">
@@ -763,14 +1366,27 @@ export function RecorderMode() {
           </div>
           <div className="text-[13px] font-medium mb-1">完成</div>
           <div className="text-[11px] text-zinc-500 text-center mb-3">
-            模板已保存为技能，可以在技能页面查看和使用
+            {taskType === 'temporary'
+              ? '任务已保存到历史，可以重复执行'
+              : '模板已保存为技能，可以在技能页面查看和使用'}
           </div>
-          <button
-            onClick={handleReset}
-            className="px-3 py-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-[12px] font-medium"
-          >
-            新建录制
-          </button>
+          <div className="flex gap-2 w-full">
+            {taskType === 'temporary' && template && (
+              <button
+                onClick={() => handleExecuteFromHistory(template)}
+                className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-green-600 text-white text-[12px] font-medium hover:bg-green-700"
+              >
+                <Play size={12} />
+                再次执行
+              </button>
+            )}
+            <button
+              onClick={handleReset}
+              className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-[12px] font-medium"
+            >
+              返回
+            </button>
+          </div>
         </div>
       )}
     </div>

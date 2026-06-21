@@ -5,6 +5,18 @@ import type { Skill, SkillTool } from './skill';
 import { SkillOk, SkillFail } from './skill';
 import type { SkillResult, ToolDefinition } from '@/types/skill';
 
+export interface SavedAppRow {
+  id: string;
+  name: string;
+  code: string;
+  created_at: string;
+  description?: string;
+  project_type?: string;
+  files_json?: string;
+  entry_file?: string;
+  updated_at?: string;
+}
+
 export class AppBuilderSkill implements Skill {
   id: string;
   name: string;
@@ -33,6 +45,7 @@ export class AppBuilderSkill implements Skill {
   async execute(toolName: string, params: Record<string, unknown>): Promise<SkillResult> {
     switch (toolName) {
       case 'save_app': return this.saveApp(params);
+      case 'save_project': return this.saveProject(params);
       case 'list_apps': return this.listApps();
       case 'get_app': return this.getApp(params);
       case 'update_app': return this.updateApp(params);
@@ -54,8 +67,8 @@ export class AppBuilderSkill implements Skill {
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
       await db.execute(
-        'INSERT INTO savedApps (id, name, code, created_at) VALUES (?, ?, ?, ?)',
-        [id, name, code, now],
+        'INSERT INTO savedApps (id, name, code, description, project_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, name, code, description, 'single', now, now],
       );
       return SkillOk(`App "${name}" saved successfully`, { id, name, description, code, created_at: now });
     } catch (e) {
@@ -63,14 +76,60 @@ export class AppBuilderSkill implements Skill {
     }
   }
 
+  /**
+   * Save a multi-file project.
+   */
+  private async saveProject(params: Record<string, unknown>): Promise<SkillResult> {
+    const name = params['name'] as string;
+    const description = (params['description'] as string) ?? '';
+    const files = params['files'] as Record<string, string>;
+    const entryFile = (params['entry_file'] as string) ?? 'index.html';
+
+    if (!name) return SkillFail('Project name is required');
+    if (!files || Object.keys(files).length === 0) return SkillFail('Project files are required');
+
+    try {
+      const db = await getDB();
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+
+      // Get the entry file content for the main code field
+      const entryContent = files[entryFile] || files[Object.keys(files)[0]] || '';
+
+      await db.execute(
+        `INSERT INTO savedApps (id, name, code, description, project_type, files_json, entry_file, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, name, entryContent, description, 'multi', JSON.stringify(files), entryFile, now, now],
+      );
+
+      return SkillOk(`Project "${name}" saved successfully`, {
+        id,
+        name,
+        description,
+        files: Object.keys(files),
+        entry_file: entryFile,
+        created_at: now,
+      });
+    } catch (e) {
+      return SkillFail(`Failed to save project: ${e}`);
+    }
+  }
+
   private async listApps(): Promise<SkillResult> {
     try {
       const db = await getDB();
-      const rows = await db.query<{ id: string; name: string; code: string; created_at: string }>(
-        'SELECT id, name, created_at FROM savedApps ORDER BY created_at DESC',
+      const rows = await db.query<SavedAppRow>(
+        'SELECT id, name, description, project_type, entry_file, created_at FROM savedApps ORDER BY created_at DESC',
       );
       return SkillOk(`Found ${rows.length} saved app${rows.length !== 1 ? 's' : ''}`, {
-        apps: rows.map((r) => ({ id: r.id, name: r.name, created_at: r.created_at })),
+        apps: rows.map((r) => ({
+          id: r.id,
+          name: r.name,
+          description: r.description,
+          project_type: r.project_type || 'single',
+          entry_file: r.entry_file,
+          created_at: r.created_at,
+        })),
         count: rows.length,
       });
     } catch (e) {
@@ -84,13 +143,33 @@ export class AppBuilderSkill implements Skill {
 
     try {
       const db = await getDB();
-      const rows = await db.query<{ id: string; name: string; code: string; created_at: string }>(
-        'SELECT id, name, code, created_at FROM savedApps WHERE id = ?',
+      const rows = await db.query<SavedAppRow>(
+        'SELECT * FROM savedApps WHERE id = ?',
         [id],
       );
       if (rows.length === 0) return SkillFail(`App not found: ${id}`);
       const app = rows[0];
-      return SkillOk(`App found: ${app.name}`, { id: app.id, name: app.name, code: app.code, created_at: app.created_at });
+
+      // Parse files_json for multi-file projects
+      let files: Record<string, string> | undefined;
+      if (app.project_type === 'multi' && app.files_json) {
+        try {
+          files = JSON.parse(app.files_json);
+        } catch {
+          // Fall through
+        }
+      }
+
+      return SkillOk(`App found: ${app.name}`, {
+        id: app.id,
+        name: app.name,
+        description: app.description,
+        code: app.code,
+        project_type: app.project_type || 'single',
+        files,
+        entry_file: app.entry_file,
+        created_at: app.created_at,
+      });
     } catch (e) {
       return SkillFail(`Failed to get app: ${e}`);
     }
@@ -102,18 +181,33 @@ export class AppBuilderSkill implements Skill {
 
     try {
       const db = await getDB();
-      const existing = await db.query<{ id: string; name: string; code: string }>(
-        'SELECT id, name, code FROM savedApps WHERE id = ?',
+      const existing = await db.query<SavedAppRow>(
+        'SELECT * FROM savedApps WHERE id = ?',
         [id],
       );
       if (existing.length === 0) return SkillFail(`App not found: ${id}`);
 
-      const name = (params['name'] as string) ?? existing[0].name;
-      const code = (params['code'] as string) ?? existing[0].code;
+      const app = existing[0];
+      const name = (params['name'] as string) ?? app.name;
+      const description = (params['description'] as string) ?? app.description;
+      const code = (params['code'] as string) ?? app.code;
+      const now = new Date().toISOString();
+
+      // Handle multi-file updates
+      let filesJson = app.files_json;
+      let entryFile = app.entry_file;
+      if (params['files']) {
+        filesJson = JSON.stringify(params['files']);
+      }
+      if (params['entry_file']) {
+        entryFile = params['entry_file'] as string;
+      }
+
       await db.execute(
-        'UPDATE savedApps SET name = ?, code = ? WHERE id = ?',
-        [name, code, id],
+        'UPDATE savedApps SET name = ?, code = ?, description = ?, files_json = ?, entry_file = ?, updated_at = ? WHERE id = ?',
+        [name, code, description, filesJson, entryFile, now, id],
       );
+
       return SkillOk(`App "${name}" updated successfully`);
     } catch (e) {
       return SkillFail(`Failed to update app: ${e}`);

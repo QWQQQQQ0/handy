@@ -199,9 +199,9 @@ unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param:
         let state = get_hook_state();
         let state_guard = state.lock().unwrap();
 
-        // 只处理点击事件，忽略鼠标移动 (WM_MOUSEMOVE) 等
+        // 处理鼠标点击和释放事件
         let wpm = w_param.0 as u32;
-        if wpm != WM_LBUTTONDOWN && wpm != WM_RBUTTONDOWN && wpm != WM_LBUTTONDBLCLK {
+        if wpm != WM_LBUTTONDOWN && wpm != WM_LBUTTONUP && wpm != WM_RBUTTONDOWN && wpm != WM_RBUTTONUP && wpm != WM_LBUTTONDBLCLK {
             return CallNextHookEx(None, n_code, w_param, l_param);
         }
 
@@ -217,15 +217,29 @@ unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param:
 
                 // 安全区：过滤自身窗口事件
                 if is_own_window(HWND(hwnd as *mut _), state_guard.self_pid) {
-                    log::info!("[SafeZone] BLOCKED mouse — hwnd={:#x} title=\"{}\" pid={} self={}", hwnd, window_title, target_pid, state_guard.self_pid);
                     return CallNextHookEx(None, n_code, w_param, l_param);
                 }
 
+                println!("[MouseListener] wpm: {}", wpm);
                 let event = match wpm {
                     WM_LBUTTONDOWN => {
-                        log::info!("[GlobalListener] click @ ({},{}) title=\"{}\" pid={}", x, y, window_title, target_pid);
                         Some(GlobalInputEvent {
-                            event_type: "mouse_click".to_string(),
+                            event_type: "mouse_down".to_string(),
+                            x,
+                            y,
+                            key: None,
+                            modifiers: get_modifiers(),
+                            hwnd,
+                            window_title,
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64,
+                        })
+                    }
+                    WM_LBUTTONUP => {
+                        Some(GlobalInputEvent {
+                            event_type: "mouse_up".to_string(),
                             x,
                             y,
                             key: None,
@@ -239,9 +253,23 @@ unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param:
                         })
                     }
                     WM_RBUTTONDOWN => {
-                        log::info!("[GlobalListener] right_click @ ({},{}) title=\"{}\" pid={}", x, y, window_title, target_pid);
                         Some(GlobalInputEvent {
-                            event_type: "mouse_right_click".to_string(),
+                            event_type: "mouse_down".to_string(),
+                            x,
+                            y,
+                            key: None,
+                            modifiers: get_modifiers(),
+                            hwnd,
+                            window_title,
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64,
+                        })
+                    }
+                    WM_RBUTTONUP => {
+                        Some(GlobalInputEvent {
+                            event_type: "mouse_up".to_string(),
                             x,
                             y,
                             key: None,
@@ -255,7 +283,6 @@ unsafe extern "system" fn mouse_hook_proc(n_code: i32, w_param: WPARAM, l_param:
                         })
                     }
                     WM_LBUTTONDBLCLK => {
-                        log::info!("[GlobalListener] dblclick @ ({},{}) title=\"{}\" pid={}", x, y, window_title, target_pid);
                         Some(GlobalInputEvent {
                             event_type: "mouse_double_click".to_string(),
                             x,
@@ -299,7 +326,6 @@ unsafe extern "system" fn keyboard_hook_proc(n_code: i32, w_param: WPARAM, l_par
 
                 // 安全区：过滤自身窗口事件
                 if is_own_window(hwnd, state_guard.self_pid) {
-                    log::info!("[SafeZone] BLOCKED key — key={} self_pid={}", vk_code, state_guard.self_pid);
                     return CallNextHookEx(None, n_code, w_param, l_param);
                 }
 
@@ -309,8 +335,6 @@ unsafe extern "system" fn keyboard_hook_proc(n_code: i32, w_param: WPARAM, l_par
                 let mut title_buf = [0u16; 256];
                 let len = GetWindowTextW(hwnd, &mut title_buf);
                 let window_title = String::from_utf16_lossy(&title_buf[..len as usize]);
-
-                log::info!("[GlobalListener] key hwnd={:#x} title=\"{}\" pid={} vk={}", hwnd.0 as i64, window_title, target_pid, vk_code);
 
                 // 获取鼠标位置
                 let mut cursor_pos = POINT { x: 0, y: 0 };
@@ -376,7 +400,6 @@ pub fn start_global_listener(app_handle: AppHandle) -> Result<(), String> {
     unsafe {
         // 记录当前进程 PID（用于安全区过滤）
         state_guard.self_pid = GetCurrentProcessId();
-        log::info!("[GlobalListener] Starting — self_pid={}", state_guard.self_pid);
 
         // 安装鼠标钩子
         let mouse_hook = SetWindowsHookExW(
@@ -400,7 +423,6 @@ pub fn start_global_listener(app_handle: AppHandle) -> Result<(), String> {
         state_guard.app_handle = Some(app_handle);
     }
 
-    println!("[GlobalListener] Started");
     Ok(())
 }
 
@@ -426,7 +448,6 @@ pub fn stop_global_listener() -> Result<(), String> {
     state_guard.is_running = false;
     state_guard.app_handle = None;
 
-    println!("[GlobalListener] Stopped");
     Ok(())
 }
 

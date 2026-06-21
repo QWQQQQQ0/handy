@@ -41,7 +41,9 @@ export interface AgentExecuteTaskAction {
   /** 是否需要截图传给 LLM（默认 true）。纯文本任务如回复消息可设为 false */
   requiresScreenshot?: boolean;
   /** 学到的工作流模板：首次执行成功后自动录制，后续执行直接回放 */
-  workflowTemplate?: WorkflowStep[];
+  workflowTemplate?: import('@/types/watcher').WorkflowTemplate;
+  /** 执行次数：首次为 0，每次成功执行后 +1 */
+  executionCount?: number;
   /** 上次执行记录：帮助 Agent 了解之前发生了什么 */
   lastExecution?: TaskExecutionRecord;
 }
@@ -75,6 +77,8 @@ export interface TaskConfig {
   trigger: TriggerConfig;
   action: TaskActionConfig;
   context?: string;
+  /** 聊天上下文：用于聊天回复场景 */
+  chatContext?: import('@/types/watcher').ChatContext;
   createdAt: number;
   updatedAt: number;
 }

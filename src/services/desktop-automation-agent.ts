@@ -5,12 +5,14 @@ import type { ICacheService } from '@/interfaces/cache-service';
 import type { SkillResult } from '@/types/skill';
 import type { ProviderConfig } from '@/types/provider';
 import type { LLMMessage } from '@/types/message';
+import type { ToolContext } from '@/skills/skill';
 import type { WindowInfo } from './desktop-service';
 import { compressImage, type CompressedImage } from '@/utils/image';
-import { getScreenshotScale, applyCoordinateScale, type ScreenshotScale } from '@/utils/coordinate-scale';
+import { getScreenshotScale } from '@/utils/coordinate-scale';
 import type { InteractiveNode, SemanticAction, SemanticAnnotation, UIFingerprint } from '@/types/cache';
 import { matchGoal } from '@/core/skill-resolver';
 import { StateMachine } from './state-machine';
+import { ActionMemory } from './action-memory';
 import { AgentEndpoint } from '@/api/types';
 import { apiStreamCompat } from '@/api/client';
 
@@ -104,10 +106,10 @@ export class DesktopAutomationAgent {
     return { skillExecutor: this.skillExecutor, cacheService: this.cacheService };
   }
 
-  /** 路由工具调用：通过SkillExecutor执行 */
-  private async executeToolCall(toolName: string, args: Record<string, unknown>): Promise<SkillResult> {
+  /** 路由工具调用：通过SkillExecutor执行（自动坐标还原） */
+  private async executeToolCall(toolName: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<SkillResult> {
     console.debug(`[Agent:Tool] executeToolCall — ${toolName}`);
-    return this.skillExecutor.executeToolCall(toolName, args);
+    return this.skillExecutor.executeToolCall(toolName, args, ctx);
   }
 
   /**
@@ -204,45 +206,13 @@ export class DesktopAutomationAgent {
 
     if (resolvedTools.length === 0) return null;
 
-    // 注入 task_progress_mark 工具 + 创建进度追踪器
+    // 注入 task_progress_mark 工具 + 创建进度追踪器 + 动作记忆
     const tools = [...resolvedTools, buildTaskProgressTool()];
     const progress = new TaskProgress();
+    const actionMemory = new ActionMemory();
 
-    // 压缩初始截图
-    let compressedInitial: CompressedImage | undefined;
-    if (screenshotBase64) {
-      try {
-        compressedInitial = await compressImage(screenshotBase64);
-      } catch { /* 压缩失败则使用原图 */ }
-    }
-    ctx.messages.push(this.buildUserMessage({ screenshotBase64, windows, actionHistory, compressedScreenshot: compressedInitial }));
-
-    // 注入 L1 标注到 LLM 上下文
-    if (l1Annotations.length > 0) {
-      const isVision = l1CachedNodes.length === 0 && l1Annotations.length > 0;
-      if (isVision) {
-        const summary = l1Annotations.slice(0, 30).map((a) => {
-          const w = a.relativeWidth ?? 0;
-          const h = a.relativeHeight ?? 0;
-          const cx = a.relativeX + w / 2;
-          const cy = a.relativeY + h / 2;
-          return `- "${a.label}": ${a.description} (keywords: ${a.keywords.join('/')}) @ center(${cx.toFixed(2)}, ${cy.toFixed(2)}) size(${w.toFixed(2)}x${h.toFixed(2)})`;
-        }).join('\n');
-        ctx.messages.push({
-          role: 'system',
-          content: `Target window opened (UIA unavailable — vision analysis). Identified interactive elements:\n${summary}\n\nTotal: ${l1Annotations.length} elements.\n\nUse desktop_click with absolute coordinates. To convert center to absolute: x = window_left + centerX * window_width, y = window_top + centerY * window_height. Use desktop_list_windows to get window position.`,
-        });
-      } else {
-        const summary = l1Annotations.slice(0, 30).map((a) =>
-          `- "${a.label}": ${a.description} [${a.role}] "${a.name}"${a.keywords.length > 0 ? ` (keywords: ${a.keywords.join('/')})` : ''}`
-        ).join('\n');
-        ctx.messages.push({
-          role: 'system',
-          content: `Target window opened. Available elements (semantic annotations):\n${summary}\n\nTotal: ${l1Annotations.length} annotated elements. Use uia_click/uia_type with the role and name above to complete the task.`,
-        });
-      }
-      console.log(`[Agent]   L1 annotations injected — ${l1Annotations.length} elements, isVision=${isVision}`);
-    }
+    // 初始消息（纯文本，LLM 自行决定是否截图）
+    ctx.messages.push(this.buildUserMessage({ windows, actionHistory }));
 
     // 注入子任务提示 + 阶段上下文
     if (taskInstruction) {
@@ -254,51 +224,8 @@ export class DesktopAutomationAgent {
     }
     stripOldScreenshots(ctx.messages);
 
-    // ── 截图压缩比例追踪 ──
-    let lastScreenshotScale: ScreenshotScale | null = null;
-
-    // ── 坐标快照 / 还原 ──
-    const COORD_KEYS = new Set(['x', 'y', 'start_x', 'start_y', 'end_x', 'end_y', 'path']);
-    const snapshotCoords = (args: Record<string, unknown>): Record<string, unknown> | null => {
-      let snap: Record<string, unknown> | null = null;
-      for (const k of Object.keys(args)) {
-        if (COORD_KEYS.has(k)) { if (!snap) snap = {}; snap[k] = args[k]; }
-      }
-      return snap;
-    };
-    const restoreOriginalCoords = (data: Record<string, unknown>, snap: Record<string, unknown>) => {
-      for (const k of Object.keys(snap)) {
-        if (k in data) (data as Record<string, unknown>)[k] = snap[k];
-        if (k === 'start_x' && data['from'] && typeof data['from'] === 'object') (data['from'] as Record<string, unknown>)['x'] = snap[k];
-        if (k === 'start_y' && data['from'] && typeof data['from'] === 'object') (data['from'] as Record<string, unknown>)['y'] = snap[k];
-        if (k === 'end_x' && data['to'] && typeof data['to'] === 'object') (data['to'] as Record<string, unknown>)['x'] = snap[k];
-        if (k === 'end_y' && data['to'] && typeof data['to'] === 'object') (data['to'] as Record<string, unknown>)['y'] = snap[k];
-      }
-    };
-
-    const autoScreenshot = async () => {
-      try {
-        let ssResult: SkillResult;
-        if (focusedHwnd && focusedHwnd !== 0) {
-          ssResult = await this.skillExecutor.executeToolCall('desktop_screenshot', { window_hwnd: focusedHwnd });
-        } else {
-          ssResult = await this.skillExecutor.executeToolCall('desktop_screenshot', {});
-        }
-        if (!ssResult.success || !ssResult.data) return;
-        const imageData = ssResult.data['image_data'] as string | undefined;
-        if (!imageData) return;
-        stripOldScreenshots(ctx.messages);
-        const compressed = await compressImage(imageData);
-        lastScreenshotScale = getScreenshotScale(compressed);
-        ctx.messages.push({
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: compressed.dataUrl } },
-            { type: 'text', text: 'Latest desktop state. Continue with the task.' },
-          ],
-        });
-      } catch { /* 非致命 */ }
-    };
+    // ── 任务级坐标上下文（截图后更新，工具调用时自动传递） ──
+    let toolCtx: ToolContext = { scale: null };
 
     let llmAborted = false;
     console.log(`[Agent]   Entering per-turn LLM loop (maxTurns=${maxTurns})...`);
@@ -307,20 +234,23 @@ export class DesktopAutomationAgent {
     for (let turn = 0; turn < maxTurns; turn++) {
       if (signal?.aborted) { console.log(`[Agent] ■ signal.aborted at turn=${turn}`); break; }
       console.log(`[Agent]   ── Turn ${turn + 1}/${maxTurns} ──`);
+      actionMemory.setTurn(turn);
 
-      // 每轮开始前自动截图
-      await autoScreenshot();
-
-      // 清理旧进度消息 → 注入最新进度上下文
+      // 清理旧进度/动作记忆消息 → 注入最新上下文
       for (let i = ctx.messages.length - 1; i >= 0; i--) {
         const m = ctx.messages[i];
-        if (m.role === 'user' && typeof m.content === 'string' && m.content.startsWith('📋 Task progress')) {
+        if (m.role === 'user' && typeof m.content === 'string' &&
+            (m.content.startsWith('📋 Task progress') || m.content.startsWith('📊 Actions already completed') || m.content.startsWith('⚠️ Failed actions'))) {
           ctx.messages.splice(i, 1);
         }
       }
       const progCtx = progress.buildContext();
       if (progCtx) {
         ctx.messages.push({ role: 'user', content: progCtx });
+      }
+      const memCtx = actionMemory.buildContext();
+      if (memCtx) {
+        ctx.messages.push({ role: 'user', content: memCtx });
       }
 
       let toolCalls: ToolCallInfo[];
@@ -413,6 +343,9 @@ export class DesktopAutomationAgent {
         })),
       });
 
+      // Debug: verify reasoning_content is captured for MiMo thinking models
+      console.debug(`[Agent] turn=${turn} assistant msg: hasRC=${!!reasoningBuffer}, rcLen=${reasoningBuffer.length}, tools=${toolCalls.map(t=>t.name).join(',')}`);
+
       // 逐工具执行
       for (const tc of toolCalls) {
         if (signal?.aborted) { console.log(`[Agent] ■ signal.aborted during tool exec, turn=${turn}, tool=${tc.name}`); break; }
@@ -436,14 +369,6 @@ export class DesktopAutomationAgent {
         const toolEdit = await onStep?.({ type: 'before_tool', data: { name: tc.name, arguments: tc.arguments }, turnIndex: turn });
         const resolvedArgs = (toolEdit?.['toolArguments'] as Record<string, unknown>) ?? tc.arguments;
 
-        // 快照 LLM 原始坐标
-        const originalCoordArgs = snapshotCoords(resolvedArgs);
-
-        // 压缩比例还原
-        if (lastScreenshotScale !== null) {
-          applyCoordinateScale(resolvedArgs, tc.name, lastScreenshotScale);
-        }
-
         // 注入 window_hwnd
         if (focusedHwnd && !('window_hwnd' in resolvedArgs)) {
           if (tc.name.startsWith('uia_') || tc.name === 'desktop_screenshot') {
@@ -460,27 +385,20 @@ export class DesktopAutomationAgent {
           resolvedArgs['hwnd'] = focusedHwnd;
         }
 
-        // 传递压缩比例给 skill 用于区域截图 1:1 映射
-        if (lastScreenshotScale && originalCoordArgs && Object.keys(originalCoordArgs).length > 0) {
-          resolvedArgs['_scale_x'] = lastScreenshotScale.scaleX;
-          resolvedArgs['_scale_y'] = lastScreenshotScale.scaleY;
-        }
-
         // Skip desktop_list_windows
         let result: SkillResult;
         if (tc.name === 'desktop_list_windows' && focusedHwnd && windows?.length) {
           console.log(`[Agent]   skipping desktop_list_windows — already have focusedHwnd=${focusedHwnd}`);
           result = { success: true, message: 'Using pre-known window context', data: { windows, count: windows.length } };
         } else {
-          result = await this.executeToolCall(tc.name, resolvedArgs);
-        }
-
-        // 还原 LLM 原始坐标
-        if (result.data && originalCoordArgs) {
-          restoreOriginalCoords(result.data, originalCoordArgs);
+          // executor 自动处理坐标还原（通过 toolCtx.scale）
+          result = await this.executeToolCall(tc.name, resolvedArgs, toolCtx);
         }
         console.log(`[Agent]   tool ${tc.name} → success=${result.success}${result.message ? `, msg="${result.message.substring(0, 80)}"` : ''}`);
         turnResults.push(result);
+
+        // 记录到动作记忆（每轮注入到 LLM 上下文，防止重复执行）
+        actionMemory.record(tc.name, resolvedArgs, result.success, result.data ?? undefined);
         ctx.allResults.push(result);
 
         // L2 步级缓存
@@ -574,7 +492,8 @@ export class DesktopAutomationAgent {
             stripOldScreenshots(ctx.messages);
             try {
               const compressed = await compressImage(imageData);
-              lastScreenshotScale = getScreenshotScale(compressed);
+              // 更新任务级坐标上下文（后续工具调用自动使用此 scale）
+              toolCtx = { scale: getScreenshotScale(compressed) };
               ctx.messages.push({
                 role: 'user',
                 content: [
@@ -583,7 +502,7 @@ export class DesktopAutomationAgent {
                 ],
               });
             } catch {
-              lastScreenshotScale = null;
+              toolCtx = { scale: null };
               ctx.messages.push({
                 role: 'user',
                 content: [
@@ -626,7 +545,6 @@ export class DesktopAutomationAgent {
           break;
         }
         console.log(`[TaskEnd] ✗ verification FAILED — continuing`);
-        await autoScreenshot();
       }
 
       if (turn === maxTurns - 1) {
@@ -691,27 +609,9 @@ export class DesktopAutomationAgent {
     }
   }
 
-  /** 构建用户初始消息（支持图片+文本） */
-  buildUserMessage(opts: { screenshotBase64?: string; windows?: WindowInfo[]; actionHistory: string[]; compressedScreenshot?: CompressedImage }): LLMMessage {
-    const { screenshotBase64, windows, actionHistory, compressedScreenshot } = opts;
-
-    if (screenshotBase64) {
-      const imageUrl = compressedScreenshot?.dataUrl
-        ?? (screenshotBase64.startsWith('data:') ? screenshotBase64 : `data:image/png;base64,${screenshotBase64}`);
-      const parts: Array<Record<string, unknown>> = [
-        { type: 'image_url', image_url: { url: imageUrl } },
-      ];
-      const textParts: string[] = [];
-      if (compressedScreenshot) {
-        textParts.push(`[屏幕原始尺寸: ${compressedScreenshot.originalWidth}x${compressedScreenshot.originalHeight}]`);
-      }
-      const windowSummary = this.buildWindowSummary(windows ?? []);
-      if (windowSummary) textParts.push(`Visible windows:\n${windowSummary}`);
-      if (actionHistory.length > 0) textParts.push(`Recent actions:\n${actionHistory.join('\n')}`);
-      textParts.push('What should I do next?');
-      parts.push({ type: 'text', text: textParts.join('\n\n') });
-      return { role: 'user', content: parts as LLMMessage['content'] };
-    }
+  /** 构建用户初始消息（纯文本，LLM 自行决定是否截图） */
+  buildUserMessage(opts: { windows?: WindowInfo[]; actionHistory: string[] }): LLMMessage {
+    const { windows, actionHistory } = opts;
 
     const textParts: string[] = [];
     if (windows && windows.length > 0) {

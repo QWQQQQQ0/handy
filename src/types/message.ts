@@ -5,7 +5,9 @@ export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export type TextContent = { type: 'text'; text: string };
 export type ImageContent = { type: 'image_url'; image_url: { url: string } };
-export type ContentPart = TextContent | ImageContent;
+export type AudioContent = { type: 'input_audio'; input_audio: { data: string } };
+export type VideoContent = { type: 'video_url'; video_url: { url: string }; fps?: number; media_resolution?: string };
+export type ContentPart = TextContent | ImageContent | AudioContent | VideoContent;
 export type MessageContent = string | ContentPart[];
 
 export interface ChatMessage {
@@ -16,8 +18,24 @@ export interface ChatMessage {
   timestamp: string;
   status: 'sending' | 'streaming' | 'done' | 'error';
   toolCalls?: ToolCall[];
+  /** tool_call_id for role:'tool' messages — links result to the LLM's tool call */
+  toolCallId?: string;
   /** MiMo 等模型的思考链内容，回传时必须保留以避免 400 错误 */
   reasoning_content?: string;
+  /** Internal flag for system-injected messages (e.g. screenshots) — not displayed in chat UI */
+  _internal?: boolean;
+  /** Agent 内部消息标记 — 来自 request_agent 调用的中间过程 */
+  _agentInternal?: boolean;
+  /** Agent 类型 (desktop/web/document/code) */
+  _agentType?: string;
+  /** 是否是 Agent 开始消息 */
+  _isAgentStart?: boolean;
+  /** 工具调用详情（用于 Agent 内部展示） */
+  _toolCallInfo?: {
+    name: string;
+    args: Record<string, unknown>;
+    status: 'running' | 'done' | 'error';
+  };
 }
 
 export interface LLMMessage {

@@ -12,12 +12,17 @@ Event types:
   - key_down / key_up (with modifiers)
 """
 
+import sys
 import time
 import threading
 from queue import Queue, Empty
 from typing import Optional
 
 from pynput import mouse, keyboard
+
+
+def _log(msg: str) -> None:
+    print(f"[global-listener] {msg}", file=sys.stderr, flush=True)
 
 
 # ── Modifier key tracking ──
@@ -70,7 +75,11 @@ def _key_to_str(key) -> str:
         return name_map.get(key, key.name or str(key))
     elif isinstance(key, keyboard.KeyCode):
         if key.char:
-            return key.char
+            # Ctrl+字母 会产生控制字符（\x01-\x1a），还原为原始字母
+            ch = key.char
+            if len(ch) == 1 and '\x01' <= ch <= '\x1a':
+                return chr(ord(ch) + 0x60)  # \x03 → 'c', \x16 → 'v' 等
+            return ch
         if key.vk is not None:
             return f"VK_{key.vk:02X}"
     return str(key)
@@ -142,11 +151,22 @@ def _is_own_window(hwnd: int, self_pid: int) -> bool:
         return False
 
 
+# 浏览器窗口标题特征
+_BROWSER_INDICATORS = ('Google Chrome', 'Microsoft Edge', 'Brave', 'Opera', 'Vivaldi', 'Arc', ' - Chrome', ' - Edge')
+
+
+def _is_browser_window(window_title: str) -> bool:
+    """Check if a window is a browser window based on its title."""
+    if not window_title:
+        return False
+    return any(indicator in window_title for indicator in _BROWSER_INDICATORS)
+
+
 class GlobalInputListener:
     """Captures global keyboard/mouse events via pynput and queues them."""
 
-    # Drag detection threshold (pixels)
-    DRAG_THRESHOLD = 5
+    # Drag detection threshold (pixels) — 20px to avoid misclassifying clicks as drags
+    DRAG_THRESHOLD = 20
 
     def __init__(self):
         self._queue: Queue = Queue()
@@ -155,6 +175,7 @@ class GlobalInputListener:
 
         # Drag state
         self._drag_start: Optional[tuple[int, int]] = None
+        self._last_move_pos: Optional[tuple[int, int]] = None
         self._drag_start_time: float = 0
         self._drag_button: Optional[str] = None
         self._drag_emitted: bool = False
@@ -171,8 +192,13 @@ class GlobalInputListener:
         self._running = False
 
     def _emit(self, event: dict):
-        """Push event to the queue."""
-        self._queue.put(event)
+        """Push event to the event collector."""
+        try:
+            from engine.event_collector import get_collector
+            get_collector().put_global_event(event)
+        except Exception:
+            # Fallback to local queue if collector not available
+            self._queue.put(event)
 
     def _get_modifiers(self) -> list[str]:
         """Get currently held modifier keys."""
@@ -191,6 +217,8 @@ class GlobalInputListener:
         if event_type.startswith("mouse") and _is_own_window(hwnd, self._self_pid):
             return {}
 
+        # 浏览器去重已移至 event_collector 统一处理
+
         return {
             "event_type": event_type,
             "x": x,
@@ -205,6 +233,14 @@ class GlobalInputListener:
     # ── Mouse callbacks ──
 
     def _on_click(self, x: int, y: int, button: mouse.Button, pressed: bool):
+        try:
+            self._handle_click(x, y, button, pressed)
+        except NotImplementedError:
+            pass
+        except Exception as e:
+            _log(f"_on_click error: {e}")
+
+    def _handle_click(self, x: int, y: int, button: mouse.Button, pressed: bool):
         btn_name = "left" if button == mouse.Button.left else "right"
         now = time.time()
 
@@ -215,50 +251,58 @@ class GlobalInputListener:
             self._drag_button = btn_name
             self._drag_emitted = False
 
-            # Check for double-click
-            is_double = False
-            if self._last_click_pos and self._last_click_time:
-                dt = now - self._last_click_time
-                dx = abs(x - self._last_click_pos[0])
-                dy = abs(y - self._last_click_pos[1])
-                if dt < self._double_click_threshold and dx < self._double_click_distance and dy < self._double_click_distance:
-                    is_double = True
-
-            if is_double:
-                evt = self._make_event("mouse_double_click", x, y)
-                if evt:
-                    self._emit(evt)
-                self._last_click_time = 0
-                self._last_click_pos = None
-            else:
-                # Don't emit click yet — wait for release to confirm it's not a drag
-                self._last_click_time = now
-                self._last_click_pos = (x, y)
+            # Emit raw mouse_down (gesture classification in collector)
+            evt = self._make_event("mouse_down", x, y)
+            if evt:
+                evt["button"] = 0 if btn_name == "left" else 2
+                self._emit(evt)
         else:
             # Mouse release
             if self._drag_start and self._drag_emitted:
-                # End of drag
+                # End of drag (distance threshold was exceeded)
                 evt = self._make_event("mouse_drag_end", x, y,
                                        key=self._drag_button)
                 if evt:
                     self._emit(evt)
-            elif self._drag_start:
-                # No significant movement — it's a click
-                if btn_name == "left":
-                    evt = self._make_event("mouse_click", x, y)
+            elif self._drag_start and self._last_move_pos:
+                # 兜底：按住超过 200ms 且移动超过阈值 → 视为拖动
+                hold_time = now - self._drag_start_time
+                dx = self._last_move_pos[0] - self._drag_start[0]
+                dy = self._last_move_pos[1] - self._drag_start[1]
+                dist = (dx * dx + dy * dy) ** 0.5
+                if hold_time > 0.2 and dist >= self.DRAG_THRESHOLD:
+                    start_evt = self._make_event("mouse_drag_start",
+                                                  self._drag_start[0], self._drag_start[1],
+                                                  key=self._drag_button)
+                    if start_evt:
+                        self._emit(start_evt)
+                    end_evt = self._make_event("mouse_drag_end", x, y,
+                                                key=self._drag_button)
+                    if end_evt:
+                        self._emit(end_evt)
                 else:
-                    evt = self._make_event("mouse_right_click", x, y)
+                    # Not a drag — emit raw mouse_up (gesture classification in collector)
+                    evt = self._make_event("mouse_up", x, y)
+                    if evt:
+                        evt["button"] = 0 if btn_name == "left" else 2
+                        self._emit(evt)
+            else:
+                # No movement — emit raw mouse_up
+                evt = self._make_event("mouse_up", x, y)
                 if evt:
+                    evt["button"] = 0 if btn_name == "left" else 2
                     self._emit(evt)
 
             self._drag_start = None
             self._drag_button = None
             self._drag_emitted = False
+            self._last_move_pos = None
 
     def _on_move(self, x: int, y: int):
         if not self._drag_start:
             return
 
+        self._last_move_pos = (x, y)
         dx = x - self._drag_start[0]
         dy = y - self._drag_start[1]
         dist = (dx * dx + dy * dy) ** 0.5
@@ -283,16 +327,7 @@ class GlobalInputListener:
     # ── Keyboard callbacks ──
 
     def _on_press(self, key):
-        self._pressed_keys.add(key)
-
-        # Skip pure modifier key presses (we track them but don't emit events)
-        if key in _MODIFIER_KEYS:
-            return
-
-        key_str = _key_to_str(key)
-        mods = self._get_modifiers()
-
-        # Get cursor position
+        # Get cursor position first (used for both modifier and non-modifier keys)
         try:
             import ctypes
             pt = ctypes.wintypes.POINT()
@@ -300,21 +335,29 @@ class GlobalInputListener:
             x, y = pt.x, pt.y
         except Exception:
             x, y = 0, 0
+
+        # For modifier keys: emit key_down BEFORE adding to _pressed_keys,
+        # so that _get_modifiers() reflects the state before this key was pressed
+        # (e.g., pressing LCtrl should show modifiers=[], not ['LCtrl'])
+        if key in _MODIFIER_KEYS:
+            key_str = _MODIFIER_NAMES.get(key, str(key))
+            mods = self._get_modifiers()  # current modifiers without this key
+            evt = self._make_event("key_down", x, y, key=key_str, modifiers=mods)
+            if evt:
+                self._emit(evt)
+            self._pressed_keys.add(key)
+            return
+
+        self._pressed_keys.add(key)
+        key_str = _key_to_str(key)
+        mods = self._get_modifiers()
 
         evt = self._make_event("key_down", x, y, key=key_str, modifiers=mods)
         if evt:
             self._emit(evt)
 
     def _on_release(self, key):
-        self._pressed_keys.discard(key)
-
-        # Skip pure modifier key releases
-        if key in _MODIFIER_KEYS:
-            return
-
-        key_str = _key_to_str(key)
-        mods = self._get_modifiers()
-
+        # Get cursor position first
         try:
             import ctypes
             pt = ctypes.wintypes.POINT()
@@ -323,8 +366,22 @@ class GlobalInputListener:
         except Exception:
             x, y = 0, 0
 
-        # Only emit key_up for long presses (>500ms), matching old Rust behavior
-        # Actually, we'll emit all key_up for completeness — the frontend can filter
+        # For modifier keys: remove from _pressed_keys BEFORE emitting key_up,
+        # so that _get_modifiers() reflects the state after release
+        # (e.g., releasing LCtrl should show modifiers=[], not ['LCtrl'])
+        if key in _MODIFIER_KEYS:
+            self._pressed_keys.discard(key)
+            key_str = _MODIFIER_NAMES.get(key, str(key))
+            mods = self._get_modifiers()  # current modifiers without this key
+            evt = self._make_event("key_up", x, y, key=key_str, modifiers=mods)
+            if evt:
+                self._emit(evt)
+            return
+
+        self._pressed_keys.discard(key)
+        key_str = _key_to_str(key)
+        mods = self._get_modifiers()
+
         evt = self._make_event("key_up", x, y, key=key_str, modifiers=mods)
         if evt:
             self._emit(evt)
@@ -361,14 +418,20 @@ class GlobalInputListener:
         self._pressed_keys.clear()
 
     def poll(self, max_events: int = 100) -> list[dict]:
-        """Drain queued events (called by the bridge)."""
-        events = []
-        for _ in range(max_events):
-            try:
-                events.append(self._queue.get_nowait())
-            except Empty:
-                break
-        return events
+        """Drain queued events from the event collector (called by the bridge)."""
+        try:
+            from engine.event_collector import get_collector
+            return get_collector().poll(max_events)
+        except Exception:
+            # Fallback to local queue
+            events = []
+            for _ in range(max_events):
+                try:
+                    events.append(self._queue.get_nowait())
+                except Empty:
+                    break
+            events.sort(key=lambda e: e.get("timestamp", 0))
+            return events
 
     @property
     def is_running(self) -> bool:

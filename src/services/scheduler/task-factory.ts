@@ -42,6 +42,7 @@ export function migrateWatcherConfig(wc: WatcherConfig): TaskConfig {
     ...(wc.customTools ? { customTools: wc.customTools } : {}),
     ...(wc.action.requiresScreenshot !== undefined ? { requiresScreenshot: wc.action.requiresScreenshot } : {}),
     ...(wc.workflowTemplate ? { workflowTemplate: wc.workflowTemplate } : {}),
+    ...(wc.executionCount !== undefined ? { executionCount: wc.executionCount } : {}),
     ...(wc.lastExecution ? { lastExecution: wc.lastExecution } : {}),
   } as TaskActionConfig;
 
@@ -52,6 +53,7 @@ export function migrateWatcherConfig(wc: WatcherConfig): TaskConfig {
     trigger,
     action,
     context: wc.context,
+    chatContext: wc.chatContext,
     createdAt: wc.createdAt,
     updatedAt: wc.updatedAt,
   };

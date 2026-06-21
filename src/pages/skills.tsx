@@ -198,7 +198,7 @@ function DataView({ data }: { data: Record<string, unknown> }) {
     return (
       <div className="mt-2">
         <p className="text-[11px] text-zinc-500 dark:text-zinc-500 mb-1">{key} ({items.length})</p>
-        <div className="max-h-48 overflow-y-auto rounded border border-zinc-200 dark:border-zinc-700">
+        <div className="max-h-48 overflow-auto rounded border border-zinc-200 dark:border-zinc-700">
           <table className="w-full text-[11px] font-mono">
             <thead>
               <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
@@ -518,7 +518,7 @@ function SkillDetail({ skillId, onBack }: { skillId: string; onBack?: () => void
   };
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide">
       <div className="p-6 max-w-3xl">
         {onBack && (
           <button onClick={onBack} className="flex items-center gap-1.5 text-[13px] text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 mb-4 lg:hidden">
@@ -790,7 +790,7 @@ function CacheViewer() {
 
   return (
     <div className="p-4 space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2">
           <Database size={18} className="text-blue-500" />
           <h2 className="text-[15px] font-semibold text-zinc-800 dark:text-zinc-200">Cache</h2>
@@ -820,11 +820,11 @@ function CacheViewer() {
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400">{uiCache.length}</span>
         </button>
         {expanded.l1 && (
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-x-auto">
             {uiCache.length === 0 ? (
               <p className="px-4 py-3 text-[12px] text-zinc-400">No UI cache entries</p>
             ) : (
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-[11px] font-mono min-w-[900px]">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
                     <th className="px-3 py-1.5 text-left text-zinc-500">App</th>
@@ -887,11 +887,11 @@ function CacheViewer() {
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-green-100 dark:bg-green-900 text-green-600 dark:text-green-400">{subgoalCache.length}</span>
         </button>
         {expanded.l2a && (
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-x-auto">
             {subgoalCache.length === 0 ? (
               <p className="px-4 py-3 text-[12px] text-zinc-400">No sub-goal cache entries</p>
             ) : (
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-[11px] font-mono min-w-[800px]">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
                     <th className="px-3 py-1.5 text-left text-zinc-500">Sub-Goal Key</th>
@@ -937,11 +937,11 @@ function CacheViewer() {
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-emerald-100 dark:bg-emerald-900 text-emerald-600 dark:text-emerald-400">{stepCache.length}</span>
         </button>
         {expanded['l2b'] && (
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-x-auto">
             {stepCache.length === 0 ? (
               <p className="px-4 py-3 text-[12px] text-zinc-400">No step cache entries</p>
             ) : (
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-[11px] font-mono min-w-[700px]">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
                     <th className="px-3 py-1.5 text-left text-zinc-500">Goal Fragment</th>
@@ -987,11 +987,11 @@ function CacheViewer() {
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-cyan-100 dark:bg-cyan-900 text-cyan-600 dark:text-cyan-400">{llmCallCache.length}</span>
         </button>
         {expanded.llm && (
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-x-auto">
             {llmCallCache.length === 0 ? (
               <p className="px-4 py-3 text-[12px] text-zinc-400">No LLM call cache entries</p>
             ) : (
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-[11px] font-mono min-w-[900px]">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
                     <th className="px-3 py-1.5 text-left text-zinc-500">Hash</th>
@@ -1041,11 +1041,11 @@ function CacheViewer() {
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-teal-100 dark:bg-teal-900 text-teal-600 dark:text-teal-400">{decompositionCache.length}</span>
         </button>
         {expanded.gd && (
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-x-auto">
             {decompositionCache.length === 0 ? (
               <p className="px-4 py-3 text-[12px] text-zinc-400">No goal decomposition entries</p>
             ) : (
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-[11px] font-mono min-w-[600px]">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
                     <th className="px-3 py-1.5 text-left text-zinc-500">Normalized Goal</th>
@@ -1083,11 +1083,11 @@ function CacheViewer() {
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-400">{templates.length}</span>
         </button>
         {expanded.l3 && (
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-x-auto">
             {templates.length === 0 ? (
               <p className="px-4 py-3 text-[12px] text-zinc-400">No learned templates</p>
             ) : (
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-[11px] font-mono min-w-[900px]">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
                     <th className="px-3 py-1.5 text-left text-zinc-500">Name</th>
@@ -1135,11 +1135,11 @@ function CacheViewer() {
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-cyan-100 dark:bg-cyan-900 text-cyan-600 dark:text-cyan-400">{savedApps.length}</span>
         </button>
         {expanded.apps && (
-          <div className="max-h-64 overflow-y-auto">
+          <div className="overflow-x-auto">
             {savedApps.length === 0 ? (
               <p className="px-4 py-3 text-[12px] text-zinc-400">No apps indexed</p>
             ) : (
-              <table className="w-full text-[11px] font-mono">
+              <table className="w-full text-[11px] font-mono min-w-[500px]">
                 <thead>
                   <tr className="bg-zinc-100 dark:bg-zinc-800 sticky top-0">
                     <th className="px-3 py-1.5 text-left text-zinc-500">Name</th>
@@ -1288,7 +1288,7 @@ export default function SkillsPage() {
 
       <div className="flex-1 flex min-h-0">
         {/* Sidebar */}
-        <div className={`${selectedSkillId ? 'hidden lg:block' : 'flex-1'} w-[280px] border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto shrink-0`}>
+        <div className={`${selectedSkillId ? 'hidden lg:block' : 'flex-1'} w-[280px] border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto shrink-0 min-h-0 scrollbar-hide`}>
           {[...grouped.entries()].map(([category, items]) => (
             <div key={category}>
               <CategoryHeader title={category} count={items.length} />
@@ -1326,7 +1326,7 @@ export default function SkillsPage() {
 
         {/* Detail */}
         {selectedSkillId === '__cache__' ? (
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide">
             <CacheViewer />
           </div>
         ) : selectedSkill ? (

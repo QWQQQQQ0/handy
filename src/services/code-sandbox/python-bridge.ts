@@ -4,8 +4,7 @@
  * This module provides the communication layer between the TypeScript
  * code-sandbox and the Python sidecar (python-engine/main.py).
  *
- * The actual Python execution is wired through the Tauri sidecar mechanism.
- * TODO: Wire to the actual sidecar bridge once the Rust IPC layer is updated.
+ * Calls are routed through the Tauri bridge (Rust IPC → Python child process).
  */
 
 export interface PythonExecParams {
@@ -26,18 +25,19 @@ export interface PythonExecResult {
 /**
  * Execute Python code via the python-engine sidecar.
  *
- * Currently a stub — will be wired to the actual Tauri sidecar bridge
- * when the Rust IPC layer exposes the `exec_python` tool.
- *
- * The python-engine/main.py already handles the `exec_python` tool.
- * This bridge function will invoke it once the Rust layer is updated.
+ * Routes through Tauri invoke → Rust bridge → Python child process.
+ * The python-engine/main.py handles "exec_python" with a restricted
+ * sandbox (SAFE_MODULES whitelist, no os/subprocess/ctypes).
  */
 export async function bridgeExecPython(params: PythonExecParams): Promise<PythonExecResult> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _ = params;
-  throw new Error(
-    'Python execution is not yet wired to the sidecar bridge. ' +
-    'The python-engine/main.py handles "exec_python" but the Rust IPC ' +
-    'layer has not been updated to route calls to it.',
-  );
+  // Dynamic import so the module works outside Tauri (e.g. test env)
+  const { invoke } = await import('@tauri-apps/api/core');
+
+  const result = await invoke<PythonExecResult>('exec_python', {
+    code: params.code,
+    timeoutSec: params.timeoutSec ?? 30,
+    params: params.params ?? {},
+  });
+
+  return result;
 }

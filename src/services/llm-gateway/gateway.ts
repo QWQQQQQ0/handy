@@ -8,6 +8,7 @@ import { GoogleAdapter } from '@/adapters/google';
 import type { LLMAdapter } from '@/adapters/types';
 import type { LLMMessage, ToolCallResponse } from '@/types/message';
 import type { ProviderConfig } from '@/types/provider';
+import { formatMemoriesForPrompt } from '@/services/agent-memory';
 import systemPrompts from '@/config/system-prompts.json';
 // LLM 缓存存储和命中检查已全部移至前端 client.ts
 import type { IModelService } from '@/interfaces/model-service';
@@ -28,6 +29,11 @@ export enum ModelScenario {
   codeIteration = 'codeIteration',
   adminAgent = 'adminAgent',
   complexityJudge = 'complexityJudge',
+  taskDecomposer = 'taskDecomposer',
+  taskVerifier = 'taskVerifier',
+  docAgent = 'docAgent',
+  webAgent = 'webAgent',
+  codeAgent = 'codeAgent',
 }
 
 export interface LengthCheckResult {
@@ -48,6 +54,11 @@ const MAX_TOKENS_PER_SCENARIO: Record<ModelScenario, number> = {
   [ModelScenario.raw]: 96000,
   [ModelScenario.codeGeneration]: 32000,
   [ModelScenario.codeIteration]: 32000,
+  [ModelScenario.taskDecomposer]: 4000,
+  [ModelScenario.taskVerifier]: 8000,
+  [ModelScenario.docAgent]: 32000,
+  [ModelScenario.webAgent]: 16000,
+  [ModelScenario.codeAgent]: 32000,
   [ModelScenario.adminAgent]: 16000,
   [ModelScenario.complexityJudge]: 8000,
 };
@@ -185,6 +196,9 @@ export class LlmGateway implements IModelService {
     switch (scenario) {
       case ModelScenario.chat:
         base = extra ? `${systemPrompts.chat}\n\n${extra}` : systemPrompts.chat;
+        // Inject agent long-term memories into system prompt
+        { const mems = formatMemoriesForPrompt('chat');
+          if (mems) base += mems; }
         break;
       case ModelScenario.desktopAutomation:
         base = systemPrompts.desktopAutomation.replaceAll('{goal}', goal);
@@ -216,6 +230,21 @@ export class LlmGateway implements IModelService {
         break;
       case ModelScenario.complexityJudge:
         base = systemPrompts.complexityJudge.replace('{user_request}', goal).replace('{existing_tools}', extra ?? '');
+        break;
+      case ModelScenario.taskDecomposer:
+        base = systemPrompts.taskDecomposer;
+        break;
+      case ModelScenario.taskVerifier:
+        base = systemPrompts.taskVerifier;
+        break;
+      case ModelScenario.docAgent:
+        base = (systemPrompts as Record<string, string>).docAgent ?? systemPrompts.chat;
+        break;
+      case ModelScenario.webAgent:
+        base = systemPrompts.webAutomation.replaceAll('{goal}', goal);
+        break;
+      case ModelScenario.codeAgent:
+        base = (systemPrompts as Record<string, string>).codeAgent ?? systemPrompts.chat;
         break;
     }
     if (requiredTool) {
@@ -265,7 +294,9 @@ export class LlmGateway implements IModelService {
     goal?: string;
     skipCache?: boolean;
   }): AsyncGenerator<string> {
-    const { scenario, messages, provider, apiKey, tools, goal = '', skipCache = false } = params;
+    const { scenario, messages, provider, apiKey, tools, goal = '' } = params;
+    // LLM 缓存全局禁用
+    const skipCache = true;
 
     const supportsTools = provider.supportsTools !== false;
     const adapterTools = supportsTools ? tools : undefined;
@@ -324,8 +355,9 @@ export class LlmGateway implements IModelService {
     requiredTool?: boolean;
     skipCache?: boolean;
   }): Promise<ToolCallResponse> {
-    const { scenario, messages, provider, apiKey, tools, goal = '', requiredTool = false, skipCache = false } = params;
-    const stream = this.chatStream({ scenario, messages, provider, apiKey, tools, goal, skipCache });
+    const { scenario, messages, provider, apiKey, tools, goal = '', requiredTool = false } = params;
+    // LLM 缓存全局禁用
+    const stream = this.chatStream({ scenario, messages, provider, apiKey, tools, goal, skipCache: true });
 
     let toolJson: string | undefined;
     let responseText = '';
@@ -364,6 +396,7 @@ export class LlmGateway implements IModelService {
     }));
 
     const assistantMessage: LLMMessage = { role: 'assistant', content: responseText || null, toolCalls: toolCallObjs, reasoning_content: reasoningContent || undefined };
+    console.debug(`[LlmGateway] callWithTools: hasRC=${!!reasoningContent}, rcLen=${reasoningContent.length}, tools=${results.map(t=>t.name).join(',')}`);
     return { toolCalls: results, assistantMessage };
   }
 

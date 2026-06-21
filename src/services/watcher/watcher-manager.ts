@@ -1,7 +1,7 @@
 // Watcher manager — singleton backed by TickLoop.
 // Handles lifecycle (create/start/stop/remove), persistence, auto-restore, and cross-window sync.
 
-import type { WatcherConfig, WatcherState, ScreenRegion, MonitorTarget, WorkflowStep } from '@/types/watcher';
+import type { WatcherConfig, WatcherState, ScreenRegion, MonitorTarget, WorkflowStep, WorkflowTemplate } from '@/types/watcher';
 import type { TaskConfig, Tickable } from '@/types/scheduler';
 import type { ScreenChangeWatcher } from '@/services/scheduler/screen-change-watcher';
 import { TickLoop } from '@/services/scheduler/scheduler';
@@ -76,7 +76,7 @@ class WatcherManager {
       (task as unknown as ScreenChangeWatcher).setOnExecutionComplete(async (success: boolean, summary: string) => {
         let config = this.configStore.get(id);
         if (config) {
-          const updated = {
+          const updated: WatcherConfig = {
             ...config,
             lastExecution: {
               timestamp: Date.now(),
@@ -84,6 +84,8 @@ class WatcherManager {
               summary,
               turnsCount: 0,
             },
+            // 成功执行后增加 executionCount
+            executionCount: success ? (config.executionCount ?? 0) + 1 : config.executionCount,
             updatedAt: Math.floor(Date.now() / 1000),
           };
           if (updated.monitorTarget?.windowHwnd) delete updated.monitorTarget.windowHwnd;
@@ -105,7 +107,27 @@ class WatcherManager {
       (task as unknown as ScreenChangeWatcher).setOnWorkflowLearned(async (template: WorkflowStep[]) => {
         let config = this.configStore.get(id);
         if (config) {
-          const updated = { ...config, workflowTemplate: template, updatedAt: Math.floor(Date.now() / 1000) };
+          // 将 WorkflowStep[] 转换为 WorkflowTemplate
+          const workflowTemplate: WorkflowTemplate = {
+            id: crypto.randomUUID(),
+            name: config.name,
+            scenario: config.action.goalTemplate || '',
+            steps: template.map(step => ({
+              type: 'action' as const,
+              action: step.type === 'action' ? step.action : undefined,
+              description: step.type === 'action' ? step.action.action : 'llm_generate',
+            })),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            successCount: 0,
+          };
+
+          const updated: WatcherConfig = {
+            ...config,
+            workflowTemplate,
+            executionCount: (config.executionCount ?? 0) + 1,
+            updatedAt: Math.floor(Date.now() / 1000),
+          };
           if (updated.monitorTarget?.windowHwnd) delete updated.monitorTarget.windowHwnd;
           await storeWatcherConfig(updated);
           this.configStore.set(id, updated);

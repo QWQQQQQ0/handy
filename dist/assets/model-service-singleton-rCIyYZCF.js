@@ -1,0 +1,1 @@
+import{a4 as i}from"./index-DX05n-GL.js";import"./vendor-markdown-DkZTs8jq.js";import"./vendor-react-CfjWFXXn.js";import"./vendor-state-D0g0rz4W.js";import"./vendor-tauri-DP7f-jEB.js";let e=null;function p(){return e||(e=new i),e}function a(t){e=t}export{p as getModelService,a as setModelService};

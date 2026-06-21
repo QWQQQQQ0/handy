@@ -318,7 +318,7 @@ export default function FloatPage() {
       >
         <div className="flex items-center gap-2">
           <GripHorizontal size={14} className="text-zinc-400" />
-          <span className="text-[12px] font-semibold text-zinc-600 dark:text-zinc-400">OpenPaw</span>
+          <span className="text-[12px] font-semibold text-zinc-600 dark:text-zinc-400">Handy</span>
         </div>
         <div className="flex items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <button onClick={handleMinimize} className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-500">

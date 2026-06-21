@@ -6,12 +6,12 @@ import { AppShell } from "@/components/app-shell";
 import { AppInit } from "@/components/app-init";
 
 export const metadata: Metadata = {
-  title: "OpenPaw",
+  title: "Handy",
   description: "Local-first AI personal assistant",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
-    title: "OpenPaw",
+    title: "Handy",
     statusBarStyle: "default",
   },
   other: {

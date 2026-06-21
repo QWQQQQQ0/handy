@@ -19,6 +19,12 @@ import {
   handleScreenAnalysisInterruption,
   handleDesktopAutomation,
   handleDesktopAutomationTools,
+  handleRunCommand,
+  handleTaskDecomposer,
+  handleTaskVerifier,
+  handleDocAgent,
+  handleWebAgent,
+  handleCodeAgent,
 } from './handlers';
 
 // ── 路由表：端点 → handler → 是否流式 ──
@@ -26,6 +32,8 @@ import {
 interface RouteEntry {
   handler: (provider: import('@/types/provider').ProviderConfig, apiKey: string, params: unknown) => unknown;
   streaming: boolean;
+  /** false = 不要求 provider/apiKey（如 run_command） */
+  requiresProvider?: boolean;
 }
 
 type HandlerFn = (provider: import('@/types/provider').ProviderConfig, apiKey: string, params: unknown) => unknown;
@@ -45,6 +53,12 @@ const routes: Record<string, RouteEntry> = {
   [AgentEndpoint.screenAnalysisInterruption]: { handler: handleScreenAnalysisInterruption as HandlerFn, streaming: false },
   [AgentEndpoint.desktopAutomation]:          { handler: handleDesktopAutomation as HandlerFn,       streaming: true },
   [AgentEndpoint.desktopAutomationTools]:     { handler: handleDesktopAutomationTools as HandlerFn,  streaming: true },
+  [AgentEndpoint.runCommand]:                 { handler: handleRunCommand as HandlerFn,              streaming: false, requiresProvider: false },
+  [AgentEndpoint.taskDecomposer]:             { handler: handleTaskDecomposer as HandlerFn,          streaming: true },
+  [AgentEndpoint.taskVerifier]:               { handler: handleTaskVerifier as HandlerFn,            streaming: true },
+  [AgentEndpoint.docAgent]:                   { handler: handleDocAgent as HandlerFn,               streaming: true },
+  [AgentEndpoint.webAgent]:                   { handler: handleWebAgent as HandlerFn,               streaming: true },
+  [AgentEndpoint.codeAgent]:                  { handler: handleCodeAgent as HandlerFn,              streaming: true },
 };
 
 // ── 请求体解析 ──
@@ -103,7 +117,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     const body = await parseBody(req);
     const { provider, apiKey, params } = body;
 
-    if (!provider || !apiKey) {
+    // 某些端点（如 run_command）不需要 provider/apiKey
+    if (route.requiresProvider !== false && (!provider || !apiKey)) {
       sendJson(res, 400, { ok: false, error: 'Missing provider or apiKey' });
       return true;
     }
@@ -113,7 +128,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       sendSSE(res);
 
       try {
-        const stream = route.handler(provider, apiKey, params) as AsyncGenerator<string>;
+        const stream = route.handler(provider!, apiKey!, params) as AsyncGenerator<string>;
         for await (const chunk of stream) {
           if (chunk.startsWith('__TOOLS__:')) {
             try {
@@ -140,7 +155,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     } else {
       // 非流式响应 (JSON)
       try {
-        const data = await (route.handler(provider, apiKey, params) as Promise<unknown>);
+        const data = await (route.handler(provider!, apiKey!, params) as Promise<unknown>);
         sendJson(res, 200, { ok: true, data });
       } catch (e) {
         sendJson(res, 500, { ok: false, error: String(e) });

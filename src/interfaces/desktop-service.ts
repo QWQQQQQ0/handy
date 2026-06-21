@@ -73,7 +73,8 @@ export interface IDesktopService {
   uiaFingerprint(window_hwnd?: number): Promise<Record<string, unknown>>;
 
   // 浏览器自动化
-  webPwLaunch(headless?: boolean, channel?: string): Promise<Record<string, unknown>>;
+  webPwLaunch(headless?: boolean, channel?: string, connectExisting?: boolean): Promise<Record<string, unknown>>;
+  webPwLaunchBrowser(browser?: string, port?: number): Promise<Record<string, unknown>>;
   webPwNavigate(url: string): Promise<Record<string, unknown>>;
   webPwGetInteractive(): Promise<Record<string, unknown>>;
   webPwClickSelector(selector: string): Promise<Record<string, unknown>>;

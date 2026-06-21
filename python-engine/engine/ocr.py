@@ -5,6 +5,8 @@ Used when UIA cannot find elements (custom-drawn UIs, games, remote desktop).
 
 from __future__ import annotations
 
+import time
+import threading
 import traceback
 from typing import Any
 
@@ -16,6 +18,11 @@ except ImportError:
 
 
 _reader: easyocr.Reader | None = None
+_last_ocr_time: float = 0
+_idle_timer: threading.Timer | None = None
+
+# 空闲超时：3 分钟无 OCR 调用后卸载模型
+OCR_IDLE_TIMEOUT = 180
 
 
 def _get_reader() -> easyocr.Reader:
@@ -23,6 +30,36 @@ def _get_reader() -> easyocr.Reader:
     if _reader is None:
         _reader = easyocr.Reader(['ch_sim', 'en'], gpu=False)
     return _reader
+
+
+def _update_ocr_activity() -> None:
+    """更新 OCR 活动时间，重置空闲定时器"""
+    global _last_ocr_time, _idle_timer
+    _last_ocr_time = time.time()
+    # 取消现有定时器
+    if _idle_timer:
+        _idle_timer.cancel()
+    # 启动新的空闲检查定时器
+    _idle_timer = threading.Timer(60, _check_idle)
+    _idle_timer.daemon = True
+    _idle_timer.start()
+
+
+def _check_idle() -> None:
+    """检查是否空闲超时，如果是则卸载模型"""
+    global _reader, _idle_timer
+    if _reader is not None and _last_ocr_time > 0:
+        idle_time = time.time() - _last_ocr_time
+        if idle_time >= OCR_IDLE_TIMEOUT:
+            print(f"[ocr] 空闲超时 ({OCR_IDLE_TIMEOUT}s)，卸载 OCR 模型释放内存")
+            _reader = None
+            _idle_timer = None
+            return
+    # 继续检查
+    if _reader is not None:
+        _idle_timer = threading.Timer(60, _check_idle)
+        _idle_timer.daemon = True
+        _idle_timer.start()
 
 
 class OCREngine:
@@ -42,6 +79,7 @@ class OCREngine:
         WebView2's resource-request handler).
         """
         _get_reader()
+        _update_ocr_activity()
 
     def recognize(self, image_path: str = "", image_base64: str = "") -> dict[str, Any]:
         """Recognize text in an image. Provide either file path or base64 data URL.
@@ -52,6 +90,7 @@ class OCREngine:
         import base64
         import os
 
+        _update_ocr_activity()  # 更新活动时间
         path = image_path
         # If base64 is provided, decode to temp file
         if not path and image_base64:

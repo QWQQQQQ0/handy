@@ -6,7 +6,6 @@ import { ToolModeBar } from '@/components/chat/tool-mode-bar';
 import { ToolSelectorPanel } from '@/components/chat/tool-selector-panel';
 import { ToolMode } from '@/stores/chat-store';
 import { useSettingsStore } from '@/stores/settings-store';
-import { AgentTaskService } from '@/services/agent-task-service';
 import { automationRecorder } from '@/services/recorder';
 import { useSkillStore } from '@/stores/skill-store';
 import type { UserSkillConfig, AutomationStep } from '@/types/skill';
@@ -100,33 +99,12 @@ export default function TaskMode({
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    // ── 订阅事件总线，实时显示每一步执行日志 ──
+    // ── 订阅事件总线，实时显示执行日志 ──
     const { appEventBus } = await import('@/services/event-bus');
     const unsubscribes: (() => void)[] = [];
     unsubscribes.push(
-      appEventBus.on('agent', '*', (event) => {
-        // 展示工具调用事件 + 推理思考过程
-        if (event.type === 'before_tool' || event.type === 'after_tool') {
-          const isError = event.level === 'warn' || event.level === 'error';
-          setActionLog((prev) => [...prev, { action: event.message, success: !isError }]);
-        } else if (event.type === 'reasoning') {
-          // 思考过程：只展示最新的累积内容，避免刷屏
-          const reasoning = (event.data as { reasoning?: string; accumulated?: string } | undefined)?.accumulated;
-          if (reasoning) {
-            setActionLog((prev) => {
-              const others = prev.filter(a => !a.action.startsWith('🧠'));
-              return [...others, { action: `🧠 ${reasoning.slice(-200)}`, success: true }];
-            });
-          }
-        }
-      }),
-    );
-    // 应用级任务事件
-    unsubscribes.push(
       appEventBus.on('app', '*', (event) => {
-        if (event.type === 'task_execute_start') {
-          setActionLog((prev) => [...prev, { action: event.message, success: true }]);
-        } else if (event.type === 'task_execute_done') {
+        if (event.type === 'task_execute_start' || event.type === 'task_scheduled' || event.type === 'task_execute_done') {
           setActionLog((prev) => [...prev, { action: event.message, success: true }]);
         }
       }),
@@ -155,12 +133,11 @@ export default function TaskMode({
         return;
       }
 
-      const { getModelService } = await import('@/services/model-service-singleton');
-      const { getCacheService } = await import('@/services/cache-service-singleton');
-      const modelService = getModelService();
-      const cacheService = getCacheService();
       const skillExecutor = getBuiltinExecutor() as unknown as import('@/interfaces/skill-executor').ISkillExecutor;
+      const { TaskGateway } = await import('@/services/task-agent');
+      const gateway = new TaskGateway(skillExecutor);
 
+      // 根据用户工具模式选择过滤工具
       const settingsState = useSettingsStore.getState();
       let toolFilter: Set<string> | undefined;
       if (toolMode === ToolMode.none) {
@@ -171,14 +148,19 @@ export default function TaskMode({
         toolFilter = customTools;
       }
 
-      const agentTaskService = new AgentTaskService(modelService, skillExecutor, cacheService);
-      const response = await agentTaskService.handleUserGoal(goal, config, apiKey, toolFilter, abortController.signal);
+      const response = await gateway.handleUserGoal({
+        goal,
+        provider: config,
+        apiKey,
+        signal: abortController.signal,
+        toolFilter,
+      });
 
       setActionLog((prev) => [...prev, { action: response.message, success: true }]);
 
       for (const task of response.tasks) {
         if (task.status === 'scheduled') {
-          setActionLog((prev) => [...prev, { action: `Scheduled task: ${task.taskId}`, success: true }]);
+          setActionLog((prev) => [...prev, { action: `Scheduled: ${task.message ?? task.taskId}`, success: true }]);
           if (task.taskId) {
             setTimeout(() => {
               onModeChange('watcher');
@@ -187,9 +169,8 @@ export default function TaskMode({
           }
         } else if (task.status === 'error') {
           setActionLog((prev) => [...prev, { action: `Error: ${task.error}`, success: false }]);
-        } else if (task.status === 'done' && task.turns) {
-          const totalToolCalls = task.turns.reduce((n, t) => n + t.toolCalls.length, 0);
-          setActionLog((prev) => [...prev, { action: `Done: ${totalToolCalls} tool calls`, success: true }]);
+        } else if (task.status === 'done') {
+          setActionLog((prev) => [...prev, { action: task.message ?? 'Done', success: true }]);
         }
       }
     } catch (e) {
@@ -200,7 +181,7 @@ export default function TaskMode({
       abortControllerRef.current = null;
       setIsAutomating(false);
     }
-  }, [isAutomating, onRefreshWatcherConfigs, onModeChange, toolMode, customTools]);
+  }, [isAutomating, onRefreshWatcherConfigs, onModeChange]);
 
   return (
     <>

@@ -1,9 +1,10 @@
 // 来源: lib/skills/skill_executor.dart
 
 import type { SkillResult, ToolDefinition } from '@/types/skill';
-import type { Skill, SkillTool } from './skill';
+import type { Skill, SkillTool, ToolContext } from './skill';
 import { toolToOpenAI } from './skill';
 import type { ISkillExecutor } from '@/interfaces/skill-executor';
+import { applyCoordinateScale } from '@/utils/coordinate-scale';
 
 export class SkillExecutor implements ISkillExecutor {
   private skills: Map<string, Skill> = new Map();
@@ -70,22 +71,45 @@ export class SkillExecutor implements ISkillExecutor {
   async executeToolCall(
     toolName: string,
     params: Record<string, unknown>,
+    ctx?: ToolContext,
   ): Promise<SkillResult> {
     // Legacy tool name → search with unified name, but execute with ORIGINAL
     // name so the skill's internal alias can translate params (e.g. right_click → button:'right')
     const mappedName = SkillExecutor.LEGACY_MAP[toolName] ?? toolName;
     const legacyNote = mappedName !== toolName ? ` (→${mappedName})` : '';
 
+    // 防御性拷贝：params 可能来自 frozen 对象（Zustand、onStep 回调等），
+    // 坐标还原需要修改 params，必须先拷贝
+    const mutableParams = { ...params };
+
+    // 平台级坐标还原：executor 自动处理，skill 不感知
+    if (ctx?.scale) {
+      applyCoordinateScale(mutableParams, toolName, ctx.scale);
+      // 注入 scale 给 desktop.ts 的 captureRegionAround（区域验证截图）
+      if (!('_scale_x' in mutableParams)) {
+        mutableParams['_scale_x'] = ctx.scale.scaleX;
+        mutableParams['_scale_y'] = ctx.scale.scaleY;
+      }
+    }
+
+    // 设置目标窗口（用于避免浮窗遮挡）
+    if (ctx?.targetWindowHwnd) {
+      const webSkill = this.getSkill('web_screen');
+      if (webSkill && 'setTargetWindow' in webSkill) {
+        (webSkill as any).setTargetWindow(ctx.targetWindowHwnd);
+      }
+    }
+
     for (const skill of this.allSkills) {
       if (skill.tools.some((t) => t.name === mappedName)) {
-        const argsStr = JSON.stringify(params);
+        const argsStr = JSON.stringify(mutableParams);
         const argsPreview = argsStr.length > 500
           ? argsStr.substring(0, 500) + '...'
           : argsStr;
         console.log(`[executor] ▶ ${toolName}${legacyNote}(${argsPreview}) via ${skill.name}`);
         const start = Date.now();
         // Pass ORIGINAL toolName — skill's executeTool handles legacy param translation
-        const result = await skill.execute(toolName, params);
+        const result = await skill.execute(toolName, mutableParams);
         const duration = Date.now() - start;
         if (result.success) {
           const dataPreview = result.data

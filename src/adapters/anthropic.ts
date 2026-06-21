@@ -45,15 +45,28 @@ export class AnthropicAdapter implements LLMAdapter {
       body['thinking'] = { type: 'enabled' };
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      clearTimeout(timeout);
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        throw new Error('Anthropic API request timed out (120s).');
+      }
+      throw e;
+    }
+    clearTimeout(timeout);
 
     if (!response.ok) {
       const errBody = await response.text().catch(() => '(no body)');
@@ -140,7 +153,7 @@ function convertMessagesForAnthropic(messages: LLMMessage[]): Array<Record<strin
   for (const m of messages) {
     const content = m.content;
 
-    // Tool result with multimodal content (images + text)
+    // Tool result with multimodal content (images + text + audio + video)
     if (m.role === 'tool' && Array.isArray(content)) {
       const toolResultContent: Array<Record<string, unknown>> = [];
       for (const part of content) {
@@ -171,6 +184,14 @@ function convertMessagesForAnthropic(messages: LLMMessage[]): Array<Record<strin
               data,
             },
           });
+        } else if (p['type'] === 'input_audio') {
+          // Anthropic does not support audio — convert to text reference
+          const audio = p['input_audio'] as Record<string, unknown>;
+          const data = (audio['data'] ?? '') as string;
+          toolResultContent.push({ type: 'text', text: `[Audio: ${data.substring(0, 200)}]` });
+        } else if (p['type'] === 'video_url') {
+          const vu = p['video_url'] as Record<string, unknown>;
+          toolResultContent.push({ type: 'text', text: `[Video: ${vu['url'] ?? ''}]` });
         } else if (p['type'] === 'text') {
           toolResultContent.push({ type: 'text', text: p['text'] });
         }
@@ -215,6 +236,14 @@ function convertMessagesForAnthropic(messages: LLMMessage[]): Array<Record<strin
               data,
             },
           });
+        } else if (p['type'] === 'input_audio') {
+          // Anthropic does not support audio — convert to text reference
+          const audio = p['input_audio'] as Record<string, unknown>;
+          const data = (audio['data'] ?? '') as string;
+          parts.push({ type: 'text', text: `[Audio provided: ${data.substring(0, 150)}...]` });
+        } else if (p['type'] === 'video_url') {
+          const vu = p['video_url'] as Record<string, unknown>;
+          parts.push({ type: 'text', text: `[Video URL: ${vu['url'] ?? ''}]` });
         } else if (p['type'] === 'text') {
           parts.push({ type: 'text', text: p['text'] });
         }

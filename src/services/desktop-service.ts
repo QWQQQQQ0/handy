@@ -130,7 +130,7 @@ const tauriApi = {
   },
   findAppByWindowTitle: async (windowTitle: string): Promise<string | null> => {
     const { invoke } = await import('@tauri-apps/api/core');
-    return invoke<string | null>('desktop_find_app_by_title', { windowTitle });
+    return invoke<string | null>('desktop_find_app_by_title', { title: windowTitle });
   },
   refreshApps: async (): Promise<number> => {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -171,17 +171,44 @@ const tauriApi = {
     return invoke<Record<string, unknown>>('uia_fingerprint', { windowHwnd: window_hwnd ?? null });
   },
   // ── Phase 5: Browser (Playwright) ──
-  webPwLaunch: async (headless?: boolean, channel?: string): Promise<Record<string, unknown>> => {
+  webPwLaunch: async (headless?: boolean, channel?: string, connectExisting?: boolean): Promise<Record<string, unknown>> => {
     const { invoke } = await import('@tauri-apps/api/core');
-    return invoke<Record<string, unknown>>('web_launch', { headless: headless ?? null, channel: channel ?? null });
+    return invoke<Record<string, unknown>>('web_launch', {
+      headless: headless ?? null,
+      channel: channel ?? null,
+      connectExisting: connectExisting ?? true,
+    });
+  },
+  webConnectCdp: async (cdpUrl?: string): Promise<Record<string, unknown>> => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<Record<string, unknown>>('web_connect_cdp', { cdpUrl: cdpUrl ?? null });
+  },
+  webPwLaunchBrowser: async (browser?: string, port?: number): Promise<Record<string, unknown>> => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<Record<string, unknown>>('web_launch_browser', {
+      browser: browser ?? 'msedge',
+      port: port ?? 9222,
+    });
   },
   webPwNavigate: async (url: string): Promise<Record<string, unknown>> => {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<Record<string, unknown>>('web_navigate', { url });
   },
+  webNavigate: async (url?: string, action?: string): Promise<Record<string, unknown>> => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<Record<string, unknown>>('web_navigate', { url: url ?? null, action: action ?? 'goto' });
+  },
   webPwGetInteractive: async (): Promise<Record<string, unknown>> => {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<Record<string, unknown>>('web_get_interactive');
+  },
+  extGetRecordedEvents: async (): Promise<{ events: Array<Record<string, unknown>>; ok: boolean; error?: string }> => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<{ events: Array<Record<string, unknown>>; ok: boolean; error?: string }>('ext_get_recorded_events');
+  },
+  extSetCapture: async (enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<{ ok: boolean; enabled: boolean }>('ext_set_capture', { enabled });
   },
   webPwClickSelector: async (selector: string): Promise<Record<string, unknown>> => {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -275,7 +302,10 @@ const fallback = {
   uiaGetProperty: async () => { throw new Error(fallbackError); },
   uiaFingerprint: async () => { throw new Error(fallbackError); },
   webPwLaunch: async () => { throw new Error(fallbackError); },
+  webConnectCdp: async () => { throw new Error(fallbackError); },
+  webPwLaunchBrowser: async () => { throw new Error(fallbackError); },
   webPwNavigate: async () => { throw new Error(fallbackError); },
+  webNavigate: async () => { throw new Error(fallbackError); },
   webPwGetInteractive: async () => { throw new Error(fallbackError); },
   webPwClickSelector: async () => { throw new Error(fallbackError); },
   webPwClickRole: async () => { throw new Error(fallbackError); },

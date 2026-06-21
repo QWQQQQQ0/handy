@@ -92,6 +92,11 @@ export function RecorderPanel({
       }
     });
 
+    // 注册事件移除回调（手势分类器替换 mousedown→click 时移除旧事件）
+    const unsubscribeRemove = unifiedRecorder.onEventRemove((eventId) => {
+      setEvents(prev => prev.filter(e => e.id !== eventId));
+    });
+
     // 注册状态回调
     const unsubscribeState = unifiedRecorder.on((type, data) => {
       switch (type) {
@@ -127,6 +132,7 @@ export function RecorderPanel({
 
     return () => {
       unsubscribe();
+      unsubscribeRemove();
       unsubscribeState();
     };
   }, [onSessionComplete]);
@@ -152,12 +158,12 @@ export function RecorderPanel({
     }
   }, []);
 
-  const handlePause = useCallback(() => {
-    unifiedRecorder.pauseRecording();
+  const handlePause = useCallback(async () => {
+    await unifiedRecorder.pauseRecording();
   }, []);
 
-  const handleResume = useCallback(() => {
-    unifiedRecorder.resumeRecording();
+  const handleResume = useCallback(async () => {
+    await unifiedRecorder.resumeRecording();
   }, []);
 
   const handleCancel = useCallback(async () => {

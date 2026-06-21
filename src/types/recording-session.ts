@@ -11,6 +11,8 @@ export interface RecordingSession {
   endTime?: number;
   status: 'recording' | 'paused' | 'completed' | 'cancelled';
   events: SemanticEvent[];
+  /** 用户手动插入的步骤（录制后添加，与 events 合并生成模板） */
+  manualSteps?: import('./semantic-event').ManualStep[];
 
   // ── 元数据 ──
   metadata: RecordingMetadata;
@@ -21,6 +23,7 @@ export interface RecordingSession {
  */
 export interface RecordingMetadata {
   userDescription?: string;            // 用户对这次录制的描述
+  taskType?: 'temporary' | 'reusable'; // 任务类型
   detectedPattern?: DetectedPattern;   // LLM 检测到的模式
   generatedTemplate?: AutomationTemplate; // 生成的模板
   dataFlow?: DataFlow;                 // 识别的数据流
@@ -79,6 +82,7 @@ export const PATTERN_TYPE = {
  */
 export interface RecordingConfig {
   description?: string;                // 录制描述
+  taskType?: 'temporary' | 'reusable'; // 任务类型：临时 / 可复用
   captureScreenshot?: boolean;         // 是否捕获截图
   captureContext?: boolean;            // 是否捕获上下文
   autoTag?: boolean;                   // 是否自动标记

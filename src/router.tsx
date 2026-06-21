@@ -14,6 +14,8 @@ const SettingsPage = lazy(() => import('@/pages/settings'));
 const AppsPage = lazy(() => import('@/pages/apps'));
 const WatchersPage = lazy(() => import('@/pages/watchers'));
 const KnowledgePage = lazy(() => import('@/pages/knowledge'));
+const AgentsPage = lazy(() => import('@/pages/agents'));
+const TasksPage = lazy(() => import('@/pages/tasks'));
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageSkeleton />}>{children}</Suspense>;
@@ -110,6 +112,22 @@ export const router = createBrowserRouter([
         element: (
           <Lazy>
             <KnowledgePage />
+          </Lazy>
+        ),
+      },
+      {
+        path: '/agents',
+        element: (
+          <Lazy>
+            <AgentsPage />
+          </Lazy>
+        ),
+      },
+      {
+        path: '/tasks',
+        element: (
+          <Lazy>
+            <TasksPage />
           </Lazy>
         ),
       },

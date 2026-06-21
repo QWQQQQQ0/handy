@@ -12,6 +12,12 @@ export interface ChatStateUpdate {
   isStreaming?: boolean;
   error?: string;
   logEntries?: Array<{ text: string }>;
+  /** When present, the generator is paused waiting for user confirmation. */
+  awaitingConfirmation?: {
+    toolName: string;
+    args: Record<string, unknown>;
+    command: string;
+  };
 }
 
 export { ToolMode } from '@/stores/chat-store';
@@ -31,6 +37,9 @@ interface SendMessageParams {
     supportsMultimodal?: boolean;
   };
   tools?: Record<string, unknown>[];
+  noSystemPrompt?: boolean;
+  /** Probe 阶段产生的思考内容，传入后主流程首条消息会带上此 reasoning */
+  probeReasoning?: string;
 }
 
 type ToolExecutor = (toolName: string, params: Record<string, unknown>) => Promise<{
@@ -38,6 +47,9 @@ type ToolExecutor = (toolName: string, params: Record<string, unknown>) => Promi
   message: string;
   data?: Record<string, unknown>;
 }>;
+
+// System prompt is injected by apiStreamCompat (client.ts), not here.
+// Do NOT add it in buildInternal to avoid duplicate system messages.
 
 let _skillExecutor: ToolExecutor | null = null;
 
@@ -72,7 +84,7 @@ function buildVisible(source: ChatMessage[]): ChatMessage[] {
 }
 
 export async function* sendChatMessage(params: SendMessageParams): AsyncGenerator<ChatStateUpdate> {
-  const { conversationId, messages, provider, tools } = params;
+  const { conversationId, messages, provider, tools, noSystemPrompt, probeReasoning } = params;
   const modelService = getModelService();
 
   const visibleMessages = [...messages];
@@ -83,7 +95,7 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
   yield { messages: buildVisible(visibleMessages), debugMessages: [...debugMessages], isStreaming: true };
 
   // Up to 5 turns of tool calling
-  for (let turn = 0; turn < 5; turn++) {
+  for (let turn = 0; turn < 15; turn++) {
     const assistantMsgId = crypto.randomUUID();
     const assistantMsg: ChatMessage = {
       id: assistantMsgId,
@@ -92,6 +104,8 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
       content: '',
       timestamp: new Date().toISOString(),
       status: 'streaming',
+      // First turn: carry over probe reasoning so UI shows thinking from probe phase
+      ...(turn === 0 && probeReasoning ? { reasoning_content: probeReasoning } : {}),
     };
     visibleMessages.push(assistantMsg);
     internalMessages.push(assistantMsg);
@@ -99,7 +113,7 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
     const llmMessages = buildInternal(internalMessages);
     let textBuffer = '';
     let toolCallJson: string | undefined;
-    let reasoningBuffer = '';
+    let reasoningBuffer = (turn === 0 && probeReasoning) ? probeReasoning : '';
 
     try {
       const chatAgent = new ChatAgent();
@@ -119,6 +133,7 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
         },
         apiKey: provider.encryptedApiKey,
         tools,
+        noSystemPrompt,
       });
 
       for await (const chunk of stream) {
@@ -130,7 +145,15 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
           yield { messages: buildVisible(visibleMessages), debugMessages: [...debugMessages], isStreaming: false, error: errMsg };
           return;
         } else if (chunk.startsWith('__REASONING__:')) {
-          reasoningBuffer = chunk.substring(14);
+          reasoningBuffer += chunk.substring(14);
+          // Yield immediately so UI updates during thinking
+          visibleMessages[visibleMessages.length - 1] = {
+            ...assistantMsg, content: textBuffer, reasoning_content: reasoningBuffer || undefined,
+          };
+          internalMessages[internalMessages.length - 1] = {
+            ...assistantMsg, content: textBuffer, reasoning_content: reasoningBuffer || undefined,
+          };
+          yield { messages: buildVisible(visibleMessages), debugMessages: [...debugMessages], isStreaming: true };
         } else if (chunk.startsWith('__TOOLS__:')) {
           toolCallJson = chunk.substring(10);
         } else {
@@ -207,14 +230,39 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
           });
 
           console.log(`[chat-service] ▶ executing tool: ${funcName}`, args);
-          const result = await _skillExecutor(funcName, args);
+
+          // ── run_command: inline confirmation before execution ──
+          let result: { success: boolean; message: string; data?: Record<string, unknown> };
+          if (funcName === 'run_command') {
+            const command = args['command'] as string ?? '';
+            // Yield confirmation request — generator pauses here
+            const confirmResponse = yield {
+              messages: buildVisible(visibleMessages),
+              debugMessages: [...debugMessages],
+              isStreaming: true,
+              awaitingConfirmation: { toolName: funcName, args, command },
+            };
+            // Resume: user confirmed or rejected
+            if (confirmResponse?.confirmed) {
+              result = await _skillExecutor(funcName, args);
+            } else {
+              result = { success: false, message: '用户拒绝执行此命令。请告知用户该命令的作用，并建议其手动执行。' };
+            }
+          } else {
+            result = await _skillExecutor(funcName, args);
+          }
           console.log(`[chat-service] ✓ tool result: ${funcName}`, result.success ? 'success' : 'failed', result.message?.substring(0, 120));
+
+          // Filter out large image data from tool results to avoid sending huge payloads to LLM
+          const filteredResult = funcName === 'desktop_screenshot' && result.success && result.data
+            ? { ...result, data: { ...result.data as Record<string, unknown>, image_data: '[image data omitted]' } }
+            : result;
 
           debugMessages.push({
             id: tcId,
             conversationId,
             role: 'tool',
-            content: JSON.stringify(result),
+            content: JSON.stringify(filteredResult),
             timestamp: new Date().toISOString(),
             status: 'done',
           });
@@ -223,7 +271,7 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
             id: tcId,
             conversationId,
             role: 'tool',
-            content: JSON.stringify(result),
+            content: JSON.stringify(filteredResult),
             timestamp: new Date().toISOString(),
             status: 'done',
           });

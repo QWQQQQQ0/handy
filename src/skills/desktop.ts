@@ -67,6 +67,19 @@ async function saveDebugImage(label: string, dataUrl: string): Promise<void> {
   }
 }
 
+/** 缓存截图到 llm_images 目录（fire-and-forget，不阻塞返回） */
+async function cacheScreenshot(dataUrl: string, tag: string): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    await invoke('save_llm_images', {
+      images: [{ data: dataUrl, filename: `screenshot_${tag}_${ts}.jpg` }],
+    });
+  } catch {
+    // 静默失败，不影响主流程
+  }
+}
+
 function loadImage(url: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -245,9 +258,10 @@ export class DesktopScreenSkill implements Skill {
         const region = params['region'] as { left: number; top: number; width: number; height: number } | undefined;
 
         if (region) {
-          return await this.desktopService.screenshotRegionV2(
+          const result = await this.desktopService.screenshotRegionV2(
             Number(region.left), Number(region.top), Number(region.width), Number(region.height),
           ) as Record<string, unknown>;
+          return result;
         }
 
         let base64: string;
@@ -263,14 +277,68 @@ export class DesktopScreenSkill implements Skill {
         return { windows, count: windows.length };
       }
       case 'desktop_focus_window': {
-        const ok = await this.desktopService.focusWindow(Number(params['hwnd']));
+        const hwndParam = params['hwnd'] !== undefined ? Number(params['hwnd']) : 0;
+        const windowTitle = params['windowTitle'] as string | undefined;
+        let focusHwnd = hwndParam;
+
+        // 如果传了窗口名，通过标题查找窗口句柄（hwnd 重启后变化，名字更稳定）
+        if (!focusHwnd && windowTitle) {
+          const windows = await this.desktopService.listWindows();
+          const query = windowTitle.trim();
+          // 1. 精确匹配（trim 后比）
+          let match = windows.find((w: { title: string }) => (w.title || '').trim() === query);
+          // 2. 包含匹配（兜底）
+          if (!match) {
+            const qLower = query.toLowerCase();
+            match = windows.find((w: { title: string }) =>
+              (w.title || '').toLowerCase().includes(qLower),
+            );
+          }
+          if (!match) {
+            console.warn('[desktop_focus_window] window not found:', query);
+            console.warn('[desktop_focus_window] available windows:', windows.map(w => w.title));
+          }
+          if (match) focusHwnd = match.hwnd;
+        }
+
+        const ok = focusHwnd ? await this.desktopService.focusWindow(focusHwnd) : false;
         // 聚焦目标窗口后浮窗可能被覆盖，重新置顶
         try {
-          const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-          const floatWin = await getCurrentWebviewWindow();
-          await floatWin.setAlwaysOnTop(true);
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          const floatWin = await WebviewWindow.getByLabel('float');
+          if (floatWin) await floatWin.setAlwaysOnTop(true);
         } catch { /* 非 Tauri 环境 */ }
+        return { success: ok, hwnd: focusHwnd || hwndParam, windowTitle };
+      }
+      case 'desktop_minimize_window': {
+        const ok = await this.desktopService.minimizeWindow(Number(params['hwnd']));
         return { success: ok, hwnd: params['hwnd'] };
+      }
+      case 'desktop_maximize_window': {
+        const ok = await this.desktopService.maximizeWindow(Number(params['hwnd']));
+        return { success: ok, hwnd: params['hwnd'] };
+      }
+      case 'desktop_close_window': {
+        const ok = await this.desktopService.closeWindow(Number(params['hwnd']));
+        return { success: ok, hwnd: params['hwnd'] };
+      }
+      case 'desktop_resize_window': {
+        const ok = await this.desktopService.resizeWindow(
+          Number(params['hwnd']), Number(params['width']), Number(params['height']),
+        );
+        return { success: ok, hwnd: params['hwnd'], width: params['width'], height: params['height'] };
+      }
+      case 'desktop_get_clipboard': {
+        const text = await this.desktopService.getClipboard();
+        return { text };
+      }
+      case 'desktop_set_clipboard': {
+        await this.desktopService.setClipboard(String(params['text']));
+        return { success: true, text: params['text'] };
+      }
+      case 'desktop_ocr': {
+        const result = await this.desktopService.ocrRecognize(params['image_base64'] as string | undefined);
+        return result;
       }
       case 'desktop_click': {
         // 保存 LLM 原始指定的坐标（窗口相对），用于返回给 LLM 避免坐标反馈循环
@@ -415,14 +483,62 @@ export class DesktopScreenSkill implements Skill {
         return { apps, count: apps.length };
       }
       case 'desktop_open_app': {
-        const hwnd = await this.desktopService.openApp(String(params['name']));
+        const windowTitle = params['windowTitle'] as string | undefined;
+        const appName = params['name'] as string | undefined;
+        const knownHwnd = params['hwnd'] as number | undefined;
+
+        let hwnd = 0;
+        const query = windowTitle || appName || '';
+
+        if (knownHwnd) {
+          await this.desktopService.focusWindow(knownHwnd);
+          hwnd = knownHwnd;
+        } else if (query) {
+          const windows = await this.desktopService.listWindows();
+
+          // 1. 精确匹配已有窗口（标题完全等于）
+          const exactWin = windows.find((w: { title: string }) =>
+            w.title === query,
+          );
+          if (exactWin) {
+            await this.desktopService.focusWindow(exactWin.hwnd);
+            hwnd = exactWin.hwnd;
+          } else {
+            // 2. 精确匹配已安装应用（启动）
+            const appPath = await this.desktopService.findAppByWindowTitle(query);
+            if (appPath) {
+              hwnd = await this.desktopService.openApp(appPath);
+            } else {
+              // 3. 模糊匹配已有窗口（标题包含）
+              const fuzzyWin = windows.find((w: { title: string }) =>
+                w.title.toLowerCase().includes(query.toLowerCase()) ||
+                query.toLowerCase().includes(w.title.toLowerCase()),
+              );
+              if (fuzzyWin) {
+                await this.desktopService.focusWindow(fuzzyWin.hwnd);
+                hwnd = fuzzyWin.hwnd;
+              } else {
+                // 4. 模糊匹配已安装应用（启动）
+                const fuzzyAppPath = await this.desktopService.findAppByWindowTitle(query);
+                if (fuzzyAppPath) {
+                  hwnd = await this.desktopService.openApp(fuzzyAppPath);
+                } else {
+                  throw new Error(`找不到匹配 "${query}" 的应用或窗口`);
+                }
+              }
+            }
+          }
+        } else {
+          throw new Error('desktop_open_app: 需要 windowTitle、name 或 hwnd 参数');
+        }
+
         // 打开应用后浮窗可能被新窗口覆盖，重新置顶
         try {
-          const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-          const floatWin = await getCurrentWebviewWindow();
-          await floatWin.setAlwaysOnTop(true);
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          const floatWin = await WebviewWindow.getByLabel('float');
+          if (floatWin) await floatWin.setAlwaysOnTop(true);
         } catch { /* 非 Tauri 环境或浮窗未就绪 */ }
-        return { action: 'desktop_open_app', name: params['name'], success: hwnd !== 0, hwnd };
+        return { action: 'desktop_open_app', name: appName ?? windowTitle ?? `hwnd:${knownHwnd}`, success: hwnd !== 0, hwnd };
       }
       case 'code_exec': {
         const code = String(params['code'] || '');

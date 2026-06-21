@@ -1,24 +1,25 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "openpaw",
+  "productName": "handy",
   "version": "0.1.0",
   "identifier": "com.openpaw.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npx vite build"
   },
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "OpenPaw",
+        "title": "Handy",
         "width": 1200,
         "height": 800,
         "resizable": true,
         "fullscreen": false,
-        "devtools": true
+        "devtools": true,
+        "visible": true
       }
     ],
     "security": {

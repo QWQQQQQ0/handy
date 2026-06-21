@@ -3,7 +3,7 @@
 import { useSettingsStore } from '@/stores/settings-store';
 
 const translations: Record<string, Record<string, string>> = {
-  'app.title': { en: 'OpenPaw', zh: 'OpenPaw' },
+  'app.title': { en: 'Handy', zh: 'Handy' },
 
   'nav.chat': { en: 'Chat', zh: '聊天' },
   'nav.models': { en: 'Models', zh: '模型' },
@@ -12,6 +12,7 @@ const translations: Record<string, Record<string, string>> = {
   'nav.desktop': { en: 'Desktop', zh: '桌面' },
   'nav.settings': { en: 'Settings', zh: '设置' },
   'nav.watchers': { en: 'Watchers', zh: '监控' },
+  'nav.agents': { en: 'Agents', zh: '多Agent' },
   'nav.knowledge': { en: 'Knowledge', zh: '知识库' },
 
   'chat.title.new': { en: 'New Chat', zh: '新对话' },

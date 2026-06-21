@@ -24,7 +24,12 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE TABLE IF NOT EXISTS savedApps (
-  id TEXT PRIMARY KEY, name TEXT, code TEXT, created_at TEXT
+  id TEXT PRIMARY KEY, name TEXT, code TEXT, created_at TEXT,
+  description TEXT DEFAULT '',
+  project_type TEXT DEFAULT 'single',
+  files_json TEXT DEFAULT '[]',
+  entry_file TEXT DEFAULT '',
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS skills (
@@ -335,11 +340,26 @@ async function runMigrations(db: SQLiteAdapter): Promise<void> {
   // messages — reasoning_content for MiMo thinking models
   await addColumnIfMissing(db, 'messages', 'reasoning_content', 'TEXT');
 
+  // messages — tool_calls (assistant) and tool_call_id (tool result)
+  await addColumnIfMissing(db, 'messages', 'tool_calls', 'TEXT');
+  await addColumnIfMissing(db, 'messages', 'tool_call_id', 'TEXT');
+
   // modelProviders — thinking_mode for MiMo thinking models
   await addColumnIfMissing(db, 'modelProviders', 'thinking_mode', 'INTEGER DEFAULT 0');
 
+  // task_tree — target window for avoiding float window interference
+  await addColumnIfMissing(db, 'task_tree', 'target_window_hwnd', 'INTEGER');
+  await addColumnIfMissing(db, 'task_tree', 'target_window_title', 'TEXT');
+
   // modelProviders — supports_multimodal for vision/image models
   await addColumnIfMissing(db, 'modelProviders', 'supports_multimodal', 'INTEGER DEFAULT 1');
+
+  // savedApps — multi-file project support
+  await addColumnIfMissing(db, 'savedApps', 'description', "TEXT DEFAULT ''");
+  await addColumnIfMissing(db, 'savedApps', 'project_type', "TEXT DEFAULT 'single'");
+  await addColumnIfMissing(db, 'savedApps', 'files_json', "TEXT DEFAULT '[]'");
+  await addColumnIfMissing(db, 'savedApps', 'entry_file', "TEXT DEFAULT ''");
+  await addColumnIfMissing(db, 'savedApps', 'updated_at', 'TEXT');
 
   // data migrations
   try { await db.execute("UPDATE watcher_configs SET diff_strategy = 'fast_visual' WHERE diff_strategy = 'pixel_hash'"); } catch {}

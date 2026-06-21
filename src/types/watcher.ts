@@ -2,7 +2,7 @@
 
 import type { SemanticAction } from './cache';
 
-// ── Workflow Template types ──
+// ── Workflow Template types (V1 - 向后兼容) ──
 
 /** 工作流步骤：动作步骤 或 LLM 生成步骤 */
 export type WorkflowStep = WorkflowActionStep | WorkflowLLMStep;
@@ -20,6 +20,89 @@ export interface WorkflowLLMStep {
   promptTemplate: string;
   /** LLM 输出注入到后续步骤变量映射的参数名，如 "reply_text" */
   outputParam: string;
+}
+
+// ── Workflow Template types (V2 - 新版) ──
+
+/** 工作流步骤类型 */
+export type WorkflowStepTypeV2 = 'screenshot' | 'llm_analyze' | 'execute_action' | 'verify' | 'check_complete';
+
+/** 工作流步骤 V2：统一结构，每步都有类型和参数 */
+export interface WorkflowStepV2 {
+  type: WorkflowStepTypeV2;
+  /** 步骤描述（用于调试和展示） */
+  description?: string;
+  /** 步骤参数 */
+  params?: Record<string, unknown>;
+  /** LLM 分析步骤的 prompt 模板，支持 {task}、{diff}、{chat_history}、{sender_info} 等占位符 */
+  promptTemplate?: string;
+  /** LLM 输出注入到后续步骤变量映射的参数名 */
+  outputParam?: string;
+  /** 执行动作的语义描述 */
+  action?: SemanticAction;
+}
+
+/** 工作流模板 V2：记录可复用的执行流程 */
+export interface WorkflowTemplate {
+  /** 模板 ID */
+  id: string;
+  /** 模板名称 */
+  name: string;
+  /** 适用场景描述 */
+  scenario: string;
+  /** 步骤列表 */
+  steps: WorkflowStepV2[];
+  /** 创建时间 */
+  createdAt: number;
+  /** 最后更新时间 */
+  updatedAt: number;
+  /** 成功执行次数 */
+  successCount: number;
+}
+
+// ── Chat Context types (for chat reply scenarios) ──
+
+/** 聊天消息记录 */
+export interface ChatMessage {
+  id: string;
+  /** 发送者标识 */
+  senderId: string;
+  /** 发送者显示名称 */
+  senderName: string;
+  /** 消息内容 */
+  content: string;
+  /** 消息时间戳 */
+  timestamp: number;
+  /** 是否是新消息（触发变更的消息） */
+  isNew?: boolean;
+}
+
+/** 发送者信息 */
+export interface SenderInfo {
+  /** 发送者 ID */
+  id: string;
+  /** 发送者名称 */
+  name: string;
+  /** 发送者头像（可选） */
+  avatar?: string;
+  /** 群聊中的 @提及 */
+  mentions?: string[];
+}
+
+/** 聊天上下文：用于聊天回复场景 */
+export interface ChatContext {
+  /** 聊天/会话 ID */
+  chatId: string;
+  /** 聊天名称（群名或私聊对象名） */
+  chatName: string;
+  /** 是否是群聊 */
+  isGroupChat: boolean;
+  /** 最近的聊天记录 */
+  recentMessages: ChatMessage[];
+  /** 新消息的发送者 */
+  newMessageSender?: SenderInfo;
+  /** 新消息内容 */
+  newMessageContent?: string;
 }
 
 export interface ScreenRegion {
@@ -97,7 +180,9 @@ export interface WatcherConfig {
   toolMode?: string;              // ToolMode enum value: 'all'|'none'|'favorites'|'custom'
   customTools?: string[];         // tool names when toolMode='custom'
   /** 学到的工作流模板：首次执行成功后自动录制，后续执行直接回放 */
-  workflowTemplate?: WorkflowStep[];
+  workflowTemplate?: WorkflowTemplate;
+  /** 执行次数：首次为 0，每次成功执行后 +1 */
+  executionCount?: number;
   /** 上次执行记录：帮助 Agent 了解之前的执行上下文 */
   lastExecution?: {
     timestamp: number;
@@ -105,6 +190,8 @@ export interface WatcherConfig {
     summary: string;
     turnsCount: number;
   };
+  /** 聊天上下文：用于聊天回复场景，记录历史消息和发送者信息 */
+  chatContext?: ChatContext;
   createdAt: number;
   updatedAt: number;
 }

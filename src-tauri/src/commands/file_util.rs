@@ -49,6 +49,40 @@ pub async fn save_llm_images(
     Ok(saved)
 }
 
+/// Get the app data directory path (for storing generated projects outside the project root).
+#[tauri::command]
+pub async fn get_app_data_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// Write text content to a file. Creates parent directories automatically.
+/// Used by the multi-agent code generation pipeline (AgentRunner.write_file).
+#[tauri::command]
+pub async fn write_file(path: String, content: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory {:?}: {}", parent, e))?;
+    }
+    std::fs::write(p, &content)
+        .map_err(|e| format!("Failed to write file {}: {}", path, e))?;
+    Ok(())
+}
+
+/// Read a text file and return its content.
+/// Used by the multi-agent code generation pipeline (AgentRunner.read_file).
+#[tauri::command]
+pub async fn read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read file {}: {}", path, e))
+}
+
 /// Read a file and return its content as a base64-encoded data URL.
 /// This is used to load images when asset protocol is not available.
 #[tauri::command]

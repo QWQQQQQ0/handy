@@ -18,6 +18,7 @@ import type {
   ScreenAnalysisOcrParams,
   ScreenAnalysisInterruptionParams,
   DesktopAutomationParams,
+  RunCommandParams,
 } from '@/api/types';
 import type { ProviderConfig } from '@/types/provider';
 
@@ -33,37 +34,9 @@ function unwrapParams<T>(params: unknown): T {
 // IntentClassifierHandler
 // ═══════════════════════════════════════════════════════════════
 
-function buildClassifierPrompt(): string {
-  return `你是一个意图分类器。用户会用自然语言描述他们想做的事，你负责分类、提取参数、并对 screen_change 类型做结构化分解。
-
-输出格式（严格 JSON，不要包含其他文字）：
-{
-  "tasks": [
-    {
-      "name": "简短任务名",
-      "type": "once" | "timer" | "screen_change",
-      "goal": "具体执行描述，供 agent 执行用",
-      "schedule": { "cron": "...", "intervalMs": 0, "delayMs": 0, "at": 0 },
-      "monitor": { "app": "...", "region": "...", "windowTitle": "..." },
-      "action": {
-        "type": "agent_execute" | "notify",
-        "goalTemplate": "...",
-        "requiresScreenshot": true/false
-      },
-      "preparationGoal": "监控前的准备动作（仅 screen_change）",
-      "actionGoal": "触发后的详细动作描述（仅 screen_change）"
-    }
-  ],
-  "response": "一句话确认，≤15字，例如'好的，马上处理'、'已设置定时任务'"
-}
-
-规则：
-1. type："once"（一次性）、"timer"（定时/周期）、"screen_change"（屏幕变化监控）
-2. schedule 仅 timer 类型
-3. monitor 仅 screen_change 类型
-4. screen_change 需分解 preparationGoal 和 actionGoal
-5. 一个输入可包含多个任务
-6. response 只一句话确认意图`;
+async function buildClassifierPrompt(): Promise<string> {
+  const { default: prompts } = await import('@/config/system-prompts.json');
+  return prompts.intentClassifier;
 }
 
 function parseIntentResponse(raw: string): unknown {
@@ -92,7 +65,7 @@ export async function* handleIntentClassifier(
   rawParams: unknown,
 ): AsyncGenerator<string> {
   const p = unwrapParams<IntentClassifierParams>(rawParams);
-  const prompt = buildClassifierPrompt();
+  const prompt = await buildClassifierPrompt();
 
   const stream = executeStream({
     scenario: ModelScenario.watcher,
@@ -189,7 +162,7 @@ export function handleChat(
 ): AsyncGenerator<string> {
   const p = unwrapParams<ChatParams>(rawParams);
   return executeStream({
-    scenario: ModelScenario.raw,
+    scenario: ModelScenario.chat,
     messages: p.messages,
     provider,
     apiKey,
@@ -542,4 +515,188 @@ export async function* handleDesktopAutomationTools(
   // 流结束：将工具调用作为最终结果发送
   const toolCalls = parseSimpleToolCalls(toolJson, responseText);
   yield `__TOOLS__:${JSON.stringify({ toolCalls, responseText })}`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RunCommandHandler（非流式，shell 命令执行）
+// ═══════════════════════════════════════════════════════════════
+
+import { exec } from 'node:child_process';
+
+/** Dangerous command patterns — blocked outright, never executed. */
+// ═══════════════════════════════════════════════════════════════
+// TaskDecomposerHandler（流式）
+// ═══════════════════════════════════════════════════════════════
+
+export function handleTaskDecomposer(
+  provider: ProviderConfig,
+  apiKey: string,
+  rawParams: unknown,
+): AsyncGenerator<string> {
+  const p = unwrapParams<DesktopAutomationParams>(rawParams);
+  return executeStream({
+    scenario: ModelScenario.taskDecomposer,
+    messages: p.messages,
+    provider,
+    apiKey,
+    tools: p.tools,
+    goal: p.goal,
+    skipCache: p.skipCache,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TaskVerifierHandler（流式）
+// ═══════════════════════════════════════════════════════════════
+
+export function handleTaskVerifier(
+  provider: ProviderConfig,
+  apiKey: string,
+  rawParams: unknown,
+): AsyncGenerator<string> {
+  const p = unwrapParams<DesktopAutomationParams>(rawParams);
+  return executeStream({
+    scenario: ModelScenario.taskVerifier,
+    messages: p.messages,
+    provider,
+    apiKey,
+    tools: p.tools,
+    goal: p.goal,
+    skipCache: p.skipCache,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DocAgentHandler（流式）
+// ═══════════════════════════════════════════════════════════════
+
+export function handleDocAgent(
+  provider: ProviderConfig,
+  apiKey: string,
+  rawParams: unknown,
+): AsyncGenerator<string> {
+  const p = unwrapParams<DesktopAutomationParams>(rawParams);
+  return executeStream({
+    scenario: ModelScenario.docAgent,
+    messages: p.messages,
+    provider,
+    apiKey,
+    tools: p.tools,
+    goal: p.goal,
+    skipCache: p.skipCache,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WebAgentHandler（流式）
+// ═══════════════════════════════════════════════════════════════
+
+export function handleWebAgent(
+  provider: ProviderConfig,
+  apiKey: string,
+  rawParams: unknown,
+): AsyncGenerator<string> {
+  const p = unwrapParams<DesktopAutomationParams>(rawParams);
+  return executeStream({
+    scenario: ModelScenario.webAgent,
+    messages: p.messages,
+    provider,
+    apiKey,
+    tools: p.tools,
+    goal: p.goal,
+    skipCache: p.skipCache,
+  });
+}
+
+export function handleCodeAgent(
+  provider: ProviderConfig,
+  apiKey: string,
+  rawParams: unknown,
+): AsyncGenerator<string> {
+  const p = unwrapParams<DesktopAutomationParams>(rawParams);
+  return executeStream({
+    scenario: ModelScenario.codeAgent,
+    messages: p.messages,
+    provider,
+    apiKey,
+    tools: p.tools,
+    goal: p.goal,
+    skipCache: p.skipCache,
+  });
+}
+
+const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\brm\s+(-[rRf]+\s+|--recursive)/i, reason: '递归删除文件（rm -rf）' },
+  { pattern: /\brmdir\s+\/s/i, reason: '递归删除目录（rmdir /s）' },
+  { pattern: /\bdel\s+\/s/i, reason: '递归删除文件（del /s）' },
+  { pattern: /\bformat\s+[a-z]:/i, reason: '格式化磁盘' },
+  { pattern: /\breg\s+delete\b/i, reason: '删除注册表项' },
+  { pattern: /\bregedit\b/i, reason: '注册表编辑器' },
+  { pattern: /\bshutdown\b/i, reason: '关机/重启' },
+  { pattern: /\breboot\b/i, reason: '重启系统' },
+  { pattern: /\btaskkill\b.*\/f/i, reason: '强制终止进程' },
+  { pattern: /\bnet\s+user\b.*\b\/delete\b/i, reason: '删除用户账户' },
+  { pattern: /\bcacls\b|\bicacls\b.*\/g/i, reason: '修改文件权限' },
+  { pattern: /\|\s*(sh|bash|cmd|powershell)\b/i, reason: '管道注入到 shell' },
+  { pattern: /\bcurl\b.*\|\s*(sh|bash)\b/i, reason: '下载并执行（curl|sh）' },
+  { pattern: /\bpowershell\b.*\b(iex|invoke-expression)\b/i, reason: 'PowerShell 远程执行' },
+  { pattern: /\beval\s*\(/i, reason: 'eval 执行' },
+  { pattern: /\bC:\\Windows\b/i, reason: '操作系统目录' },
+  { pattern: /\bC:\\System32\b/i, reason: '系统目录' },
+];
+
+function checkCommandSafety(command: string): string | null {
+  for (const { pattern, reason } of DANGEROUS_PATTERNS) {
+    if (pattern.test(command)) return reason;
+  }
+  return null;
+}
+
+export async function handleRunCommand(
+  _provider: ProviderConfig,
+  _apiKey: string,
+  rawParams: unknown,
+): Promise<unknown> {
+  const p = unwrapParams<RunCommandParams>(rawParams);
+  const { command, cwd, timeout_ms = 30000 } = p;
+
+  if (!command) {
+    return { ok: false, stdout: '', stderr: 'command is required', exitCode: -1, method: 'error' };
+  }
+
+  // 危险命令拦截
+  const dangerReason = checkCommandSafety(command);
+  if (dangerReason) {
+    return { ok: false, stdout: '', stderr: `⚠️ 命令被拦截：${dangerReason}`, exitCode: -1, method: 'blocked' };
+  }
+
+  const isWindows = process.platform === 'win32';
+
+  // Windows: prepend chcp 65001 so Chinese paths/characters don't get garbled
+  // (exec wraps with cmd /s /c "..." automatically, so we just pass the command)
+  const execCommand = isWindows
+    ? `chcp 65001 >nul && ${command}`
+    : command;
+
+  return new Promise((resolve) => {
+    const child = exec(execCommand, {
+      cwd,
+      timeout: timeout_ms,
+      windowsHide: true,
+      encoding: 'utf-8',
+    }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        stdout: stdout ?? '',
+        stderr: stderr ?? (error ? error.message : ''),
+        exitCode: error?.code ?? 0,
+        method: 'backend',
+      });
+    });
+
+    // 超时兜底
+    setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch { /* ignore */ }
+    }, timeout_ms);
+  });
 }

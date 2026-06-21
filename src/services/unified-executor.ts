@@ -159,7 +159,11 @@ class UnifiedExecutor {
     context: TemplateExecutionContext,
     options: ExecutionOptions,
   ): Promise<void> {
-    for (let i = 0; i < steps.length; i++) {
+    context.currentStepIndex = 0;
+    while (context.currentStepIndex < steps.length) {
+      const i = context.currentStepIndex;
+      const step = steps[i];
+
       // 检查取消
       if (this.abortController?.signal.aborted) {
         throw new Error('Execution cancelled');
@@ -170,11 +174,11 @@ class UnifiedExecutor {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      const step = steps[i];
-      context.currentStepIndex = i;
+      // Resolve params for display (coordinates, expressions)
+      const resolvedStep = this.resolveParams(step, context);
 
-      // 步骤开始回调
-      options.onStepStart?.(step, i);
+      // 步骤开始回调（传入已解析的 step，坐标直接可读）
+      options.onStepStart?.(resolvedStep, i);
 
       // 执行步骤
       const startTime = Date.now();
@@ -219,6 +223,11 @@ class UnifiedExecutor {
 
       // 步骤结束回调
       options.onStepEnd?.(step, i, success);
+
+      // 如果步骤内部已修改 currentStepIndex（如 loop_end 跳转），不再自动 +1
+      if (context.currentStepIndex === i) {
+        context.currentStepIndex++;
+      }
     }
   }
 
@@ -245,6 +254,7 @@ class UnifiedExecutor {
       case 'click':
       case 'double_click':
       case 'right_click':
+      case 'long_press':
         await this.executeClick(resolved, context, options);
         break;
 
@@ -299,6 +309,14 @@ class UnifiedExecutor {
 
       case 'drag':
         await this.executeDrag(resolved, context, options);
+        break;
+
+      case 'tool_call':
+        await this.executeToolCall(resolved, context, options);
+        break;
+
+      case 'llm_call':
+        await this.executeLLMCall(resolved, context, options);
         break;
 
       default:
@@ -365,6 +383,10 @@ class UnifiedExecutor {
    * 如 "index" → 变量值, "150 + index * 60" → 计算结果
    */
   private evaluateExpression(expr: string, context: TemplateExecutionContext): unknown {
+    // 纯数字
+    if (/^\d+(\.\d+)?$/.test(expr)) {
+      return Number(expr);
+    }
     // 纯变量名或路径（无运算符）
     if (/^[\w.[\]]+$/.test(expr)) {
       return this.evaluatePath(expr, context);
@@ -476,7 +498,13 @@ class UnifiedExecutor {
     if (target?.coordinate) {
       const x = Number(this.resolveExpression(String(target.coordinate.x), context));
       const y = Number(this.resolveExpression(String(target.coordinate.y), context));
-      await this.clickCoordinate(x, y);
+      if (step.action === 'double_click') {
+        await desktopService.doubleClick(x, y);
+      } else if (step.action === 'right_click') {
+        await desktopService.rightClick(x, y);
+      } else {
+        await desktopService.click(x, y);
+      }
       return;
     }
 
@@ -579,10 +607,22 @@ class UnifiedExecutor {
       return;
     }
 
-    if (target?.semantic) {
+    // 优先：target.semantic 直接指定窗口名
+    const windowName = typeof target?.semantic === 'string'
+      ? target.semantic
+      : target?.semantic?.name as string | undefined;
+    if (windowName) {
+      const windows = await desktopService.listWindows();
+      const match = windows.find(w => w.title.toLowerCase().includes(windowName.toLowerCase()));
+      if (match) {
+        await desktopService.focusWindow(match.hwnd);
+        return;
+      }
+    }
+    // 兜底：UIA 元素查找
+    if (target?.semantic && typeof target.semantic !== 'string') {
       const element = await this.findElementBySemantic(target.semantic, context);
       if (element) {
-        // 聚焦窗口
         const title = element.identity.name;
         const windows = await desktopService.listWindows();
         const window = windows.find(w => w.title.includes(title));
@@ -695,6 +735,8 @@ class UnifiedExecutor {
       const value = this.evaluatePath(path, context);
       if (Array.isArray(value)) {
         items = value;
+      } else if (typeof value === 'number' && value > 0) {
+        items = Array.from({ length: value }, (_, i) => i);
       }
     } else if (Array.isArray(context.params[over])) {
       // 参数数组
@@ -707,18 +749,27 @@ class UnifiedExecutor {
       }
     }
 
+    // 解析 startIndex（支持 {{表达式}}）
+    let startIndex = 0;
+    const startIndexRaw = step.params?.startIndex;
+    if (startIndexRaw !== undefined) {
+      const resolved = this.resolveExpression(String(startIndexRaw), context);
+      startIndex = Number(resolved) || 0;
+    }
+
     context.loopStack.push({
       items,
       currentIndex: 0,
       variable,
       bodyStartIndex: context.currentStepIndex + 1,
+      startIndex,
     });
 
     // 设置初始变量
     if (items.length > 0) {
-      context.variables[variable] = items[0];
-      // 始终暴露 index 变量，方便坐标公式引用
-      context.variables['index'] = 0;
+      context.variables[variable] = startIndex;
+      // 始终暴露 index 变量（兼容旧模板）
+      context.variables['index'] = startIndex;
     }
   }
 
@@ -729,13 +780,13 @@ class UnifiedExecutor {
     loop.currentIndex++;
 
     if (loop.currentIndex < loop.items.length) {
-      // 更新变量
-      context.variables[loop.variable] = loop.items[loop.currentIndex];
+      // 更新变量（加上 startIndex 偏移）
+      context.variables[loop.variable] = loop.startIndex + loop.currentIndex;
       // 同步更新 index 变量
-      context.variables['index'] = loop.currentIndex;
+      context.variables['index'] = loop.startIndex + loop.currentIndex;
 
-      // 跳回循环体开始
-      context.currentStepIndex = loop.bodyStartIndex - 1; // -1 因为 for 循环会 +1
+      // 跳回循环体开始（while 循环直接使用 currentStepIndex，不需要 -1）
+      context.currentStepIndex = loop.bodyStartIndex;
     } else {
       // 循环结束
       context.loopStack.pop();
@@ -746,18 +797,104 @@ class UnifiedExecutor {
     const loop = context.loopStack[context.loopStack.length - 1];
     if (!loop) return;
 
-    // 跳到循环结束
-    // 需要找到对应的 loop_end
-    // 简化处理：直接结束当前循环
+    // 弹出当前循环，跳转到 loop_end 之后
     context.loopStack.pop();
+    // 从当前位置向前找到对应的 loop_end，跳到它后面
+    const steps = context.template.steps;
+    let depth = 1;
+    for (let j = context.currentStepIndex + 1; j < steps.length; j++) {
+      if (steps[j].action === 'loop_start') depth++;
+      if (steps[j].action === 'loop_end') {
+        depth--;
+        if (depth === 0) {
+          context.currentStepIndex = j;
+          return;
+        }
+      }
+    }
   }
 
   private executeContinue(context: TemplateExecutionContext): void {
     const loop = context.loopStack[context.loopStack.length - 1];
     if (!loop) return;
 
-    // 跳到循环体开始
-    context.currentStepIndex = loop.bodyStartIndex - 1; // -1 因为 for 循环会 +1
+    // 跳到循环体开始（while 循环直接使用 currentStepIndex，不需要 -1）
+    context.currentStepIndex = loop.bodyStartIndex;
+  }
+
+  private async executeToolCall(
+    step: TemplateStep,
+    context: TemplateExecutionContext,
+    options: ExecutionOptions,
+  ): Promise<void> {
+    const toolName = String(step.params?.toolName || '');
+    const args = (step.params?.arguments || {}) as Record<string, unknown>;
+
+    if (options.dryRun) {
+      return;
+    }
+
+    try {
+      const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
+      const executor = getBuiltinExecutor();
+      const result = await executor.executeToolCall(toolName, args);
+      if (!result?.success) {
+        throw new Error(result?.message || `Tool ${toolName} returned failure`);
+      }
+      // 存储结果到上下文
+      if (result?.data) {
+        Object.assign(context.variables, result.data);
+      }
+    } catch (e) {
+      console.warn(`[UnifiedExecutor] tool_call ${toolName} failed:`, e);
+    }
+  }
+
+  private async executeLLMCall(
+    step: TemplateStep,
+    context: TemplateExecutionContext,
+    options: ExecutionOptions,
+  ): Promise<void> {
+    const prompt = String(step.params?.prompt || '');
+    if (!prompt || options.dryRun) return;
+
+    const systemPrompt = String(step.params?.systemPrompt || '');
+    const model = String(step.params?.model || '');
+
+    try {
+      const { useModelConfigStore } = await import('@/stores/model-config-store');
+      await useModelConfigStore.getState().load();
+      const config = useModelConfigStore.getState().defaultConfig();
+      if (!config) throw new Error('No LLM config');
+
+      const apiKey = await useModelConfigStore.getState().getApiKey(config.id, '');
+      const { getModelService } = await import('@/services/model-service-singleton');
+      const service = getModelService();
+
+      const messages: Array<{ role: string; content: string }> = [];
+      if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+      messages.push({ role: 'user', content: prompt });
+
+      const stream = service.chatStream({
+        scenario: 'recorderAnalysis' as any,
+        messages,
+        provider: config,
+        apiKey,
+        model: model || undefined,
+      });
+
+      let result = '';
+      for await (const chunk of stream) {
+        if (chunk.startsWith('__ERROR__:')) throw new Error(chunk.substring(10));
+        if (chunk.startsWith('__REASONING__:')) continue;
+        result += chunk;
+      }
+      context.variables['llm_result'] = result;
+      context.variables['llm_result_' + context.currentStepIndex] = result;
+    } catch (e) {
+      console.warn(`[UnifiedExecutor] llm_call failed:`, e);
+      context.variables['llm_result'] = `[LLM call error: ${(e as Error).message}]`;
+    }
   }
 
   // ── 元素查找 ──

@@ -1,1 +1,1 @@
-# OpenPaw Automation Engine
+# Handy Automation Engine

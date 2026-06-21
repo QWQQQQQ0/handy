@@ -1,0 +1,1 @@
+import{h as a,a4 as o}from"./index-DX05n-GL.js";import"./vendor-markdown-DkZTs8jq.js";import"./vendor-react-CfjWFXXn.js";import"./vendor-state-D0g0rz4W.js";import"./vendor-tauri-DP7f-jEB.js";class p extends o{}export{p as ModelCallService,a as ModelScenario};
