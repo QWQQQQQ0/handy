@@ -39,6 +39,16 @@ yarn-error.log*
 # code agent workspace
 /workspace/
 
+# claude local settings
+.claude/settings.local.json
+
+# build output
+/dist/
+
+# python
+__pycache__/
+*.pyc
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

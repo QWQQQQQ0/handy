@@ -1,1 +1,0 @@
-import{j as t,L as o}from"./index-CCZFPGYc.js";import"./vendor-markdown-B46hRaTo.js";import"./vendor-react-Eg9wN1l5.js";import"./vendor-state-Cm_XB1xy.js";import"./vendor-tauri-DP7f-jEB.js";class p extends o{}export{p as ModelCallService,t as ModelScenario};

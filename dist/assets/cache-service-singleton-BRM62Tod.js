@@ -1,1 +1,0 @@
-import{f as r}from"./index-CCZFPGYc.js";import"./vendor-markdown-B46hRaTo.js";import"./vendor-react-Eg9wN1l5.js";import"./vendor-state-Cm_XB1xy.js";import"./vendor-tauri-DP7f-jEB.js";let e=null;function m(){return e||(e=r()),e}function p(t){e=t}export{m as getCacheService,p as setCacheService};
