@@ -8,7 +8,7 @@ import { IntentClassifierAgent } from '@/agents/intent-classifier-api';
 import { TaskOrchestrator } from './orchestrator';
 import { TaskAgentRunner, type AgentProgressEvent } from './runner';
 import { appEventBus } from '@/services/event-bus';
-import { watcherManager } from '@/services/watcher';
+import { scheduledTaskManager } from '@/services/watcher';
 import type { TaskConfig } from '@/types/scheduler';
 import { AgentEndpoint } from '@/api/types';
 import { apiStreamCompat } from '@/api/client';
@@ -58,6 +58,7 @@ export class TaskGateway {
       password,
       toolFilter,
       signal,
+      messages,
       onConfirm,
       onUserInput,
       onProgress,
@@ -110,6 +111,7 @@ export class TaskGateway {
     maxTurns?: number;
     signal?: AbortSignal;
     toolFilter?: Set<string>;
+    messages?: import('@/types/message').LLMMessage[];
     onConfirm?: (command: string) => Promise<boolean>;
     onUserInput?: (message: string, fields: Array<{ label: string; key: string; type?: string }>) => Promise<Record<string, string>>;
     onProgress?: (event: AgentProgressEvent) => void;
@@ -173,6 +175,7 @@ export class TaskGateway {
               maxTurns: params.maxTurns,
               signal,
               toolFilter,
+              messages: params.messages,
               onConfirm,
               onUserInput,
               onProgress,
@@ -213,6 +216,7 @@ export class TaskGateway {
               maxTurns: params.maxTurns ?? 20,
               signal,
               toolFilter,
+              chatMessages: params.messages,
               onConfirm,
               onUserInput,
               onProgress,
@@ -225,10 +229,9 @@ export class TaskGateway {
             });
           }
         } else {
-          // timer / screen_change / event → 创建 Watcher
+          // timer / screen_change → 直接创建后台任务
           const taskConfig = this.buildTaskConfig(task);
-          const watcherConfig = this.taskConfigToWatcherConfig(taskConfig);
-          await watcherManager.create(watcherConfig);
+          await scheduledTaskManager.create(taskConfig);
           results.push({
             taskId: taskConfig.id,
             status: 'scheduled',
@@ -327,56 +330,5 @@ export class TaskGateway {
   private buildTaskConfig(task: import('@/types/goal').ParsedTask): TaskConfig {
     const { buildTaskConfig } = require('@/services/task-builder');
     return buildTaskConfig(task);
-  }
-
-  private taskConfigToWatcherConfig(tc: TaskConfig): import('@/types/watcher').WatcherConfig {
-    const now = Date.now();
-    const trigger = tc.trigger;
-
-    if (trigger.type === 'timer') {
-      return {
-        id: tc.id,
-        name: tc.name,
-        enabled: tc.enabled,
-        monitorTarget: { type: 'fullscreen' as const },
-        region: { x: 0, y: 0, width: 1, height: 1 },
-        pollIntervalMs: trigger.intervalMs,
-        diffStrategy: 'fast_visual' as const,
-        debounceMs: 0,
-        cooldownMs: trigger.cooldownMs,
-        minConfidence: 0.9,
-        action: {
-          type: tc.action.type,
-          ...(tc.action.type === 'agent_execute' ? { goalTemplate: tc.action.goalTemplate } : {}),
-          ...(tc.action.type === 'notify' ? { notifyTemplate: tc.action.notifyTemplate } : {}),
-        },
-        createdAt: now,
-        updatedAt: now,
-      };
-    }
-
-    const sc = trigger;
-    return {
-      id: tc.id,
-      name: tc.name,
-      enabled: tc.enabled,
-      monitorTarget: sc.monitorTarget,
-      region: sc.region,
-      pollIntervalMs: sc.pollIntervalMs,
-      diffStrategy: sc.diffStrategy,
-      debounceMs: sc.debounceMs,
-      cooldownMs: sc.cooldownMs,
-      minConfidence: sc.minConfidence,
-      action: {
-        type: tc.action.type,
-        ...(tc.action.type === 'agent_execute' ? { goalTemplate: tc.action.goalTemplate } : {}),
-      },
-      regionMode: sc.regionMode,
-      regionDescription: sc.regionDescription,
-      ...(sc.preparationGoal ? { preparationGoal: sc.preparationGoal } : {}),
-      ...(sc.actionGoal ? { actionGoal: sc.actionGoal } : {}),
-      createdAt: now,
-      updatedAt: now,
-    };
   }
 }

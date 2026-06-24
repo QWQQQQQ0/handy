@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { MessageSquare, Globe, Monitor, Smartphone, Cpu, Wrench, Settings, PanelLeftClose, PanelLeft, PawPrint, Menu, Eye, ListTodo, ChevronDown, ChevronRight, GitBranch } from 'lucide-react';
+import { MessageSquare, Globe, Monitor, Smartphone, Cpu, Wrench, Settings, PanelLeftClose, PanelLeft, PawPrint, Menu, Clock, ListTodo, ChevronDown, ChevronRight, GitBranch, FolderOpen, Terminal } from 'lucide-react';
 import { FloatWindowToggle } from './float-window-toggle';
 import { useT } from '@/i18n/strings';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -24,7 +24,8 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     { icon: <MessageSquare size={20} />, label: t('nav.chat'), to: '/', show: true },
     { icon: <ListTodo size={20} />, label: '任务', to: '/tasks', show: true },
     { icon: <Wrench size={20} />, label: t('nav.skills'), to: '/skills', show: true },
-    { icon: <Eye size={20} />, label: t('nav.watchers'), to: '/watchers', show: isDesktopLike },
+    { icon: <FolderOpen size={20} />, label: t('nav.apps'), to: '/apps', show: true },
+    { icon: <Clock size={20} />, label: t('nav.scheduledTasks'), to: '/scheduled-tasks', show: isDesktopLike },
   ];
 
   const configItems: NavItemDef[] = [
@@ -37,6 +38,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     { icon: <Monitor size={20} />, label: t('nav.desktop'), to: '/desktop', show: isDesktopLike },
     { icon: <Smartphone size={20} />, label: 'Phone', to: '/phone', show: !isDesktopLike },
     { icon: <GitBranch size={20} />, label: t('nav.agents'), to: '/agents', show: isDesktopLike },
+    { icon: <Terminal size={20} />, label: 'FreeAgent', to: '/free-agent', show: isDesktopLike },
   ];
 
   const advancedActive = advancedItems.some(

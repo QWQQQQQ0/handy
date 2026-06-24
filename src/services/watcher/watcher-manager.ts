@@ -1,23 +1,24 @@
-// Watcher manager — singleton backed by TickLoop.
+// ScheduledTaskManager — singleton backed by TickLoop.
 // Handles lifecycle (create/start/stop/remove), persistence, auto-restore, and cross-window sync.
+// Formerly WatcherManager — now handles all scheduled task types (timer, screen_change, event).
 
-import type { WatcherConfig, WatcherState, ScreenRegion, MonitorTarget, WorkflowStep, WorkflowTemplate } from '@/types/watcher';
 import type { TaskConfig, Tickable } from '@/types/scheduler';
+import type { ScreenRegion, MonitorTarget, WorkflowStep, WorkflowTemplate } from '@/types/watcher';
 import type { ScreenChangeWatcher } from '@/services/scheduler/screen-change-watcher';
 import { TickLoop } from '@/services/scheduler/scheduler';
-import { createTask, migrateWatcherConfig } from '@/services/scheduler/task-factory';
+import { createTask } from '@/services/scheduler/task-factory';
 import {
-  storeWatcherConfig,
-  getAllWatcherConfigs,
-  deleteWatcherConfig,
+  storeScheduledTask,
+  getAllScheduledTasks,
+  deleteScheduledTask,
 } from '@/services/cache-service';
 import { appEventBus } from '@/services/event-bus';
 
-class WatcherManager {
+class ScheduledTaskManager {
   private loop = new TickLoop();
   private syncUnlisten: (() => void) | null = null;
-  // Store original WatcherConfig for backward-compatible getStates()
-  private configStore: Map<string, WatcherConfig> = new Map();
+  // Store original TaskConfig for getStates() and update()
+  private configStore: Map<string, TaskConfig> = new Map();
 
   async initSync(): Promise<void> {
     if (this.syncUnlisten) return;
@@ -27,7 +28,7 @@ class WatcherManager {
       const currentLabel = getCurrentWebviewWindow().label;
 
       this.syncUnlisten = await listen<{ id: string; enabled: boolean; sourceLabel: string }>(
-        'watcher-toggle',
+        'scheduled-task-toggle',
         (event) => {
           if (event.payload.sourceLabel === currentLabel) return;
           const { id, enabled } = event.payload;
@@ -49,7 +50,7 @@ class WatcherManager {
     try {
       const { emit } = await import('@tauri-apps/api/event');
       const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-      await emit('watcher-toggle', { id, enabled, sourceLabel: getCurrentWebviewWindow().label });
+      await emit('scheduled-task-toggle', { id, enabled, sourceLabel: getCurrentWebviewWindow().label });
     } catch { /* not in Tauri */ }
   }
 
@@ -57,44 +58,53 @@ class WatcherManager {
   private wireRegionPersistence(task: Tickable, id: string): void {
     if ('setOnRegionResolved' in task && typeof task.setOnRegionResolved === 'function') {
       (task as unknown as ScreenChangeWatcher).setOnRegionResolved(async (region: ScreenRegion, monitorTarget?: MonitorTarget) => {
-        const patch: Partial<WatcherConfig> = { region };
-        if (monitorTarget) patch.monitorTarget = monitorTarget;
         let config = this.configStore.get(id);
-        if (config) {
-          const updated = { ...config, ...patch, updatedAt: Math.floor(Date.now() / 1000) };
-          if (updated.monitorTarget?.windowHwnd) delete updated.monitorTarget.windowHwnd;
-          await storeWatcherConfig(updated);
+        if (config && config.trigger.type === 'screen_change') {
+          const updated: TaskConfig = {
+            ...config,
+            trigger: { ...config.trigger, region, ...(monitorTarget ? { monitorTarget } : {}) },
+            updatedAt: Math.floor(Date.now() / 1000),
+          };
+          // 不持久化 windowHwnd
+          if (updated.trigger.type === 'screen_change' && updated.trigger.monitorTarget?.windowHwnd) {
+            delete (updated.trigger.monitorTarget as any).windowHwnd;
+          }
+          await storeScheduledTask(updated);
           this.configStore.set(id, updated);
         }
       });
     }
   }
 
-  /** 为 ScreenChangeWatcher 设置执行完成回调（持久化 lastExecution） */
+  /** 为 ScreenChangeWatcher 设置执行完成回调 */
   private wireExecutionComplete(task: Tickable, id: string): void {
     if ('setOnExecutionComplete' in task && typeof task.setOnExecutionComplete === 'function') {
       (task as unknown as ScreenChangeWatcher).setOnExecutionComplete(async (success: boolean, summary: string) => {
         let config = this.configStore.get(id);
-        if (config) {
-          const updated: WatcherConfig = {
+        if (config && config.action.type === 'agent_execute') {
+          const updated: TaskConfig = {
             ...config,
-            lastExecution: {
-              timestamp: Date.now(),
-              success,
-              summary,
-              turnsCount: 0,
+            action: {
+              ...config.action,
+              lastExecution: {
+                timestamp: Date.now(),
+                success,
+                summary,
+                turnsCount: 0,
+              },
+              executionCount: success ? (config.action.executionCount ?? 0) + 1 : config.action.executionCount,
             },
-            // 成功执行后增加 executionCount
-            executionCount: success ? (config.executionCount ?? 0) + 1 : config.executionCount,
             updatedAt: Math.floor(Date.now() / 1000),
           };
-          if (updated.monitorTarget?.windowHwnd) delete updated.monitorTarget.windowHwnd;
-          await storeWatcherConfig(updated);
+          // 不持久化 windowHwnd
+          if (updated.trigger.type === 'screen_change' && updated.trigger.monitorTarget?.windowHwnd) {
+            delete (updated.trigger.monitorTarget as any).windowHwnd;
+          }
+          await storeScheduledTask(updated);
           this.configStore.set(id, updated);
-          const taskConfig = migrateWatcherConfig(updated);
           const task = this.loop.get(id);
           if (task && 'updateConfig' in task) {
-            (task as unknown as { updateConfig(c: TaskConfig): void }).updateConfig(taskConfig);
+            (task as unknown as { updateConfig(c: TaskConfig): void }).updateConfig(updated);
           }
         }
       });
@@ -106,51 +116,54 @@ class WatcherManager {
     if ('setOnWorkflowLearned' in task && typeof task.setOnWorkflowLearned === 'function') {
       (task as unknown as ScreenChangeWatcher).setOnWorkflowLearned(async (template: WorkflowStep[]) => {
         let config = this.configStore.get(id);
-        if (config) {
-          // 将 WorkflowStep[] 转换为 WorkflowTemplate
+        if (config && config.action.type === 'agent_execute') {
           const workflowTemplate: WorkflowTemplate = {
             id: crypto.randomUUID(),
             name: config.name,
             scenario: config.action.goalTemplate || '',
             steps: template.map(step => ({
               type: 'action' as const,
+              params: {},
               action: step.type === 'action' ? step.action : undefined,
               description: step.type === 'action' ? step.action.action : 'llm_generate',
-            })),
+            })) as any,
             createdAt: Date.now(),
             updatedAt: Date.now(),
             successCount: 0,
           };
 
-          const updated: WatcherConfig = {
+          const updated: TaskConfig = {
             ...config,
-            workflowTemplate,
-            executionCount: (config.executionCount ?? 0) + 1,
+            action: {
+              ...config.action,
+              workflowTemplate,
+              executionCount: (config.action.executionCount ?? 0) + 1,
+            },
             updatedAt: Math.floor(Date.now() / 1000),
           };
-          if (updated.monitorTarget?.windowHwnd) delete updated.monitorTarget.windowHwnd;
-          await storeWatcherConfig(updated);
+          if (updated.trigger.type === 'screen_change' && updated.trigger.monitorTarget?.windowHwnd) {
+            delete (updated.trigger.monitorTarget as any).windowHwnd;
+          }
+          await storeScheduledTask(updated);
           this.configStore.set(id, updated);
-          const taskConfig = migrateWatcherConfig(updated);
           const task = this.loop.get(id);
           if (task && 'updateConfig' in task) {
-            (task as unknown as { updateConfig(c: TaskConfig): void }).updateConfig(taskConfig);
+            (task as unknown as { updateConfig(c: TaskConfig): void }).updateConfig(updated);
           }
         }
       });
     }
   }
 
-  async create(config: WatcherConfig): Promise<void> {
+  async create(config: TaskConfig): Promise<void> {
     // windowHwnd 是运行时值，不持久化
-    if (config.monitorTarget?.windowHwnd) {
-      delete config.monitorTarget.windowHwnd;
+    if (config.trigger.type === 'screen_change' && config.trigger.monitorTarget?.windowHwnd) {
+      delete (config.trigger.monitorTarget as any).windowHwnd;
     }
-    await storeWatcherConfig(config);
+    await storeScheduledTask(config);
     this.configStore.set(config.id, config);
 
-    const taskConfig = migrateWatcherConfig(config);
-    const task = createTask(taskConfig);
+    const task = createTask(config);
     this.wireRegionPersistence(task, config.id);
     this.wireWorkflowTemplate(task, config.id);
     this.wireExecutionComplete(task, config.id);
@@ -182,12 +195,11 @@ class WatcherManager {
       await task.start();
     } else {
       // Task not in loop — try loading from DB
-      const configs = await getAllWatcherConfigs();
+      const configs = await getAllScheduledTasks();
       const config = configs.find(c => c.id === id);
       if (config) {
         this.configStore.set(id, config);
-        const taskConfig = migrateWatcherConfig(config);
-        const newTask = createTask(taskConfig);
+        const newTask = createTask(config);
         this.wireRegionPersistence(newTask, id);
         this.wireWorkflowTemplate(newTask, id);
         this.wireExecutionComplete(newTask, id);
@@ -210,33 +222,32 @@ class WatcherManager {
   async remove(id: string): Promise<void> {
     this.loop.remove(id);
     this.configStore.delete(id);
-    await deleteWatcherConfig(id);
+    await deleteScheduledTask(id);
     await this.emitToggle(id, false);
     this.emitStateChange(id, 'removed');
   }
 
-  async update(id: string, patch: Partial<WatcherConfig>): Promise<void> {
+  async update(id: string, patch: Partial<TaskConfig>): Promise<void> {
     let config = this.configStore.get(id);
 
     if (!config) {
-      const configs = await getAllWatcherConfigs();
+      const configs = await getAllScheduledTasks();
       config = configs.find(c => c.id === id);
       if (!config) return;
     }
 
-    const updated: WatcherConfig = { ...config, ...patch, updatedAt: Math.floor(Date.now() / 1000) };
+    const updated: TaskConfig = { ...config, ...patch, updatedAt: Math.floor(Date.now() / 1000) };
     // windowHwnd 是运行时值（每次启动都变），不能持久化
-    if (updated.monitorTarget?.windowHwnd) {
-      delete updated.monitorTarget.windowHwnd;
+    if (updated.trigger.type === 'screen_change' && updated.trigger.monitorTarget?.windowHwnd) {
+      delete (updated.trigger.monitorTarget as any).windowHwnd;
     }
-    await storeWatcherConfig(updated);
+    await storeScheduledTask(updated);
     this.configStore.set(id, updated);
 
     const task = this.loop.get(id);
     if (task) {
-      const taskConfig = migrateWatcherConfig(updated);
       if ('updateConfig' in task) {
-        (task as unknown as { updateConfig(c: TaskConfig): void }).updateConfig(taskConfig);
+        (task as unknown as { updateConfig(c: TaskConfig): void }).updateConfig(updated);
       }
 
       if (patch.enabled !== undefined) {
@@ -248,8 +259,7 @@ class WatcherManager {
         await this.emitToggle(id, patch.enabled);
       }
     } else {
-      const taskConfig = migrateWatcherConfig(updated);
-      const newTask = createTask(taskConfig);
+      const newTask = createTask(updated);
       this.wireRegionPersistence(newTask, id);
       this.wireWorkflowTemplate(newTask, id);
       this.loop.add(newTask);
@@ -261,16 +271,16 @@ class WatcherManager {
     this.emitStateChange(id, 'updated');
   }
 
-  getStates(): Array<{ config: WatcherConfig; state: WatcherState }> {
-    const result: Array<{ config: WatcherConfig; state: WatcherState }> = [];
+  getStates(): Array<{ config: TaskConfig; state: import('@/types/watcher').WatcherState }> {
+    const result: Array<{ config: TaskConfig; state: import('@/types/watcher').WatcherState }> = [];
     for (const task of this.loop.getAll()) {
-      const wc = this.configStore.get(task.id);
-      if (!wc) continue;
+      const cfg = this.configStore.get(task.id);
+      if (!cfg) continue;
       result.push({
-        config: wc,
+        config: cfg,
         state: {
           configId: task.id,
-          status: task.state.status as WatcherState['status'],
+          status: task.state.status as import('@/types/watcher').WatcherState['status'],
           lastCheckAt: task.state.lastCheckAt,
           lastTriggerAt: task.state.lastTriggerAt,
           triggerCount: task.state.triggerCount,
@@ -286,7 +296,7 @@ class WatcherManager {
   }
 
   async restore(): Promise<void> {
-    const configs = await getAllWatcherConfigs();
+    const configs = await getAllScheduledTasks();
     let restored = 0;
 
     // Start the tick loop
@@ -294,11 +304,10 @@ class WatcherManager {
 
     for (const config of configs) {
       this.configStore.set(config.id, config);
-      const taskConfig = migrateWatcherConfig(config);
-      const task = createTask(taskConfig);
+      const task = createTask(config);
       this.wireRegionPersistence(task, config.id);
       this.wireWorkflowTemplate(task, config.id);
-    this.wireExecutionComplete(task, config.id);
+      this.wireExecutionComplete(task, config.id);
 
       this.loop.add(task);
       if (config.enabled) {
@@ -309,18 +318,18 @@ class WatcherManager {
 
     if (restored > 0) {
       appEventBus.emit({
-        source: 'watcher', type: 'manager_restore', level: 'info',
-        message: `已恢复 ${restored} 个任务`, timestamp: Date.now(),
+        source: 'scheduler', type: 'manager_restore', level: 'info',
+        message: `已恢复 ${restored} 个后台任务`, timestamp: Date.now(),
       });
     }
   }
 
   private emitStateChange(id: string, action: string): void {
     appEventBus.emit({
-      source: 'watcher', type: 'manager_action', level: 'info',
+      source: 'scheduler', type: 'manager_action', level: 'info',
       message: `Task ${action}: ${id}`, sourceId: id, timestamp: Date.now(),
     });
   }
 }
 
-export const watcherManager = new WatcherManager();
+export const scheduledTaskManager = new ScheduledTaskManager();

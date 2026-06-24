@@ -22,7 +22,7 @@ const DOC_TOOL_FILTER = new Set([
   'word_com_read', 'word_com_edit', 'excel_com_read', 'excel_com_edit',
   'ppt_com_read', 'ppt_com_edit',
   // 文件系统工具（验证路径、搜索文档、导出结果）
-  'read_file', 'glob', 'write_file',
+  'read_file', 'glob_files', 'write_file',
   // 控制工具（静态定义在 tools.ts）
   'think', 'request_user_input', 'doc_done', 'finalize',
 ]);
@@ -71,6 +71,7 @@ export class DocGateway {
       maxTurns: maxTurns ?? 20,
       signal,
       toolFilter: DOC_TOOL_FILTER,
+      chatMessages: messages,
       onConfirm,
       onUserInput,
       onProgress,

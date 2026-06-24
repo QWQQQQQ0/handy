@@ -15,6 +15,7 @@ import { getTaskTools, getTaskToolDef, getTaskToolDefs } from './tools';
 import { buildTaskContext } from './context-builder';
 import { AgentEndpoint } from '@/api/types';
 import { apiStreamCompat } from '@/api/client';
+import { ToolDisclosure } from '@/skills/tool-disclosure';
 
 export interface TaskAgentResult {
   success: boolean;
@@ -57,15 +58,20 @@ export class TaskAgentRunner {
     subTaskDescription?: string;
     signal?: AbortSignal;
     toolFilter?: Set<string>;
+    /** Chat 透传的消息历史（含图片），Agent 从中提取上下文 */
+    chatMessages?: import('@/types/message').LLMMessage[];
     onConfirm?: (command: string) => Promise<boolean>;
     onUserInput?: (message: string, fields: Array<{ label: string; key: string; type?: string }>) => Promise<Record<string, string>>;
     onProgress?: (event: AgentProgressEvent) => void;
   }): Promise<TaskAgentResult> {
-    const { taskId, agentType, goal, provider, apiKey, password, signal, subTaskDescription, toolFilter, onConfirm, onUserInput, onProgress } = params;
+    const { taskId, agentType, goal, provider, apiKey, password, signal, subTaskDescription, toolFilter, chatMessages, onConfirm, onUserInput, onProgress } = params;
     this.onConfirm = onConfirm;
     this.onUserInput = onUserInput;
     const maxTurns = params.maxTurns ?? 20;
     const agentId = this.generateAgentId(agentType);
+    let taskCompleted = false;
+    let finalSummary: string | undefined;  // 捕获 finalize/*_done 的 summary
+    const executedTools: string[] = [];  // 收集已执行的工具名（用于超时时的摘要）
 
     await this.taskDB.assignAgent(taskId, agentId, agentType as never);
     await this.taskDB.updateStatus(taskId, this.statusForAgent(agentType) as never);
@@ -85,30 +91,62 @@ export class TaskAgentRunner {
 
     // executor/doc 用 SkillExecutor 动态取工具 + 基础工具（不随 toolFilter 变化）
     // 其他 agent 类型用静态工具集
+    // free 类型使用渐进式披露（首轮仅门卫，按需加载完整工具定义）
     let tools: Record<string, unknown>[];
-    if (agentType === 'executor' || agentType === 'doc' || agentType === 'web' || agentType === 'code') {
+    let disclosure: ToolDisclosure | null = null;
+    const baseToolNames = agentType === 'doc'
+      ? ['think', 'request_user_input', 'doc_done', 'finalize']
+      : agentType === 'web'
+      ? ['think', 'request_user_input', 'web_done', 'finalize']
+      : agentType === 'code'
+      ? ['think', 'request_user_input', 'code_done', 'finalize']
+      : agentType === 'free'
+      ? ['think', 'request_user_input', 'finalize']
+      : ['think', 'request_user_input', 'desktop_done', 'finalize',
+         'desktop_screenshot', 'desktop_list_windows', 'desktop_open_app', 'desktop_wait'];
+
+    if (agentType === 'free') {
+      // ── 渐进式披露：首轮只发门卫 ──
+      disclosure = new ToolDisclosure({
+        executor: this.skillExecutor as any,
+        tools: toolFilter,
+        gatekeeperName: 'tool_detail',
+      });
+      const gatekeeper = disclosure.buildGatekeeperTool();
+      const baseToolDefs = getTaskToolDefs(baseToolNames);
+      tools = [gatekeeper, ...baseToolDefs];
+      console.log(`[TaskRunner] ▶ progressive agent=${agentId} gatekeeper+base=${tools.length} menuTools=${disclosure.buildMenu().length}`);
+    } else if (agentType === 'executor' || agentType === 'doc' || agentType === 'web' || agentType === 'code') {
       const dynamicTools = this.skillExecutor.buildToolsForLLM(toolFilter);
-      // 基础工具始终包含，不经过 toolFilter 筛选
-      const baseToolNames = agentType === 'doc'
-        ? ['think', 'request_user_input', 'doc_done', 'finalize']
-        : agentType === 'web'
-        ? ['think', 'request_user_input', 'web_done', 'finalize']
-        : agentType === 'code'
-        ? ['think', 'request_user_input', 'code_done', 'finalize']
-        : ['think', 'request_user_input', 'desktop_done', 'finalize',  // 内部工具
-           'desktop_screenshot', 'desktop_list_windows', 'desktop_open_app', 'desktop_wait'];  // 桌面基础工具
-      const baseTools = getTaskToolDefs(baseToolNames);
-      // 去重：dynamicTools 中已有的基础工具不再重复添加
+      const baseToolDefs = getTaskToolDefs(baseToolNames);
       const dynamicNames = new Set(dynamicTools.map(t => (t as any).function?.name));
-      const extraBaseTools = baseTools.filter(t => !dynamicNames.has((t as any).function?.name));
+      const extraBaseTools = baseToolDefs.filter(t => !dynamicNames.has((t as any).function?.name));
       tools = [...dynamicTools, ...extraBaseTools];
       console.log(`[TaskRunner] ▶ agent=${agentId} type=${agentType} goal="${goal.substring(0, 80)}" filter=${toolFilter?.size ?? 'none'} dynamic=${dynamicTools.length} base=${extraBaseTools.length} total=${tools.length}`);
     } else {
       tools = getTaskTools(agentType);
       console.log(`[TaskRunner] ▶ agent=${agentId} type=${agentType} tools=${tools.length}`);
     }
+    // 从 Chat 透传的消息中提取图片（Chat LLM 通过 request_agent.user_message_indices 指定了含图消息）
+    const initialContent: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+      { type: 'text', text: userPrompt },
+    ];
+    if (chatMessages) {
+      const seenUrls = new Set<string>();
+      for (const msg of chatMessages) {
+        if (msg.role === 'user' && Array.isArray(msg.content)) {
+          for (const part of msg.content as Array<{ type: string; text?: string; image_url?: { url: string } }>) {
+            if (part.type === 'image_url' && part.image_url?.url && !seenUrls.has(part.image_url.url)) {
+              seenUrls.add(part.image_url.url);
+              initialContent.push({ type: 'image_url', image_url: { url: part.image_url.url } });
+              console.log(`[TaskRunner] 📷 注入 Chat 透传图片 (${(part.image_url.url.length / 1024).toFixed(0)} KB)`);
+            }
+          }
+        }
+      }
+    }
     const messages: unknown[] = [
-      { role: 'user', content: userPrompt },
+      { role: 'user', content: initialContent.length === 1 ? initialContent[0].text : initialContent },
     ];
 
     // 任务级坐标上下文
@@ -160,6 +198,7 @@ export class TaskAgentRunner {
           : agentType === 'doc' ? AgentEndpoint.docAgent
           : agentType === 'web' ? AgentEndpoint.webAgent
           : agentType === 'code' ? AgentEndpoint.codeAgent
+          : agentType === 'free' ? AgentEndpoint.freeAgent
           : AgentEndpoint.desktopAutomation;
 
         const stream = apiStreamCompat(
@@ -205,6 +244,10 @@ export class TaskAgentRunner {
       if (toolCalls.length === 0) {
         // 无工具调用 — LLM 可能只返回了文本，记录日志
         console.warn(`[TaskRunner] ⚠ agent=${agentId} turn=${turn} 无工具调用，LLM 返回了纯文本。responseText="${responseText.substring(0, 300)}"`);
+        // 如果 LLM 明确表达了任务完成（含完成语义文本），视为正常结束
+        if (/done|完成|成功|finished|complete/i.test(responseText)) {
+          taskCompleted = true;
+        }
         break;
       }
 
@@ -226,13 +269,41 @@ export class TaskAgentRunner {
       for (const tc of toolCalls) {
         if (signal?.aborted) { shouldBreak = true; break; }
 
+        // ── 渐进式披露：拦截 tool_detail 调用 ──
+        if (disclosure && tc.name === disclosure.gatekeeperToolName) {
+          const requestedTools = (tc.args['tools'] as string[]) ?? [];
+          const loaded = disclosure.loadDetails(requestedTools);
+          // 将加载的工具注入到 tools 数组供后续轮次使用
+          for (const t of loaded) {
+            if (!tools.some(existing => (existing as any).function?.name === (t as any).function?.name)) {
+              tools.push(t);
+            }
+          }
+          const summary = loaded.length > 0
+            ? `已加载 ${loaded.length} 个工具的完整定义：${loaded.map((t: any) => t.function.name).join(', ')}。现在可以直接调用这些工具了。`
+            : `未找到工具：${requestedTools.join(', ')}。请检查工具名称是否正确，可从菜单中确认。`;
+          onProgress?.({ type: 'tool_start', name: tc.name, args: tc.args, turn });
+          messages.push({
+            role: 'tool',
+            toolCallId: tc.id,
+            content: JSON.stringify({ success: true, message: summary }),
+          });
+          onProgress?.({ type: 'tool_end', name: tc.name, success: true, message: summary, turn });
+          console.log(`[TaskRunner] 🔍 tool_detail: requested=${requestedTools.length} loaded=${loaded.length} totalActive=${tools.length}`);
+          continue;
+        }
+
         onProgress?.({ type: 'tool_start', name: tc.name, args: tc.args, turn });
         const result = await this.executeTool(tc.name, tc.args, taskId, agentId, turn, toolCtx);
         onProgress?.({ type: 'tool_end', name: tc.name, success: result.success, message: result.message, turn });
 
+        executedTools.push(tc.name);
+
         // desktop_done / web_done / doc_done / code_done / finalize → 任务完成
         if (tc.name === 'desktop_done' || tc.name === 'web_done' || tc.name === 'doc_done' || tc.name === 'code_done' || tc.name === 'finalize') {
+          finalSummary = result.message;
           await this.taskDB.updateStatus(taskId, 'done');
+          taskCompleted = true;
           shouldBreak = true;
         }
 
@@ -241,13 +312,11 @@ export class TaskAgentRunner {
           try {
             const imageData = result.data.image_data as string;
             const imageFormat = (result.data as Record<string, unknown>)['format'] as string | undefined;
-            // 补全 data: 前缀（桌面截图返回的是 raw base64，format=bmp）
             const dataUrl = imageData.startsWith('data:') ? imageData : `data:image/${imageFormat || 'bmp'};base64,${imageData}`;
             const compressed = await compressImage(dataUrl, 1024, 45);
-            toolCtx = { scale: getScreenshotScale(compressed) };
+            toolCtx = { scale: getScreenshotScale(compressed), targetWindowHwnd: toolCtx.targetWindowHwnd };
             // 清理旧截图避免内存膨胀
             stripOldScreenshots(messages);
-            // 注入多模态消息，LLM 能真正看到截图
             messages.push({
               role: 'user',
               content: [
@@ -256,7 +325,7 @@ export class TaskAgentRunner {
               ],
             });
           } catch {
-            toolCtx = { scale: null };
+            toolCtx = { scale: null, targetWindowHwnd: toolCtx.targetWindowHwnd };
           }
         } else {
           // 非截图工具：过滤大图片数据后推入消息
@@ -269,13 +338,83 @@ export class TaskAgentRunner {
             content: JSON.stringify(filteredResult),
           });
         }
+
+        // request_user_input 后：用户操作可能导致界面变化（可能只填了信息，也可能进入了下一步）
+        // 必须让 LLM 重新获取当前界面状态，不能依赖过时上下文
+        if (tc.name === 'request_user_input' && result.success) {
+          // 清理旧截图 — 用户操作后旧截图已不可信
+          stripOldScreenshots(messages);
+          const supportsVisual = currentProvider.supportsMultimodal !== false;
+          const targetHwnd = toolCtx.targetWindowHwnd;
+
+          if (supportsVisual) {
+            // 多模态模型 → 对任务窗口自动截图
+            try {
+              const screenshotArgs: Record<string, unknown> = {};
+              if (targetHwnd) screenshotArgs['window_hwnd'] = targetHwnd;
+              const ssResult = await this.skillExecutor.executeToolCall('desktop_screenshot', screenshotArgs, toolCtx);
+              if (ssResult.success && ssResult.data?.image_data) {
+                const imageData = ssResult.data.image_data as string;
+                const imageFormat = (ssResult.data as Record<string, unknown>)['format'] as string | undefined;
+                const dataUrl = imageData.startsWith('data:') ? imageData : `data:image/${imageFormat || 'bmp'};base64,${imageData}`;
+                const compressed = await compressImage(dataUrl, 1024, 45);
+                toolCtx = { scale: getScreenshotScale(compressed), targetWindowHwnd: targetHwnd };
+                messages.push({
+                  role: 'user',
+                  content: [
+                    { type: 'image_url', image_url: { url: compressed.dataUrl } },
+                    { type: 'text', text: '用户已完成操作，这是当前屏幕截图。请分析截图确认界面状态，判断用户操作的实际效果（可能只填了信息，也可能已进入下一步），然后继续执行任务。' },
+                  ],
+                });
+              } else {
+                // 截图失败 → 降级为文本提示
+                messages.push({
+                  role: 'user',
+                  content: '用户已完成操作，界面可能已变化。请通过 uia_get_interactive 或 desktop_screenshot 重新获取当前界面状态，确认用户操作的实际效果后再继续。',
+                });
+              }
+            } catch {
+              messages.push({
+                role: 'user',
+                content: '用户已完成操作，界面可能已变化。请通过 uia_get_interactive 重新获取当前界面元素，确认用户操作的实际效果后再继续。',
+              });
+            }
+          } else {
+            // 非多模态模型 → 引导重新获取 UIA 元素
+            messages.push({
+              role: 'user',
+              content: '用户已完成操作，界面状态可能已改变（用户可能只填写了信息，也可能已进入了下一步）。请务必调用 uia_get_interactive 重新获取当前界面元素，确认界面实际状态后再继续执行任务。不要依赖之前的元素信息。',
+            });
+          }
+        }
       }
 
       if (shouldBreak) break;
     }
 
-    onProgress?.({ type: 'agent_done', success: true, turn: maxTurns });
-    return { success: true, taskId, agentId };
+    // ── 退出原因判断 ──
+    let exitReason: string;
+    let success: boolean;
+
+    if (signal?.aborted) {
+      exitReason = `任务被取消 (执行了 ${executedTools.length} 个工具后中止)`;
+      success = false;
+    } else if (taskCompleted) {
+      exitReason = '';
+      success = true;
+    } else {
+      // 轮次耗尽但 LLM 未调用 done 工具
+      const uniqueTools = [...new Set(executedTools)];
+      const toolSummary = uniqueTools.length > 0
+        ? `已执行 ${executedTools.length} 次工具调用 (${uniqueTools.join(', ')})`
+        : 'LLM 未产生有效的工具调用';
+      exitReason = `任务未完成: 已达到最大轮次 ${maxTurns}，${toolSummary}。请考虑拆分任务或增加 maxTurns。`;
+      success = false;
+      console.warn(`[TaskRunner] ✗ agent=${agentId} ${exitReason}`);
+    }
+
+    onProgress?.({ type: 'agent_done', success, turn: maxTurns });
+    return { success, taskId, agentId, summary: finalSummary, error: exitReason || undefined };
   }
 
   // ── 工具执行 ──
@@ -329,6 +468,11 @@ export class TaskAgentRunner {
         decisionRationale: String(args.reason ?? ''),
       });
       return { success: true, message: 'plan submitted' };
+    }
+
+    // finalize / *_done → 任务完成信号（无实际操作，由外层处理）
+    if (name === 'finalize' || name === 'desktop_done' || name === 'web_done' || name === 'doc_done' || name === 'code_done') {
+      return { success: true, message: args.summary ? String(args.summary) : 'Task completed' };
     }
 
     // 其他工具 → 委托给 SkillExecutor（桌面、web、文件等）

@@ -97,7 +97,8 @@ For OS-level actions (screenshot, keyboard, scroll), use desktop tools.
         "cdp_url": { "type": "string", "description": "CDP endpoint URL to connect to an existing browser (e.g. 'http://localhost:9222'). When set, connects directly via CDP. Use for login state." },
         "connect_existing": { "type": "boolean", "description": "If true (default), auto-detect and connect to user's running browser. Set false to always launch new browser." }
       }
-    }
+    },
+    "returns": "{\"success\":true/false,\"browser\":\"chrome/msedge/...\",\"connected\":true/false,\"message\":\"status description\",\"debugPort\":number (if available)}"
   },
   {
     "name": "web_navigate",
@@ -110,14 +111,16 @@ For OS-level actions (screenshot, keyboard, scroll), use desktop tools.
         "url": { "type": "string", "description": "URL to navigate to (required when action is 'goto')" },
         "action": { "type": "string", "description": "Navigation action: 'goto' (default, requires url), 'back', 'forward'" }
       }
-    }
+    },
+    "returns": "{\"success\":true/false,\"url\":\"current page URL\",\"title\":\"page title\"}"
   },
   {
     "name": "web_get_interactive",
     "description": "Get all interactive elements from the current page via Playwright accessibility tree. Returns DOM nodes with roles, names, and CSS selectors. Use this BEFORE web_click/web_fill to discover available elements.",
     "name_cn": "获取可交互元素",
     "description_cn": "通过 Playwright 无障碍树获取当前页面所有可交互元素，返回角色、名称和 CSS 选择器。在 web_click/web_fill 前优先调用此工具发现元素。",
-    "parameters": { "type": "object", "properties": {} }
+    "parameters": { "type": "object", "properties": {} },
+    "returns": "{\"nodes\":[{\"role\":\"button/textbox/link/...\",\"name\":\"accessible name\",\"selector\":\"CSS selector\",\"clickable\":true/false}],\"interactiveCount\":number}"
   },
   {
     "name": "web_click",
@@ -131,7 +134,8 @@ For OS-level actions (screenshot, keyboard, scroll), use desktop tools.
         "role": { "type": "string", "description": "ARIA role (e.g. 'button', 'link'). Use with 'name' instead of selector." },
         "name": { "type": "string", "description": "Accessible name, used with 'role' (partial match)" }
       }
-    }
+    },
+    "returns": "{\"success\":true/false,\"info\":\"click result info\"}"
   },
   {
     "name": "web_fill",
@@ -145,14 +149,16 @@ For OS-level actions (screenshot, keyboard, scroll), use desktop tools.
         "text": { "type": "string", "description": "Text to fill" }
       },
       "required": ["selector", "text"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"info\":\"fill result info\"}"
   },
   {
     "name": "web_close",
     "description": "Close the browser instance.",
     "name_cn": "关闭浏览器",
     "description_desc": "关闭浏览器实例。",
-    "parameters": { "type": "object", "properties": {} }
+    "parameters": { "type": "object", "properties": {} },
+    "returns": "{\"success\":true/false,\"message\":\"closed\"}"
   },
   {
     "name": "web_wait",
@@ -165,7 +171,8 @@ For OS-level actions (screenshot, keyboard, scroll), use desktop tools.
         "durationMs": { "type": "integer", "description": "Wait duration in milliseconds" }
       },
       "required": ["durationMs"]
-    }
+    },
+    "returns": "{\"action\":\"wait\",\"durationMs\":number}"
   },
   {
     "name": "web_done",
@@ -178,7 +185,8 @@ For OS-level actions (screenshot, keyboard, scroll), use desktop tools.
         "summary": { "type": "string", "description": "Summary of what was accomplished" }
       },
       "required": ["summary"]
-    }
+    },
+    "returns": "{\"action\":\"done\",\"message\":\"task summary\"}"
   },
   {
     "name": "run_playwright_script",
@@ -192,7 +200,8 @@ For OS-level actions (screenshot, keyboard, scroll), use desktop tools.
         "timeout_sec": { "type": "integer", "description": "Execution timeout in seconds (default 60)" }
       },
       "required": ["code"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"output\":\"stdout text\",\"result\":\"returned value\",\"error\":\"error message if failed\"}"
   }
 ]
 ```

@@ -13,6 +13,9 @@ export class SkillExecutor implements ISkillExecutor {
 
   /** Legacy tool names → unified replacements (transparent to LLM, for backward compat) */
   private static LEGACY_MAP: Record<string, string> = {
+    'glob': 'glob_files',
+    'find_files': 'glob_files',
+    'search_files': 'grep_files',
     'desktop_double_click': 'desktop_click',
     'desktop_right_click': 'desktop_click',
     'desktop_middle_click': 'desktop_click',

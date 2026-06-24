@@ -295,6 +295,22 @@ class UnifiedExecutor {
         this.endLoop(resolved, context);
         break;
 
+      case 'if':
+        this.executeIf(resolved, context);
+        break;
+
+      case 'else':
+        this.executeElse(context);
+        break;
+
+      case 'endif':
+        // 标记块结束，无操作（if/else 跳转的锚点）
+        break;
+
+      case 'goto':
+        this.executeGoto(resolved, context);
+        break;
+
       case 'break':
         this.executeBreak(context);
         break;
@@ -454,13 +470,156 @@ class UnifiedExecutor {
   }
 
   private evaluateCondition(condition: string, context: TemplateExecutionContext): boolean {
-    // 简单的条件评估
-    const value = this.resolveExpression(condition, context);
+    // 空条件默认通过
+    if (!condition || !condition.trim()) return true;
 
+    // 先解析模板表达式 {{var}} → 实际值
+    const resolved = condition.replace(/\{\{([^}]+)\}\}/g, (_, path) => {
+      const value = this.evaluatePath(path.trim(), context);
+      if (typeof value === 'string') return `'${value.replace(/'/g, "\\'").replace(/"/g, '\\"')}'`;
+      if (value === undefined || value === null) return 'null';
+      if (typeof value === 'boolean') return String(value);
+      return String(value);
+    });
+
+    const trimmed = resolved.trim();
+
+    // 布尔字面量
+    if (trimmed === 'true') return true;
+    if (trimmed === 'false') return false;
+    if (trimmed === 'null' || trimmed === 'undefined') return false;
+
+    // 逻辑或（低优先级）
+    if (/\s+or\s+/i.test(trimmed) || /\s*\|\|\s*/.test(trimmed)) {
+      const parts = trimmed.split(/\s+(?:or|\|\|)\s+/i);
+      return parts.some(p => this.evaluateCondition(p, context));
+    }
+
+    // 逻辑与（高优先级）
+    if (/\s+and\s+/i.test(trimmed) || /\s*&&\s*/.test(trimmed)) {
+      const parts = trimmed.split(/\s+(?:and|&&)\s+/i);
+      return parts.every(p => this.evaluateCondition(p, context));
+    }
+
+    // 逻辑非
+    const notMatch = trimmed.match(/^(?:not|!)\s+(.+)$/i);
+    if (notMatch) return !this.evaluateCondition(notMatch[1], context);
+
+    // 比较运算：==, !=, >=, <=, >, <, includes, not_includes
+    const compMatch = trimmed.match(/^(.+?)\s+(==|!=|>=|<=|>|<|includes|not_includes)\s+(.+)$/i);
+    if (compMatch) {
+      const [, leftRaw, op, rightRaw] = compMatch;
+      const l = this.parseConditionValue(leftRaw.trim());
+      const r = this.parseConditionValue(rightRaw.trim());
+      switch (op) {
+        case '==': return l === r;
+        case '!=': return l !== r;
+        case '>=': return Number(l) >= Number(r);
+        case '<=': return Number(l) <= Number(r);
+        case '>': return Number(l) > Number(r);
+        case '<': return Number(l) < Number(r);
+        case 'includes': return typeof l === 'string' && typeof r === 'string' && l.includes(r);
+        case 'not_includes': return typeof l === 'string' && typeof r === 'string' && !l.includes(r);
+      }
+    }
+
+    // 纯数字或字符串：truthiness
+    const value = this.resolveExpression(condition, context);
     if (typeof value === 'boolean') return value;
     if (typeof value === 'string') return value.length > 0;
     if (typeof value === 'number') return value !== 0;
     return value != null;
+  }
+
+  /** 解析条件表达式中的值 */
+  private parseConditionValue(raw: string): unknown {
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    if (raw === 'null') return null;
+    if (raw === 'undefined') return undefined;
+    // 带引号的字符串
+    if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) {
+      return raw.slice(1, -1);
+    }
+    // 数字
+    if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+    // 无引号字符串（变量名已解析为值后的残留）
+    return raw;
+  }
+
+  // ── 流程控制：if/else/endif/goto ──
+
+  /** 执行 if：条件为 true 则继续执行下一步，false 则跳到匹配的 else 或 endif */
+  private executeIf(step: TemplateStep, context: TemplateExecutionContext): void {
+    const condition = step.condition || step.control?.condition || '';
+    const result = this.evaluateCondition(condition, context);
+
+    if (result) {
+      // 条件成立，继续执行下一步
+      return;
+    }
+
+    // 条件不成立，跳到匹配的 else 或 endif
+    this.skipToMatchingEndifOrElse(context);
+  }
+
+  /** 执行 else：从 if(true) 路径到达时跳到 endif */
+  private executeElse(context: TemplateExecutionContext): void {
+    // 能执行到 else 说明 if 条件为 true，应跳过 else 块到 endif
+    this.skipToMatchingEndif(context);
+  }
+
+  /** 跳转到匹配的 endif（跳过嵌套块） */
+  private skipToMatchingEndif(context: TemplateExecutionContext): void {
+    const steps = context.template.steps;
+    let depth = 1;
+    for (let j = context.currentStepIndex + 1; j < steps.length; j++) {
+      if (steps[j].action === 'if') depth++;
+      if (steps[j].action === 'endif') {
+        depth--;
+        if (depth === 0) {
+          context.currentStepIndex = j;
+          return;
+        }
+      }
+    }
+  }
+
+  /** 跳转到匹配的 else 或 endif（if 条件为 false 时） */
+  private skipToMatchingEndifOrElse(context: TemplateExecutionContext): void {
+    const steps = context.template.steps;
+    let depth = 1;
+    for (let j = context.currentStepIndex + 1; j < steps.length; j++) {
+      if (steps[j].action === 'if') depth++;
+      if (steps[j].action === 'endif') {
+        depth--;
+        if (depth === 0) {
+          context.currentStepIndex = j;
+          return;
+        }
+      }
+      if (steps[j].action === 'else' && depth === 1) {
+        // 找到同层级的 else，跳到这里（else 会继续执行其后的步骤）
+        context.currentStepIndex = j;
+        return;
+      }
+    }
+  }
+
+  /** 执行 goto：跳转到指定步骤 ID */
+  private executeGoto(step: TemplateStep, context: TemplateExecutionContext): void {
+    const targetId = step.params?.stepId as string
+      || step.control?.stepId
+      || '';
+    if (!targetId) return;
+
+    const steps = context.template.steps;
+    for (let j = 0; j < steps.length; j++) {
+      if (steps[j].id === targetId) {
+        context.currentStepIndex = j;
+        return;
+      }
+    }
   }
 
   // ── 动作执行 ──
@@ -843,7 +1002,29 @@ class UnifiedExecutor {
       }
       // 存储结果到上下文
       if (result?.data) {
-        Object.assign(context.variables, result.data);
+        // 截图类工具：额外保存压缩截图供后续 llm_call 多模态引用
+        if ((toolName === 'desktop_screenshot' || toolName === 'screenshot') && result.data.image_data) {
+          try {
+            const { compressImage } = await import('@/utils/image');
+            const rawData = result.data.image_data as string;
+            const dataUrl = rawData.startsWith('data:') ? rawData : `data:image/bmp;base64,${rawData}`;
+            const compressed = await compressImage(dataUrl, 1024, 45);
+            context.variables['_screenshot_' + step.id] = compressed.dataUrl;
+            // 过滤掉原始大图数据
+            const filteredData = { ...result.data } as Record<string, unknown>;
+            filteredData.image_data = '[image data omitted — stored as screenshot]';
+            filteredData['_screenshot_step_id'] = step.id;
+            Object.assign(context.variables, filteredData);
+          } catch {
+            Object.assign(context.variables, result.data);
+          }
+        } else if (result.data.region_screenshot) {
+          // 点击/拖拽等返回的区域截图
+          context.variables['_screenshot_' + step.id] = result.data.region_screenshot as string;
+          Object.assign(context.variables, result.data);
+        } else {
+          Object.assign(context.variables, result.data);
+        }
       }
     } catch (e) {
       console.warn(`[UnifiedExecutor] tool_call ${toolName} failed:`, e);
@@ -855,11 +1036,17 @@ class UnifiedExecutor {
     context: TemplateExecutionContext,
     options: ExecutionOptions,
   ): Promise<void> {
-    const prompt = String(step.params?.prompt || '');
-    if (!prompt || options.dryRun) return;
+    const rawPrompt = String(step.params?.prompt || '');
+    if (!rawPrompt || options.dryRun) return;
 
-    const systemPrompt = String(step.params?.systemPrompt || '');
+    // 解析 prompt 中的模板表达式
+    const prompt = this.resolveExpression(rawPrompt, context) as string;
+    const systemPrompt = this.resolveExpression(
+      String(step.params?.systemPrompt || ''), context,
+    ) as string;
     const model = String(step.params?.model || '');
+    const multimodal = !!(step.params?.multimodal);
+    const includeScreenshots = (step.params?.include_screenshots || []) as string[];
 
     try {
       const { useModelConfigStore } = await import('@/stores/model-config-store');
@@ -871,9 +1058,31 @@ class UnifiedExecutor {
       const { getModelService } = await import('@/services/model-service-singleton');
       const service = getModelService();
 
-      const messages: Array<{ role: string; content: string }> = [];
+      const messages: Array<{ role: string; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }> = [];
       if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-      messages.push({ role: 'user', content: prompt });
+
+      // 多模态消息：附加前序步骤的截图
+      if (multimodal && includeScreenshots.length > 0) {
+        const contentParts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+
+        // 先放截图
+        for (const stepId of includeScreenshots) {
+          const screenshotUrl = context.variables['_screenshot_' + stepId] as string | undefined;
+          if (screenshotUrl) {
+            contentParts.push({
+              type: 'image_url',
+              image_url: { url: screenshotUrl },
+            });
+          }
+        }
+
+        // 再放文本提示词
+        contentParts.push({ type: 'text', text: prompt });
+
+        messages.push({ role: 'user', content: contentParts });
+      } else {
+        messages.push({ role: 'user', content: prompt });
+      }
 
       const stream = service.chatStream({
         scenario: 'recorderAnalysis' as any,

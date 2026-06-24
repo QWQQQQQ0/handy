@@ -32,7 +32,7 @@ impl PythonBridge {
     /// Launch the Python engine and wait for the ready handshake.
     pub fn start() -> Result<Self, String> {
         let engine_path = resolve_engine_path()?;
-        let python = std::env::var("OPENPAW_PYTHON").unwrap_or_else(|_| "python".to_string());
+        let python = std::env::var("HANDY_PYTHON").unwrap_or_else(|_| "python".to_string());
 
         let mut child = Command::new(&python)
             .arg(&engine_path)
@@ -917,6 +917,7 @@ pub async fn exec_python(
     code: String,
     timeout_sec: Option<u64>,
     params: Option<serde_json::Value>,
+    allow_all_imports: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     bridge_call_async(
         state.bridge.clone(),
@@ -925,6 +926,7 @@ pub async fn exec_python(
             "code": code,
             "timeout_sec": timeout_sec.unwrap_or(30),
             "params": params.unwrap_or(serde_json::json!({})),
+            "allowAllImports": allow_all_imports.unwrap_or(false),
         }),
     )
     .await

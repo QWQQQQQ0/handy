@@ -13,7 +13,7 @@ function resolveNodeDbPath(): string | null {
     const nodePath = require('node:path') as typeof import('node:path');
     const appData = process.env.APPDATA
       || (process.env.HOME ? nodePath.join(process.env.HOME, '.local', 'share') : '');
-    return nodePath.join(appData, 'com.openpaw.app', 'public', 'openpaw_cache.db');
+    return nodePath.join(appData, 'com.handy.app', 'public', 'handy_cache.db');
   } catch {
     return null;
   }

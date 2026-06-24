@@ -1,4 +1,4 @@
-// Background service worker — connects to OpenPaw Python backend via WebSocket.
+// Background service worker — connects to Handy Python backend via WebSocket.
 // Allows the desktop app to inject scripts and query DOM through the extension.
 //
 // MV3 service workers are ephemeral — Chrome kills them after ~30s of
@@ -6,8 +6,8 @@
 // reliable keepalive in MV3) and reconnect the WebSocket on wake.
 
 const WS_URL = 'ws://127.0.0.1:19840/extension';
-const KEEPALIVE_ALARM = 'openpaw-keepalive';
-const RECONNECT_ALARM = 'openpaw-reconnect';
+const KEEPALIVE_ALARM = 'handy-keepalive';
+const RECONNECT_ALARM = 'handy-reconnect';
 
 let ws = null;
 let lastPong = 0;  // timestamp of last pong received from server
@@ -33,7 +33,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         ws.send(JSON.stringify({ type: 'push_event', data: msg.data }));
       } catch (e) {
-        console.warn('[OpenPaw] push_event failed, buffering:', e);
+        console.warn('[Handy] push_event failed, buffering:', e);
         _userEvents.push(msg.data);
       }
     } else {
@@ -63,7 +63,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       connect();
     } else if (Date.now() - lastPong > 30000) {
       // Connection is half-open: readyState is OPEN but server is dead
-      console.log('[OpenPaw] heartbeat timeout, reconnecting');
+      console.log('[Handy] heartbeat timeout, reconnecting');
       try { ws.close(); } catch {}
     } else {
       // Send heartbeat ping to verify connection is alive
@@ -105,7 +105,7 @@ function connect() {
   try {
     ws = new WebSocket(WS_URL);
     ws.onopen = () => {
-      console.log('[OpenPaw] connected to backend');
+      console.log('[Handy] connected to backend');
       lastPong = Date.now();
       _reconnectAttempts = 0;
       chrome.alarms.clear(RECONNECT_ALARM);
@@ -123,7 +123,7 @@ function connect() {
         if (msg.type === 'screen_info' && msg.data) {
           _physicalScreen.width = msg.data.width || 0;
           _physicalScreen.height = msg.data.height || 0;
-          console.log(`[OpenPaw] physical screen: ${_physicalScreen.width}x${_physicalScreen.height}`);
+          console.log(`[Handy] physical screen: ${_physicalScreen.width}x${_physicalScreen.height}`);
           // Forward to all content scripts
           broadcastToTabs({ type: 'screen_info', data: _physicalScreen });
           return;
@@ -140,12 +140,12 @@ function connect() {
       scheduleReconnect();
     };
     ws.onerror = (e) => {
-      console.warn('[OpenPaw] ws error', e);
+      console.warn('[Handy] ws error', e);
       try { ws.close(); } catch {}
       ws = null;
     };
   } catch (e) {
-    console.warn('[OpenPaw] connect() threw', e);
+    console.warn('[Handy] connect() threw', e);
     ws = null;
     scheduleReconnect();
   }
@@ -155,7 +155,7 @@ function scheduleReconnect() {
   // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (cap)
   _reconnectAttempts++;
   const delaySec = Math.min(Math.pow(2, _reconnectAttempts - 1), MAX_RECONNECT_DELAY);
-  console.log(`[OpenPaw] reconnect #${_reconnectAttempts} in ${delaySec}s`);
+  console.log(`[Handy] reconnect #${_reconnectAttempts} in ${delaySec}s`);
   chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: delaySec / 60 });
 }
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -167,7 +167,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 async function handleCommand(msg) {
   const { id, tool, params } = msg;
   if (tool !== 'ext_get_recorded_events') {
-    console.log(`[OpenPaw] handleCommand: tool=${tool} id=${id}`);
+    console.log(`[Handy] handleCommand: tool=${tool} id=${id}`);
   }
 
   switch (tool) {
@@ -197,7 +197,7 @@ async function handleCommand(msg) {
         });
         return { results: results.map(r => r.result) };
       } catch (scriptErr) {
-        console.error(`[OpenPaw] executeScript error: ${scriptErr}`);
+        console.error(`[Handy] executeScript error: ${scriptErr}`);
         throw new Error(`Script execution failed: ${scriptErr.message || scriptErr}`);
       }
     }
@@ -211,6 +211,7 @@ async function handleCommand(msg) {
         world: 'MAIN',
         func: () => {
           const selector = 'a,button,input,select,textarea,[role="button"],[role="link"],[role="textbox"],[role="combobox"],[role="checkbox"],[role="radio"],[role="tab"],[role="menuitem"],[role="listitem"],[role="treeitem"],[contenteditable="true"]';
+          const MAX_NODES = 200;
           const nodes = Array.from(document.querySelectorAll(selector))
             .filter(el => {
               const r = el.getBoundingClientRect();
@@ -219,6 +220,7 @@ async function handleCommand(msg) {
                 && r.bottom <= window.innerHeight
                 && r.right <= window.innerWidth;
             })
+            .slice(0, MAX_NODES)
             .map((el, i) => ({
               index: i,
               tag: el.tagName.toLowerCase(),
@@ -234,7 +236,7 @@ async function handleCommand(msg) {
                 return {left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), width: Math.round(r.width), height: Math.round(r.height)};
               })(),
             }));
-          return {nodes, url: window.location.href, title: document.title};
+          return {nodes, url: window.location.href, title: document.title, total: document.querySelectorAll(selector).length, truncated: nodes.length >= MAX_NODES};
         },
       });
       return { results: results.map(r => r.result) };
@@ -263,7 +265,7 @@ async function handleCommand(msg) {
                 target: { tabId: tab.id },
                 world: 'MAIN',
                 func: (__enabled) => {
-                  window.__openpaw_capture_enabled = __enabled;
+                  window.__handy_capture_enabled = __enabled;
                 },
                 args: [enabled],
               });
@@ -273,7 +275,7 @@ async function handleCommand(msg) {
             } catch {}
           }
         }
-        console.log(`[OpenPaw] ext_set_capture: enabled=${enabled}, injected to ${injected}/${tabs.length} tabs`);
+        console.log(`[Handy] ext_set_capture: enabled=${enabled}, injected to ${injected}/${tabs.length} tabs`);
       } catch {}
       // Clear buffer when disabling
       if (!enabled) _userEvents.length = 0;

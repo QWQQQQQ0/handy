@@ -1,9 +1,11 @@
-import { Sun, Moon, Monitor, Globe, Activity, Clock } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Sun, Moon, Monitor, Globe, Activity, Clock, Brain, Trash2, RefreshCw, Edit3, X, Check } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSettingsStore } from '@/stores/settings-store';
 import { useT, setLocale } from '@/i18n/strings';
 import { Switch } from '@/components/ui/switch';
 import { globalState } from '@/services/global-state';
+import { getMemoryCompressor } from '@/services/memory-compressor';
+import type { MemoryEntry } from '@/services/memory-compressor';
 
 export default function SettingsPage() {
   const t = useT();
@@ -174,6 +176,224 @@ export default function SettingsPage() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── 长期记忆管理 ── */}
+        <MemoryManager />
+      </div>
+    </div>
+  );
+}
+
+// ── 记忆管理面板 ──
+
+function MemoryManager() {
+  const [profiles, setProfiles] = useState<Array<{ id: string; content: string; importance: number; source_date: string | null }>>([]);
+  const [tasks, setTasks] = useState<Array<{ id: string; content: string; importance: number; source_date: string | null }>>([]);
+  const [lastSnapshot, setLastSnapshot] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [compressing, setCompressing] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const compressor = getMemoryCompressor();
+      const [p, t] = await Promise.all([
+        compressor.getUserProfileEntries(),
+        compressor.getTaskHistory(),
+      ]);
+      const snap = await compressor.getLatestSnapshot();
+      setProfiles(p.map((r) => ({ id: r.id, content: r.content, importance: r.importance, source_date: r.source_date })));
+      setTasks(t.map((r) => ({ id: r.id ?? '', content: r.content, importance: r.importance, source_date: r.date ?? null })));
+      setLastSnapshot(snap);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleDelete = async (id: string) => {
+    try {
+      await getMemoryCompressor().deleteUserProfile(id);
+      setProfiles((prev) => prev.filter((p) => p.id !== id));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleEditStart = (item: { id: string; content: string }) => {
+    setEditingId(item.id);
+    setEditContent(item.content);
+  };
+
+  const handleEditSave = async (id: string) => {
+    try {
+      await getMemoryCompressor().upsertUserProfile(editContent);
+      setProfiles((prev) => prev.map((p) => p.id === id ? { ...p, content: editContent } : p));
+      setEditingId(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const handleManualCompress = async () => {
+    setCompressing(true);
+    setError(null);
+    try {
+      const { useModelConfigStore } = await import('@/stores/model-config-store');
+      const modelStore = useModelConfigStore.getState();
+      const provider = modelStore.defaultConfig();
+      if (!provider) { setError('没有配置模型'); setCompressing(false); return; }
+      const apiKey = await modelStore.getApiKey(provider.id, '');
+      if (!apiKey) { setError('无法获取 API Key（可能需要密码解密）'); setCompressing(false); return; }
+
+      const result = await getMemoryCompressor().compress(provider, apiKey);
+      if (result) {
+        await load(); // Reload after compression
+      } else {
+        setError('压缩失败，请查看控制台日志');
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCompressing(false);
+    }
+  };
+
+  const importanceColor = (v: number) => {
+    if (v >= 8) return 'text-green-600 dark:text-green-400';
+    if (v >= 5) return 'text-yellow-600 dark:text-yellow-400';
+    return 'text-zinc-400 dark:text-zinc-500';
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-[13px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+          长期记忆
+        </h2>
+        <div className="flex gap-2">
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md border border-zinc-200 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+          >
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+            刷新
+          </button>
+          <button
+            onClick={handleManualCompress}
+            disabled={compressing}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] rounded-md bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+          >
+            <Brain size={12} className={compressing ? 'animate-pulse' : ''} />
+            {compressing ? '压缩中...' : '手动压缩'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-2 px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-950 text-[11px] text-red-600 dark:text-red-400">
+          {error}
+          <button onClick={() => setError(null)} className="ml-2 underline">关闭</button>
+        </div>
+      )}
+
+      {lastSnapshot && (
+        <div className="mb-3 px-3 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-800/50 text-[11px] text-zinc-500 dark:text-zinc-400">
+          📅 最近压缩: {lastSnapshot.substring(0, 80)}{lastSnapshot.length > 80 ? '...' : ''}
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {/* 用户画像 */}
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Brain size={14} className="text-blue-500" />
+            <span className="text-[12px] font-medium text-zinc-700 dark:text-zinc-300">
+              用户画像 ({profiles.length}/10)
+            </span>
+          </div>
+          {profiles.length === 0 ? (
+            <p className="text-[11px] text-zinc-400 dark:text-zinc-500 pl-6">
+              暂无。LLM 会在对话中通过 agent_memory_update 自动记录你的偏好。
+            </p>
+          ) : (
+            <div className="space-y-1 pl-6">
+              {profiles.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-start justify-between group px-2 py-1.5 rounded-lg hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+                >
+                  {editingId === p.id ? (
+                    <div className="flex-1 flex items-center gap-2">
+                      <input
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
+                        className="flex-1 px-2 py-1 text-[12px] rounded border border-blue-300 dark:border-blue-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100"
+                        autoFocus
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleEditSave(p.id); if (e.key === 'Escape') setEditingId(null); }}
+                      />
+                      <button onClick={() => handleEditSave(p.id)} className="p-1 text-green-500 hover:bg-green-50 dark:hover:bg-green-950 rounded"><Check size={14} /></button>
+                      <button onClick={() => setEditingId(null)} className="p-1 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded"><X size={14} /></button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-[12px] text-zinc-800 dark:text-zinc-200">{p.content}</span>
+                        <span className={`ml-2 text-[10px] ${importanceColor(p.importance)}`}>
+                          ★{p.importance}
+                        </span>
+                      </div>
+                      <div className="hidden group-hover:flex items-center gap-1 shrink-0">
+                        <button onClick={() => handleEditStart(p)} className="p-1 text-zinc-400 hover:text-blue-500 rounded"><Edit3 size={12} /></button>
+                        <button onClick={() => handleDelete(p.id)} className="p-1 text-zinc-400 hover:text-red-500 rounded"><Trash2 size={12} /></button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 任务历史 */}
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Clock size={14} className="text-zinc-400" />
+            <span className="text-[12px] font-medium text-zinc-700 dark:text-zinc-300">
+              任务历史 ({tasks.length}/20)
+            </span>
+            <span className="text-[10px] text-zinc-400 dark:text-zinc-500">每日自动压缩</span>
+          </div>
+          {tasks.length === 0 ? (
+            <p className="text-[11px] text-zinc-400 dark:text-zinc-500 pl-6">
+              暂无。应用每天首次打开时会自动压缩对话生成任务历史。
+            </p>
+          ) : (
+            <div className="space-y-1 pl-6">
+              {tasks.map((t) => (
+                <div key={t.id} className="flex items-start gap-2 px-2 py-1 rounded-lg">
+                  <span className={`mt-0.5 text-[10px] shrink-0 ${importanceColor(t.importance)}`}>
+                    ★{t.importance}
+                  </span>
+                  <div className="min-w-0">
+                    <span className="text-[12px] text-zinc-600 dark:text-zinc-400">{t.content}</span>
+                    {t.source_date && (
+                      <span className="ml-2 text-[10px] text-zinc-400 dark:text-zinc-500">{t.source_date}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

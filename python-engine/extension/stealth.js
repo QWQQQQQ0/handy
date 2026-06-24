@@ -61,8 +61,8 @@
   // 同时检查页面全局标记（background 通过 executeScript 设置）
   // 定期同步，因为 executeScript 设置的是页面上下文的变量
   setInterval(() => {
-    if (typeof window.__openpaw_capture_enabled !== 'undefined') {
-      _captureEnabled = !!window.__openpaw_capture_enabled;
+    if (typeof window.__handy_capture_enabled !== 'undefined') {
+      _captureEnabled = !!window.__handy_capture_enabled;
     }
   }, 1000);
 

@@ -772,6 +772,7 @@ def _handle_exec_python(params: dict) -> dict:
     code = params.get("code", "")
     timeout_sec = params.get("timeout_sec", 30)
     input_vars = params.get("params", {})
+    allow_all = params.get("allowAllImports", False)
 
     import io
     import sys
@@ -831,7 +832,7 @@ def _handle_exec_python(params: dict) -> dict:
             "IndexError": IndexError,
             "Exception": Exception,
             "StopIteration": StopIteration,
-            "__import__": safe_import,
+            "__import__": __import__ if allow_all else safe_import,
         }
     }
     safe_globals.update(input_vars)

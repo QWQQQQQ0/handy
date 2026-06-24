@@ -8,6 +8,7 @@ export interface SkillTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  returns?: string;           // Return value description for LLM
   nameCn?: string;
   descriptionCn?: string;
 }
@@ -30,11 +31,14 @@ export interface Skill {
 }
 
 export function toolToOpenAI(tool: SkillTool): Record<string, unknown> {
+  const desc = tool.returns
+    ? `${tool.description}\n\nReturn value: ${tool.returns}`
+    : tool.description;
   return {
     type: 'function',
     function: {
       name: tool.name,
-      description: tool.description,
+      description: desc,
       parameters: tool.parameters,
     },
   };

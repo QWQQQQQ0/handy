@@ -7,7 +7,7 @@
 
 import type { AutomationTemplate } from '@/types/automation-template';
 
-const STORAGE_KEY = 'openpaw_temporary_tasks';
+const STORAGE_KEY = 'handy_temporary_tasks';
 const MAX_TASKS = 20;
 
 /** 从 localStorage 读取所有临时任务 */

@@ -80,7 +80,8 @@ Interact with Windows UI elements via UI Automation (UIA). No coordinates needed
         "onscreen_only": { "type": "boolean", "description": "Only return elements visible on screen (default true)" },
         "limit": { "type": "integer", "description": "Max number of elements to return" }
       }
-    }
+    },
+    "returns": "{\"nodes\":[{\"role\":\"Button/Edit/List/...\",\"name\":\"element display name\",\"bounds\":{\"left\":number,\"top\":number,\"width\":number,\"height\":number},\"aid\":\"automation id (optional)\"}],\"count\":number,\"window_hwnd\":number}"
   },
   {
     "name": "uia_click",
@@ -95,7 +96,8 @@ Interact with Windows UI elements via UI Automation (UIA). No coordinates needed
         "window_hwnd": { "type": "integer", "description": "Optional window handle" }
       },
       "required": ["role"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"element\":{\"role\":\"...\",\"name\":\"...\",\"bounds\":{...}},\"message\":\"execution result\"}"
   },
   {
     "name": "uia_type",
@@ -111,7 +113,8 @@ Interact with Windows UI elements via UI Automation (UIA). No coordinates needed
         "window_hwnd": { "type": "integer", "description": "Optional window handle" }
       },
       "required": ["text"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"message\":\"typed text info\"}"
   },
   {
     "name": "uia_find_element",
@@ -126,7 +129,8 @@ Interact with Windows UI elements via UI Automation (UIA). No coordinates needed
         "window_hwnd": { "type": "integer", "description": "Optional window handle" }
       },
       "required": ["role"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"element\":{\"role\":\"...\",\"name\":\"...\",\"bounds\":{\"left\":number,\"top\":number,\"width\":number,\"height\":number},\"isEnabled\":true/false,\"controlType\":number},\"message\":\"\"}"
   },
   {
     "name": "uia_get_property",
@@ -142,7 +146,8 @@ Interact with Windows UI elements via UI Automation (UIA). No coordinates needed
         "window_hwnd": { "type": "integer", "description": "Optional window handle" }
       },
       "required": ["role", "property"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"property\":\"the property name\",\"value\":\"the property value\",\"element\":{\"role\":\"...\",\"name\":\"...\"}}"
   },
   {
     "name": "uia_fingerprint",
@@ -154,7 +159,8 @@ Interact with Windows UI elements via UI Automation (UIA). No coordinates needed
       "properties": {
         "window_hwnd": { "type": "integer", "description": "Optional window handle" }
       }
-    }
+    },
+    "returns": "{\"fingerprint\":\"compact UI tree structure string\",\"nodeCount\":number,\"depth\":number}"
   }
 ]
 ```

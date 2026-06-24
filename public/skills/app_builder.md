@@ -48,9 +48,9 @@ Match the app complexity to what the user asks for.
 [
   {
     "name": "save_app",
-    "description": "Save a new generated application. The code should be complete, working HTML/CSS/JS. Native device capabilities (camera, GPS, storage, notifications, etc.) are available via the global window.Handy.call() JavaScript function. Phone tools (tap, swipe, type, scroll) can be invoked via screen automations. The app uses phone screen monitoring and notifications to keep data fresh. Multi-page support is available. Include all required pages for complex apps. Make sure to use the full capabilities available.",
+    "description": "Save a complete HTML/CSS/JS application to the app library so the user can launch it from the Apps page. Use this for finished, user-facing web apps — NOT for project source files (use write_file for those). The code should be a complete, standalone HTML document. Do NOT call write_file before or after save_app for the same content.",
     "name_cn": "保存应用",
-    "description_cn": "保存新生成的应用。代码应为完整可运行的 HTML/CSS/JS。原生设备能力（摄像头、GPS、存储、通知等）可通过 window.Handy.call() JavaScript 函数调用。支持多页面应用，请为复杂应用包含所有必需页面。",
+    "description_cn": "将完整的 HTML/CSS/JS 应用保存到应用库，用户可在 Apps 页面启动。用于成品 Web 应用，不要用此工具保存项目源文件（用 write_file）。代码应为完整的独立 HTML 文档。不要对同一内容既调 write_file 又调 save_app。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -59,14 +59,16 @@ Match the app complexity to what the user asks for.
         "description": { "type": "string", "description": "Brief description" }
       },
       "required": ["name", "code"]
-    }
+    },
+    "returns": "{\"id\":\"app-uuid\",\"name\":\"app name\",\"description\":\"description\",\"code\":\"HTML source\",\"created_at\":\"ISO timestamp\"}"
   },
   {
     "name": "list_apps",
     "description": "List all saved applications. Returns app metadata (id, name, description, creation date).",
     "name_cn": "构建列出应用",
     "description_cn": "列出所有已保存的应用，返回应用元数据（ID、名称、描述、创建日期）。",
-    "parameters": { "type": "object", "properties": {} }
+    "parameters": { "type": "object", "properties": {} },
+    "returns": "{\"apps\":[{\"id\":\"uuid\",\"name\":\"app name\",\"description\":\"description\",\"project_type\":\"single/multi\",\"entry_file\":\"index.html\",\"created_at\":\"ISO timestamp\"}],\"count\":number}"
   },
   {
     "name": "get_app",
@@ -79,7 +81,8 @@ Match the app complexity to what the user asks for.
         "id": { "type": "string", "description": "App ID" }
       },
       "required": ["id"]
-    }
+    },
+    "returns": "{\"id\":\"uuid\",\"name\":\"app name\",\"description\":\"description\",\"code\":\"full HTML source\",\"project_type\":\"single/multi\",\"files\":{...},\"entry_file\":\"index.html\",\"created_at\":\"ISO timestamp\"}"
   },
   {
     "name": "update_app",
@@ -94,7 +97,8 @@ Match the app complexity to what the user asks for.
         "name": { "type": "string", "description": "New app name (optional, keeps existing if omitted)" }
       },
       "required": ["id"]
-    }
+    },
+    "returns": "{\"id\":\"uuid\",\"name\":\"app name\",\"description\":\"description\",\"code\":\"updated HTML source\",\"project_type\":\"single/multi\",\"updated_at\":\"ISO timestamp\"}"
   },
   {
     "name": "delete_app",
@@ -107,7 +111,8 @@ Match the app complexity to what the user asks for.
         "id": { "type": "string", "description": "App ID" }
       },
       "required": ["id"]
-    }
+    },
+    "returns": "{\"success\":true,\"id\":\"deleted app id\",\"message\":\"deletion confirmation\"}"
   }
 ]
 ```

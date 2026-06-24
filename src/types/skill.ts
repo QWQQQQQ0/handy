@@ -11,6 +11,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>; // JSON Schema
+  returns?: string;           // Return value description for LLM
   nameCn?: string;
   descriptionCn?: string;
 }

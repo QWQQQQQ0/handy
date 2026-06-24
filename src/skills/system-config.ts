@@ -122,12 +122,20 @@ export class SystemConfigSkill implements Skill {
         },
       },
     },
-    // ── Watchers ──
+    // ── Scheduled Tasks ──
+    {
+      name: 'list_scheduled_tasks',
+      description: 'List all scheduled background tasks (timers, screen watchers, etc.)',
+      nameCn: '列出后台任务',
+      descriptionCn: '列出所有后台任务（定时任务、屏幕监控等）',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+    // Legacy alias — keep for backward compat
     {
       name: 'list_watchers',
-      description: 'List all screen monitoring (watcher) tasks',
-      nameCn: '列出监控',
-      descriptionCn: '列出所有屏幕监控任务',
+      description: '[Deprecated] List all scheduled background tasks. Use list_scheduled_tasks instead.',
+      nameCn: '[已废弃] 列出后台任务',
+      descriptionCn: '已废弃，请使用 list_scheduled_tasks',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   ];
@@ -151,8 +159,9 @@ export class SystemConfigSkill implements Skill {
           return this.handleGetSettings();
         case 'update_settings':
           return this.handleUpdateSettings(params);
-        case 'list_watchers':
-          return this.handleListWatchers();
+        case 'list_scheduled_tasks':
+        case 'list_watchers':  // legacy alias
+          return this.handleListScheduledTasks();
         default:
           return SkillFail(`Unknown tool: ${toolName}`);
       }
@@ -337,19 +346,17 @@ export class SystemConfigSkill implements Skill {
     return SkillOk(`Settings updated: ${changes.join(', ')}`);
   }
 
-  // ── Watchers ──
+  // ── Scheduled Tasks ──
 
-  private async handleListWatchers(): Promise<SkillResult> {
-    const { getAllWatcherConfigs } = await import('@/services/cache-service');
-    const configs = await getAllWatcherConfigs();
-    const watchers = configs.map((c) => ({
+  private async handleListScheduledTasks(): Promise<SkillResult> {
+    const { getAllScheduledTasks } = await import('@/services/cache-service');
+    const configs = await getAllScheduledTasks();
+    const tasks = configs.map((c) => ({
       id: c.id,
       name: c.name,
-      type: c.type,
+      type: c.trigger.type,
       enabled: c.enabled,
-      appId: c.appId,
-      intervalMs: c.intervalMs,
     }));
-    return SkillOk(`Found ${watchers.length} watchers`, { watchers });
+    return SkillOk(`Found ${tasks.length} scheduled tasks`, { tasks });
   }
 }

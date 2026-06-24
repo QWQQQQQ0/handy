@@ -9,7 +9,7 @@ async function getKey(password: string): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey(
     'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
   );
-  const salt = enc.encode('openpaw-salt'); // 固定 salt
+  const salt = enc.encode('handy-salt'); // 固定 salt
   return crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
     material, ALGORITHM, false, KEY_USAGE

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Eye, EyeOff, Play, Pause, Trash2, Plus, RefreshCw, Monitor, ChevronDown, ChevronRight, Clock, Zap, AlertCircle, CheckCircle, MonitorSmartphone, Crosshair } from 'lucide-react';
-import type { WatcherConfig, WatcherState, ScreenRegion, DiffStrategyType, ActionConfig, ActionType, MonitorTargetType, MonitorTarget } from '@/types/watcher';
+import { Play, Pause, Trash2, Plus, RefreshCw, Monitor, ChevronDown, ChevronRight, Clock, Zap, AlertCircle, CheckCircle, MonitorSmartphone, Crosshair, Eye, EyeOff } from 'lucide-react';
+import type { TaskConfig } from '@/types/scheduler';
+import type { WatcherState, ScreenRegion, DiffStrategyType, MonitorTargetType, MonitorTarget } from '@/types/watcher';
 import type { AppEvent } from '@/types/events';
-import { watcherManager } from '@/services/watcher';
+import { scheduledTaskManager } from '@/services/watcher';
 import { appEventBus } from '@/services/event-bus';
-import { getAllWatcherConfigs, deleteWatcherConfig, queryAppLogs } from '@/services/cache-service';
+import { getAllScheduledTasks, deleteScheduledTask, queryAppLogs } from '@/services/cache-service';
 import { desktopService, type WindowInfo } from '@/services/desktop-service';
 import { WatcherDialog } from '@/components/watcher-dialog';
 import type { AppLogEntry } from '@/types/events';
@@ -57,7 +58,7 @@ function statusIcon(s: WatcherState['status']) {
 // ── Watcher Card ──
 
 function WatcherCard({ config, state, onToggle, onEdit, onDelete, onReResolve }: {
-  config: WatcherConfig;
+  config: TaskConfig;
   state?: WatcherState;
   onToggle: () => void;
   onEdit: () => void;
@@ -66,8 +67,9 @@ function WatcherCard({ config, state, onToggle, onEdit, onDelete, onReResolve }:
 }) {
   const [expanded, setExpanded] = useState(false);
   const s = state?.status ?? 'idle';
-  const targetLabel = config.monitorTarget?.type === 'window'
-    ? `窗口: ${config.monitorTarget.windowTitle || '未知'}`
+  const scTrigger = config.trigger.type === 'screen_change' ? config.trigger : null;
+  const targetLabel = scTrigger?.monitorTarget?.type === 'window'
+    ? `窗口: ${scTrigger.monitorTarget.windowTitle || '未知'}`
     : '整个屏幕';
 
   return (
@@ -81,11 +83,11 @@ function WatcherCard({ config, state, onToggle, onEdit, onDelete, onReResolve }:
           </div>
           <div className="flex items-center gap-3 text-[11px] text-zinc-400 mt-0.5">
             <span className="flex items-center gap-1">
-              {config.monitorTarget?.type === 'window' ? <MonitorSmartphone size={10} /> : <Monitor size={10} />}
+              {scTrigger?.monitorTarget?.type === 'window' ? <MonitorSmartphone size={10} /> : <Monitor size={10} />}
               {targetLabel}
             </span>
-            <span>{strategyLabel(config.diffStrategy)}</span>
-            <span>{config.pollIntervalMs / 1000}s</span>
+            <span>{scTrigger ? strategyLabel(scTrigger.diffStrategy) : '-'}</span>
+            <span>{scTrigger ? `${scTrigger.pollIntervalMs / 1000}s` : '-'}</span>
             {state && <span>触发: {state.triggerCount}次</span>}
             {state && state.processing && <span className="text-blue-500 animate-pulse">处理中</span>}
             {state && state.queueSize > 0 && <span className="text-amber-500">队列: {state.queueSize}</span>}
@@ -97,7 +99,7 @@ function WatcherCard({ config, state, onToggle, onEdit, onDelete, onReResolve }:
             title={config.enabled ? '禁用' : '启用'}>
             {config.enabled ? <Eye size={16} className="text-green-500" /> : <EyeOff size={16} className="text-zinc-400" />}
           </button>
-          {config.regionMode === 'auto' && (
+          {scTrigger?.regionMode === 'auto' && (
             <button onClick={onReResolve}
               className="p-1.5 rounded hover:bg-zinc-100 dark:hover:bg-zinc-800"
               title="重新定位监控区域">
@@ -124,7 +126,7 @@ function WatcherCard({ config, state, onToggle, onEdit, onDelete, onReResolve }:
         <div className="px-4 pb-3 pt-1 border-t border-zinc-100 dark:border-zinc-800 text-[12px] space-y-1">
           <div className="text-zinc-500">
             <span className="font-medium">动作:</span> {config.action.type}
-            {config.action.goalTemplate && <span className="ml-2 font-mono text-zinc-400">"{config.action.goalTemplate.substring(0, 60)}..."</span>}
+            {config.action.type === 'agent_execute' && config.action.goalTemplate && <span className="ml-2 font-mono text-zinc-400">"{config.action.goalTemplate.substring(0, 60)}..."</span>}
           </div>
           {config.context && <div className="text-zinc-500"><span className="font-medium">上下文:</span> {config.context}</div>}
           {state && (
@@ -198,15 +200,15 @@ function LogPanel({ watcherId }: { watcherId?: string }) {
 // ── Main Page ──
 
 export default function WatchersPage() {
-  const [configs, setConfigs] = useState<WatcherConfig[]>([]);
+  const [configs, setConfigs] = useState<TaskConfig[]>([]);
   const [states, setStates] = useState<Map<string, WatcherState>>(new Map());
   const [showDialog, setShowDialog] = useState(false);
-  const [editConfig, setEditConfig] = useState<WatcherConfig | undefined>();
+  const [editConfig, setEditConfig] = useState<TaskConfig | undefined>();
   const [dbLogs, setDbLogs] = useState<AppLogEntry[]>([]);
   const [showDbLogs, setShowDbLogs] = useState(false);
 
   const refreshConfigs = useCallback(async () => {
-    const cfgs = await getAllWatcherConfigs();
+    const cfgs = await getAllScheduledTasks();
     setConfigs(cfgs);
   }, []);
 
@@ -215,7 +217,7 @@ export default function WatchersPage() {
     refreshConfigs();
     const interval = setInterval(() => {
       const newStates = new Map<string, WatcherState>();
-      for (const { config, state } of watcherManager.getStates()) {
+      for (const { config, state } of scheduledTaskManager.getStates()) {
         newStates.set(config.id, state);
       }
       setStates(newStates);
@@ -223,30 +225,30 @@ export default function WatchersPage() {
     return () => clearInterval(interval);
   }, [refreshConfigs]);
 
-  const handleSave = async (config: WatcherConfig) => {
+  const handleSave = async (config: TaskConfig) => {
     if (editConfig) {
-      await watcherManager.update(editConfig.id, config);
+      await scheduledTaskManager.update(editConfig.id, config);
     } else {
-      await watcherManager.create(config);
+      await scheduledTaskManager.create(config);
     }
     await refreshConfigs();
     setShowDialog(false);
     setEditConfig(undefined);
   };
 
-  const handleToggle = async (config: WatcherConfig) => {
-    await watcherManager.update(config.id, { enabled: !config.enabled });
+  const handleToggle = async (config: TaskConfig) => {
+    await scheduledTaskManager.update(config.id, { enabled: !config.enabled });
     await refreshConfigs();
   };
 
   const handleDelete = async (id: string) => {
-    await watcherManager.remove(id);
+    await scheduledTaskManager.remove(id);
     await refreshConfigs();
   };
 
   const handleReResolve = async (id: string) => {
     try {
-      await watcherManager.reResolveRegion(id);
+      await scheduledTaskManager.reResolveRegion(id);
     } catch { /* ignore */ }
   };
 

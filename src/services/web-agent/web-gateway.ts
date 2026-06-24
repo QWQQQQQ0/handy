@@ -122,6 +122,7 @@ export class WebGateway {
       maxTurns: maxTurns ?? 20,
       signal,
       toolFilter,
+      chatMessages: messages,
       onConfirm,
       onUserInput,
       onProgress,

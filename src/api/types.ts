@@ -27,6 +27,7 @@ export enum AgentEndpoint {
   docAgent = '/api/agent/doc-agent',
   webAgent = '/api/agent/web-agent',
   codeAgent = '/api/agent/code-agent',
+  freeAgent = '/api/agent/free-agent',
 }
 
 // ── SSE 流式事件 ──

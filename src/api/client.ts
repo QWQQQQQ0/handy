@@ -9,6 +9,8 @@ import { computeLLMRequestHash, splitCachedResponse } from '@/services/llm-gatew
 import { getLLMCallCache, storeLLMCallCache } from '@/services/cache-service';
 import type { LLMMessage } from '@/types/message';
 import systemPrompts from '@/config/system-prompts.json';
+import { getMemoryCompressor } from '@/services/memory-compressor';
+import { compressImage } from '@/utils/image';
 
 // ── 系统提示词（前端注入，用户可编辑） ──
 
@@ -20,14 +22,74 @@ const ENDPOINT_PROMPT_KEY: Record<string, keyof typeof systemPrompts> = {
   [AgentEndpoint.codeIteration]: 'codeIteration',
   [AgentEndpoint.docAgent]: 'docAgent',
   [AgentEndpoint.webAgent]: 'webAutomation',
+  [AgentEndpoint.codeAgent]: 'codeAgent',
+  [AgentEndpoint.freeAgent]: 'freeAgent',
 };
 
-function injectSystemPrompt(endpoint: string, messages: LLMMessage[], goal?: string): LLMMessage[] {
+async function injectSystemPrompt(endpoint: string, messages: LLMMessage[], goal?: string): Promise<LLMMessage[]> {
   const key = ENDPOINT_PROMPT_KEY[endpoint];
   if (!key) return messages;
   let prompt = systemPrompts[key] as string;
   if (goal) prompt = prompt.replaceAll('{goal}', goal);
+
+  // 动态注入工具菜单（FreeAgent 渐进式披露）
+  if (prompt.includes('{menu}')) {
+    try {
+      const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
+      const { ToolDisclosure, FREE_AGENT_TOOLS } = await import('@/skills/tool-disclosure');
+      const executor = getBuiltinExecutor();
+      if (executor.allTools.length > 0) {
+        const disclosure = new ToolDisclosure({ executor, tools: FREE_AGENT_TOOLS });
+        const menuText = disclosure.buildMenuText();
+        prompt = prompt.replaceAll('{menu}', menuText);
+      } else {
+        prompt = prompt.replaceAll('{menu}', '（工具列表加载中，请先调用 tool_detail 查看可用工具）');
+      }
+    } catch {
+      prompt = prompt.replaceAll('{menu}', '');
+    }
+  }
+
+  // 注入长期记忆（从 long_term_memory 表读取）
+  try {
+    const longTermMem = await getMemoryCompressor().buildSystemPromptMemory();
+    if (longTermMem) prompt += longTermMem;
+  } catch { /* 非致命 — 记忆加载失败不影响对话 */ }
+
   return [{ role: 'system', content: prompt }, ...messages];
+}
+
+// ── 集中截图压缩 ──
+// 所有发给 LLM 的 messages 都必须经过此函数。
+// 任何代码路径注入的截图都不可能跳过。
+//
+// ⚠️ 只压缩画质（BMP→JPEG / JPEG 重编码），不裁剪尺寸。
+// 尺寸裁剪 + 坐标还原是 computer agent 自己的职责（runner.ts、desktop-automation-agent.ts），
+// 外部 skill 不知道坐标还原机制，裁剪会导致坐标错位。
+
+const QUALITY_ONLY_MAX_DIM = 10000; // 远大于任何屏幕分辨率，确保不触发尺寸裁剪
+
+async function compressMessageImages(messages: LLMMessage[]): Promise<number> {
+  let count = 0;
+  for (const msg of messages) {
+    const content = msg.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (part.type === 'image_url' && part.image_url?.url?.startsWith('data:')) {
+        try {
+          const compressed = await compressImage(part.image_url.url, QUALITY_ONLY_MAX_DIM, 0.45);
+          part.image_url.url = compressed.dataUrl;
+          count++;
+        } catch {
+          // 压缩失败保留原始 URL — 比不发图好
+        }
+      }
+    }
+  }
+  if (count > 0) {
+    console.log(`[apiClient] 🗜 compressed ${count} screenshot(s) before LLM call (quality only, no resize)`);
+  }
+  return count;
 }
 
 // ── 配置 ──
@@ -55,7 +117,32 @@ export async function apiPost<T = unknown>(
   const rawMessages = (params['messages'] as LLMMessage[]) ?? [];
   const goal = params['goal'] as string | undefined;
   if (rawMessages.length > 0) {
-    params = { ...params, messages: injectSystemPrompt(endpoint, rawMessages, goal) };
+    params = { ...params, messages: await injectSystemPrompt(endpoint, rawMessages, goal) };
+  }
+  // 集中压缩所有截图 — 确保任何代码路径注入的图片都不会跳过压缩
+  const postMessages = (params['messages'] as LLMMessage[]) ?? [];
+  await compressMessageImages(postMessages);
+
+  // ── 多模态校验 ──
+  if (provider.supportsMultimodal === false) {
+    const hasAnyImage = postMessages.some((m) => {
+      if (typeof m.content === 'string' || !Array.isArray(m.content)) return false;
+      return (m.content as Array<{ type: string }>).some((p) => p.type === 'image_url');
+    });
+    if (hasAnyImage) {
+      console.warn(`[apiClient] ⚠️ "${provider.name}" (${provider.model}) 不支持多模态，已自动剥离图片`);
+      params = {
+        ...params,
+        messages: postMessages.map((m) => {
+          if (typeof m.content === 'string' || !Array.isArray(m.content)) return m;
+          const textParts = (m.content as Array<{ type: string; text?: string }>)
+            .filter((p) => p.type === 'text')
+            .map((p) => p.text ?? '')
+            .join('\n');
+          return { ...m, content: textParts || '(图片已移除：当前模型不支持多模态)' };
+        }),
+      };
+    }
   }
 
   const url = `${_baseUrl}${endpoint}`;
@@ -100,9 +187,33 @@ export async function* apiStreamCompat(
   const goal = params['goal'] as string | undefined;
   const skipPrompt = params['noSystemPrompt'] === true;
   if (rawMessages.length > 0 && !skipPrompt) {
-    params = { ...params, messages: injectSystemPrompt(endpoint, rawMessages, goal) };
+    params = { ...params, messages: await injectSystemPrompt(endpoint, rawMessages, goal) };
   }
   const messages = (params['messages'] as LLMMessage[]) ?? [];
+  // 集中压缩所有截图 — 确保任何代码路径注入的图片都不会跳过压缩
+  await compressMessageImages(messages);
+
+  // ── 多模态校验：消息含图但 provider 不支持多模态时，剥离图片防止 API 报错 ──
+  if (provider.supportsMultimodal === false) {
+    const hasAnyImage = messages.some((m) => {
+      if (typeof m.content === 'string' || !Array.isArray(m.content)) return false;
+      return (m.content as Array<{ type: string }>).some((p) => p.type === 'image_url');
+    });
+    if (hasAnyImage) {
+      console.warn(`[apiClient] ⚠️ "${provider.name}" (${provider.model}) 不支持多模态，已自动剥离图片。请配置支持多模态的模型或关闭图片透传。`);
+      params = {
+        ...params,
+        messages: messages.map((m) => {
+          if (typeof m.content === 'string' || !Array.isArray(m.content)) return m;
+          const textParts = (m.content as Array<{ type: string; text?: string }>)
+            .filter((p) => p.type === 'text')
+            .map((p) => p.text ?? '')
+            .join('\n');
+          return { ...m, content: textParts || '(图片已移除：当前模型不支持多模态)' };
+        }),
+      };
+    }
+  }
 
   // LLM 缓存已全局禁用（前端 + 后端）
   // 如需重新启用，将 false 改为 params['skipCache'] !== true

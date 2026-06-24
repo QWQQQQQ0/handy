@@ -12,7 +12,7 @@ import type { AgentTurn, AgentStepCallback } from '@/services/desktop-automation
 import { classifyIntent } from '@/services/intent-classifier';
 import { buildTaskConfig } from '@/services/task-builder';
 import { appEventBus } from '@/services/event-bus';
-import { watcherManager } from '@/services/watcher';
+import { scheduledTaskManager } from '@/services/watcher';
 
 export interface TaskResult {
   taskId?: string;
@@ -200,22 +200,15 @@ export class AgentTaskService {
   private async createScheduledTask(task: ParsedTask, toolFilter?: Set<string>): Promise<TaskResult> {
     const taskConfig = buildTaskConfig(task);
 
-    appEventBus.emit({
-      source: 'app',
-      type: 'task_scheduled',
-      level: 'info',
-      message: `Scheduled: ${task.name} (${task.type})`,
-      timestamp: Date.now(),
-      data: { taskId: taskConfig.id, type: task.type },
-    });
-
-    // 将 toolFilter 转为 toolMode/customTools 存入 WatcherConfig
+    // 将 toolFilter 转为 toolMode/customTools 存入 action
     const toolMode = this.resolveToolMode(toolFilter);
     const customTools = toolFilter && toolFilter.size > 0 ? Array.from(toolFilter) : undefined;
+    if (taskConfig.action.type === 'agent_execute') {
+      taskConfig.action.toolMode = toolMode;
+      taskConfig.action.customTools = customTools;
+    }
 
-    const watcherConfig = taskConfigToWatcherConfig(taskConfig, toolMode, customTools);
-
-    await watcherManager.create(watcherConfig);
+    await scheduledTaskManager.create(taskConfig);
 
     return { taskId: taskConfig.id, status: 'scheduled' };
   }
@@ -242,9 +235,10 @@ export class AgentTaskService {
    * 准备阶段：打开应用、定位窗口。
    * 在 watcher 创建前调用，确保目标窗口已就绪。
    */
-  private async prepareWindow(config: import('@/types/watcher').WatcherConfig): Promise<void> {
-    const mt = config.monitorTarget;
-    if (!mt || mt.type !== 'window') return;
+  private async prepareWindow(config: TaskConfig): Promise<void> {
+    const trigger = config.trigger.type === 'screen_change' ? config.trigger : null;
+    if (!trigger || trigger.monitorTarget?.type !== 'window') return;
+    const mt = trigger.monitorTarget;
 
     const appName = mt.appName || mt.windowTitle;
     if (!appName) return;
@@ -283,66 +277,4 @@ export class AgentTaskService {
       }
     } catch { /* ignore */ }
   }
-}
-
-/**
- * Convert TaskConfig to WatcherConfig format for watcherManager.create().
- * watcherManager expects WatcherConfig, not TaskConfig directly.
- */
-import type { WatcherConfig as WatcherConfigType } from '@/types/watcher';
-
-function taskConfigToWatcherConfig(tc: TaskConfig, toolMode?: string, customTools?: string[]): WatcherConfigType {
-  const now = Date.now();
-  const trigger = tc.trigger;
-
-  if (trigger.type === 'timer') {
-    return {
-      id: tc.id,
-      name: tc.name,
-      enabled: tc.enabled,
-      monitorTarget: { type: 'fullscreen' as const },
-      region: { x: 0, y: 0, width: 1, height: 1 },
-      pollIntervalMs: trigger.intervalMs,
-      diffStrategy: 'fast_visual' as const,
-      debounceMs: 0,
-      cooldownMs: trigger.cooldownMs,
-      minConfidence: 0.9,
-      action: {
-        type: tc.action.type,
-        ...(tc.action.type === 'agent_execute' ? { goalTemplate: tc.action.goalTemplate } : {}),
-        ...(tc.action.type === 'notify' ? { notifyTemplate: tc.action.notifyTemplate } : {}),
-      },
-      toolMode,
-      customTools,
-      createdAt: now,
-      updatedAt: now,
-    };
-  }
-
-  // screen_change
-  const sc = trigger;
-  return {
-    id: tc.id,
-    name: tc.name,
-    enabled: tc.enabled,
-    monitorTarget: sc.monitorTarget,
-    region: sc.region,
-    pollIntervalMs: sc.pollIntervalMs,
-    diffStrategy: sc.diffStrategy,
-    debounceMs: sc.debounceMs,
-    cooldownMs: sc.cooldownMs,
-    minConfidence: sc.minConfidence,
-    action: {
-      type: tc.action.type,
-      ...(tc.action.type === 'agent_execute' ? { goalTemplate: tc.action.goalTemplate } : {}),
-    },
-    regionMode: sc.regionMode,
-    regionDescription: sc.regionDescription,
-    ...(sc.preparationGoal ? { preparationGoal: sc.preparationGoal } : {}),
-    ...(sc.actionGoal ? { actionGoal: sc.actionGoal } : {}),
-    toolMode,
-    customTools,
-    createdAt: now,
-    updatedAt: now,
-  };
 }

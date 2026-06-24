@@ -17,6 +17,7 @@ export interface TaskOrchestratorResult {
 export class TaskOrchestrator {
   private taskDB = new TaskTreeDB();
   private runner: TaskAgentRunner;
+  private _chatMessages?: import('@/types/message').LLMMessage[];
 
   constructor(skillExecutor: ISkillExecutor) {
     this.runner = new TaskAgentRunner(skillExecutor);
@@ -29,11 +30,13 @@ export class TaskOrchestrator {
     maxTurns?: number;
     signal?: AbortSignal;
     toolFilter?: Set<string>;
+    messages?: import('@/types/message').LLMMessage[];
     onConfirm?: (command: string) => Promise<boolean>;
     onUserInput?: (message: string, fields: Array<{ label: string; key: string; type?: string }>) => Promise<Record<string, string>>;
     onProgress?: (event: AgentProgressEvent) => void;
   }): Promise<TaskOrchestratorResult> {
-    const { goal, provider, apiKey, signal, toolFilter, onConfirm, onUserInput, onProgress } = params;
+    const { goal, provider, apiKey, signal, toolFilter, messages, onConfirm, onUserInput, onProgress } = params;
+    this._chatMessages = messages;
 
     // 创建根任务
     const agentId = this.runner.generateAgentId('decomposer');
@@ -49,6 +52,7 @@ export class TaskOrchestrator {
       apiKey,
       maxTurns: 5,
       signal,
+      chatMessages: messages,
       onProgress,
     });
 
@@ -115,6 +119,7 @@ export class TaskOrchestrator {
       apiKey,
       maxTurns: 5,
       signal,
+      chatMessages: messages,
       onProgress,
     });
 
@@ -145,6 +150,7 @@ export class TaskOrchestrator {
       subTaskDescription,
       signal,
       toolFilter,
+      chatMessages: this._chatMessages,
       onConfirm,
       onUserInput,
       onProgress,

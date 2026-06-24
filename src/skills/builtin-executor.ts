@@ -11,6 +11,8 @@ import { AppBuilderSkill } from './app-builder';
 import { OfficeDocSkill } from './office-doc';
 import { CodeToolsSkill } from './code-tools';
 import { SystemConfigSkill } from './system-config';
+import { ChatToolsSkill } from './chat-tools';
+import { SchedulerToolsSkill } from './scheduler-tools';
 import type { Skill } from './skill';
 import type { UserSkillConfig, ToolDefinition } from '@/types/skill';
 import { desktopService } from '@/services/desktop-service';
@@ -104,9 +106,15 @@ export async function initBuiltinExecutor(configs: UserSkillConfig[]): Promise<S
     }
   }
 
-  // Register SystemConfigSkill (not DB-driven, self-defines tools like CodeToolsSkill)
+  // Register SystemConfigSkill and ChatToolsSkill (not DB-driven, self-defining)
   if (!_executor.getSkill('system_config')) {
     _executor.register(new SystemConfigSkill());
+  }
+  if (!_executor.getSkill('chat_tools')) {
+    _executor.register(new ChatToolsSkill());
+  }
+  if (!_executor.getSkill('scheduler_tools')) {
+    _executor.register(new SchedulerToolsSkill());
   }
 
   // Load built-in plugins

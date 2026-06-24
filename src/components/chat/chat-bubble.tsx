@@ -2,8 +2,8 @@
 
 'use client';
 
-import { useState } from 'react';
-import { ChevronDown, ChevronUp, Loader2, AlertCircle, Music } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { ChevronDown, ChevronUp, Loader2, AlertCircle, Music, Trash2, Pencil, Check, X } from 'lucide-react';
 import type { ChatMessage } from '@/types/message';
 import { MarkdownBody } from './markdown-body';
 import { StreamingText } from './streaming-text';
@@ -99,12 +99,132 @@ function ToolBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function UserBubble({ message }: { message: ChatMessage }) {
+// ── Edit mode for user messages ──
+
+function EditableContent({
+  initialContent,
+  onSave,
+  onCancel,
+}: {
+  initialContent: string;
+  onSave: (content: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialContent);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(value.length, value.length);
+    }
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-2 w-full">
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-full bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-300 dark:border-zinc-600 rounded-lg px-3 py-2 text-[14px] leading-relaxed resize-y min-h-[60px] focus:outline-none focus:ring-2 focus:ring-blue-500"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSave(value); }
+          if (e.key === 'Escape') onCancel();
+        }}
+      />
+      <div className="flex gap-1.5 self-end">
+        <button onClick={onCancel} className="p-1.5 rounded-md hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors" title="取消">
+          <X size={14} className="text-zinc-500" />
+        </button>
+        <button onClick={() => onSave(value)} className="p-1.5 rounded-md hover:bg-blue-100 dark:hover:bg-blue-900 transition-colors" title="保存">
+          <Check size={14} className="text-blue-600" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Hover action bar ──
+
+function MessageActions({
+  message,
+  onDelete,
+  onEdit,
+  onEditStart,
+}: {
+  message: ChatMessage;
+  onDelete?: (id: string) => void;
+  onEdit?: (id: string, content: string) => void;
+  onEditStart?: () => void;
+}) {
+  const canEdit = message.role === 'user' && typeof message.content === 'string' && message.status === 'done';
+  const canDelete = message.status === 'done' || message.status === 'error';
+
+  if (!canEdit && !canDelete) return null;
+
+  return (
+    <div className="flex items-center gap-0.5">
+      {canEdit && onEditStart && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onEditStart(); }}
+          className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+          title="编辑"
+        >
+          <Pencil size={12} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300" />
+        </button>
+      )}
+      {canDelete && onDelete && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(message.id); }}
+          className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+          title="删除"
+        >
+          <Trash2 size={12} className="text-zinc-400 hover:text-red-500" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── User Bubble ──
+
+function UserBubble({
+  message,
+  onDelete,
+  onEdit,
+}: {
+  message: ChatMessage;
+  onDelete?: (id: string) => void;
+  onEdit?: (id: string, content: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const content = message.content;
+
+  if (editing && typeof content === 'string') {
+    return (
+      <div className="flex justify-end px-3 py-1.5">
+        <div className="max-w-[82%]">
+          <EditableContent
+            initialContent={content}
+            onSave={(newContent) => {
+              onEdit?.(message.id, newContent);
+              setEditing(false);
+            }}
+            onCancel={() => setEditing(false)}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (Array.isArray(content)) {
     return (
-      <div className="flex justify-end px-3 py-1.5">
+      <div
+        className="flex flex-col items-end px-3 py-1.5"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
         <div className="max-w-[82%] bg-blue-600 text-white rounded-2xl rounded-br-md px-3 py-2">
           {content.map((part, i) => {
             if ('type' in part && part.type === 'image_url' && 'image_url' in part && part.image_url) {
@@ -130,18 +250,30 @@ function UserBubble({ message }: { message: ChatMessage }) {
             return null;
           })}
         </div>
+        <div className={`flex items-center gap-0.5 mt-0.5 transition-opacity duration-150 ${hovered ? 'opacity-100' : 'opacity-0'}`}>
+          <MessageActions message={message} onDelete={onDelete} onEdit={onEdit} onEditStart={() => setEditing(true)} />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex justify-end px-3 py-1.5">
+    <div
+      className="flex flex-col items-end px-3 py-1.5"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <div className="max-w-[82%] bg-blue-600 text-white rounded-2xl rounded-br-md px-3 py-2">
         <p className="text-[14px] leading-relaxed whitespace-pre-wrap">{String(content)}</p>
+      </div>
+      <div className={`flex items-center gap-0.5 mt-0.5 transition-opacity duration-150 ${hovered ? 'opacity-100' : 'opacity-0'}`}>
+        <MessageActions message={message} onDelete={onDelete} onEdit={onEdit} onEditStart={() => setEditing(true)} />
       </div>
     </div>
   );
 }
+
+// ── Thinking Block ──
 
 function ThinkingBlock({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -164,7 +296,15 @@ function ThinkingBlock({ content }: { content: string }) {
   );
 }
 
-function AssistantBubble({ message, userImage }: { message: ChatMessage; userImage?: string | null }) {
+// ── Assistant Bubble ──
+
+function AssistantBubble({
+  message,
+  userImage,
+}: {
+  message: ChatMessage;
+  userImage?: string | null;
+}) {
   const content = message.content;
   const text = typeof content === 'string' ? content : '';
   const isStreaming = message.status === 'streaming';
@@ -195,7 +335,19 @@ function AssistantBubble({ message, userImage }: { message: ChatMessage; userIma
   );
 }
 
-export function ChatBubble({ message, previousMessage }: { message: ChatMessage; previousMessage?: ChatMessage }) {
+// ── Main Export ──
+
+export function ChatBubble({
+  message,
+  previousMessage,
+  onDelete,
+  onEdit,
+}: {
+  message: ChatMessage;
+  previousMessage?: ChatMessage;
+  onDelete?: (id: string) => void;
+  onEdit?: (id: string, content: string) => void;
+}) {
   // Hide internal messages (system-injected screenshots)
   if (message._internal) return null;
 
@@ -204,7 +356,7 @@ export function ChatBubble({ message, previousMessage }: { message: ChatMessage;
   }
 
   if (message.role === 'user') {
-    return <UserBubble message={message} />;
+    return <UserBubble message={message} onDelete={onDelete} onEdit={onEdit} />;
   }
 
   const userImage = previousMessage ? extractUserImage(previousMessage) : null;

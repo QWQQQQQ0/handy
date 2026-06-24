@@ -4,7 +4,7 @@
 
 import type { AppEvent, AppEventSource, AppEventListener } from '@/types/events';
 
-const BUS_KEY = '__openpaw_appEventBus__';
+const BUS_KEY = '__handy_appEventBus__';
 
 class AppEventBus {
   private listeners: Map<string, Set<AppEventListener>> = new Map();

@@ -6,7 +6,7 @@ import type { LLMMessage } from '@/types/message';
  * Extract image data URLs from LLM messages and save them to disk
  * before sending to the model.
  * - Tauri (browser): saves via Rust command → <app_data_dir>/public/llm_images/
- * - Node.js (backend): saves via fs → same directory (%APPDATA%/com.openpaw.app/public/llm_images/)
+ * - Node.js (backend): saves via fs → same directory (%APPDATA%/com.handy.app/public/llm_images/)
  */
 export async function saveImagesBeforeLLMCall(
   messages: LLMMessage[],
@@ -93,7 +93,7 @@ async function saveViaNodeFs(images: ImageToSave[]): Promise<string[]> {
 
     const appData = process.env.APPDATA
       || (process.env.HOME ? nodePath.join(process.env.HOME, '.local', 'share') : '');
-    const dir = nodePath.join(appData, 'com.openpaw.app', 'public', 'llm_images');
+    const dir = nodePath.join(appData, 'com.handy.app', 'public', 'llm_images');
 
     fs.mkdirSync(dir, { recursive: true });
 

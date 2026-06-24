@@ -12,7 +12,7 @@ import type {
   SkillTemplateRow,
 } from '@/types/cache';
 import type { TriggerInfo } from '@/types/page-component';
-import type { WatcherConfig } from '@/types/watcher';
+import type { TaskConfig } from '@/types/scheduler';
 import type { AppLogEntry, AppEventSource, AppEventLevel } from '@/types/events';
 
 export interface CacheHitResult {
@@ -82,11 +82,11 @@ export interface ICacheService {
   // Cache hit test
   testCacheHit(goal: string, windowFP: string, pageFP?: string): Promise<CacheHitResult[]>;
 
-  // Watcher config CRUD
-  storeWatcherConfig(config: WatcherConfig): Promise<void>;
-  getWatcherConfig(id: string): Promise<WatcherConfig | null>;
-  getAllWatcherConfigs(): Promise<WatcherConfig[]>;
-  deleteWatcherConfig(id: string): Promise<void>;
+  // Scheduled task CRUD
+  storeScheduledTask(config: TaskConfig): Promise<void>;
+  getScheduledTask(id: string): Promise<TaskConfig | null>;
+  getAllScheduledTasks(): Promise<TaskConfig[]>;
+  deleteScheduledTask(id: string): Promise<void>;
 
   // App log CRUD
   storeAppLog(entry: Omit<AppLogEntry, 'id'>): Promise<void>;

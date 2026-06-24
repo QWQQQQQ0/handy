@@ -34,6 +34,7 @@ export function buildTaskContext(params: TaskContextParams): { userPrompt: strin
       return { userPrompt: subTaskDescription ?? goal };
 
     case 'code':
+    case 'free':
       return { userPrompt: subTaskDescription ?? goal };
   }
 }

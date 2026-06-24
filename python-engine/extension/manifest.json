@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "OpenPaw Web Bridge",
+  "name": "Handy Web Bridge",
   "version": "1.0.0",
-  "description": "Bridge between OpenPaw desktop app and web pages",
+  "description": "Bridge between Handy desktop app and web pages",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

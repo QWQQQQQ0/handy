@@ -51,7 +51,7 @@ static APP_LOOKUP: Mutex<Option<AppLookup>> = Mutex::new(None);
 
 fn cache_path() -> Option<PathBuf> {
     let appdata = std::env::var("APPDATA").ok()?;
-    let dir = PathBuf::from(&appdata).join("openpaw");
+    let dir = PathBuf::from(&appdata).join("handy");
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join("app_cache.json"))
 }

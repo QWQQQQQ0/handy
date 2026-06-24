@@ -625,6 +625,27 @@ export function handleCodeAgent(
   });
 }
 
+// ═══════════════════════════════════════════════════════════════
+// FreeAgentHandler（流式）
+// ═══════════════════════════════════════════════════════════════
+
+export function handleFreeAgent(
+  provider: ProviderConfig,
+  apiKey: string,
+  rawParams: unknown,
+): AsyncGenerator<string> {
+  const p = unwrapParams<DesktopAutomationParams>(rawParams);
+  return executeStream({
+    scenario: ModelScenario.freeAgent,
+    messages: p.messages,
+    provider,
+    apiKey,
+    tools: p.tools,
+    goal: p.goal,
+    skipCache: p.skipCache,
+  });
+}
+
 const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\brm\s+(-[rRf]+\s+|--recursive)/i, reason: '递归删除文件（rm -rf）' },
   { pattern: /\brmdir\s+\/s/i, reason: '递归删除目录（rmdir /s）' },
@@ -634,7 +655,10 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\bregedit\b/i, reason: '注册表编辑器' },
   { pattern: /\bshutdown\b/i, reason: '关机/重启' },
   { pattern: /\breboot\b/i, reason: '重启系统' },
-  { pattern: /\btaskkill\b.*\/f/i, reason: '强制终止进程' },
+  { pattern: /\btaskkill\b/i, reason: '终止进程（taskkill）' },
+  { pattern: /\btskill\b/i, reason: '终止进程（tskill）' },
+  { pattern: /\bStop-Process\b/i, reason: '终止进程（PowerShell）' },
+  { pattern: /\bwmic\b.*\b(delete|terminate|call)\b/i, reason: '终止进程（WMI）' },
   { pattern: /\bnet\s+user\b.*\b\/delete\b/i, reason: '删除用户账户' },
   { pattern: /\bcacls\b|\bicacls\b.*\/g/i, reason: '修改文件权限' },
   { pattern: /\|\s*(sh|bash|cmd|powershell)\b/i, reason: '管道注入到 shell' },

@@ -12,10 +12,11 @@ const ModelsPage = lazy(() => import('@/pages/models'));
 const SkillsPage = lazy(() => import('@/pages/skills'));
 const SettingsPage = lazy(() => import('@/pages/settings'));
 const AppsPage = lazy(() => import('@/pages/apps'));
-const WatchersPage = lazy(() => import('@/pages/watchers'));
+const ScheduledTasksPage = lazy(() => import('@/pages/watchers'));  // file rename pending, component still watchers.tsx
 const KnowledgePage = lazy(() => import('@/pages/knowledge'));
 const AgentsPage = lazy(() => import('@/pages/agents'));
 const TasksPage = lazy(() => import('@/pages/tasks'));
+const FreeAgentPage = lazy(() => import('@/pages/free-agent'));
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageSkeleton />}>{children}</Suspense>;
@@ -100,10 +101,10 @@ export const router = createBrowserRouter([
         ),
       },
       {
-        path: '/watchers',
+        path: '/scheduled-tasks',
         element: (
           <Lazy>
-            <WatchersPage />
+            <ScheduledTasksPage />
           </Lazy>
         ),
       },
@@ -128,6 +129,14 @@ export const router = createBrowserRouter([
         element: (
           <Lazy>
             <TasksPage />
+          </Lazy>
+        ),
+      },
+      {
+        path: '/free-agent',
+        element: (
+          <Lazy>
+            <FreeAgentPage />
           </Lazy>
         ),
       },

@@ -13,3 +13,10 @@ export interface ActionLog {
 }
 
 export type FloatMode = 'chat' | 'task' | 'watcher' | 'recorder' | 'learn';
+
+export interface ToolGroup {
+  id: string;
+  name: string;
+  tools: string[];
+  createdAt: string;
+}

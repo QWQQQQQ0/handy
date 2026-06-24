@@ -5,6 +5,8 @@ export interface SandboxConfig {
   allowNetwork?: boolean;
   allowDDL?: boolean;
   maxRows?: number;
+  /** For Python sandbox: bypass SAFE_MODULES whitelist, allow all imports */
+  allowAllImports?: boolean;
   /** For HTML sandbox: allow external resources (images, scripts, styles) */
   allowExternalResources?: boolean;
   /** For HTML sandbox: base URL for resolving relative paths */

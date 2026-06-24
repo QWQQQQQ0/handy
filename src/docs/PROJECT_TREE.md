@@ -29,15 +29,20 @@ Handy 是一个 **AI 驱动的桌面自动化助手**，通过自然语言指令
 ## 根目录配置
 
 ```
-openpaw-js/
+handy/
 ├── package.json                  -- 项目依赖与脚本
+├── package-lock.json             -- 依赖锁文件
 ├── vite.config.ts                -- Vite 构建配置
 ├── tsconfig.json                 -- TypeScript 配置
+├── tsconfig.tsbuildinfo          -- TS 构建缓存
 ├── index.html                    -- SPA 入口
 ├── eslint.config.mjs             -- ESLint 配置
 ├── next.config.ts                -- Next.js 配置 (逐步废弃)
+├── next-env.d.ts                 -- Next.js 类型声明
+├── .gitignore                    -- Git 忽略配置
 ├── README.md                     -- 项目说明
 ├── AGENTS.md / CLAUDE.md         -- AI Agent 规则
+├── 系统修复进度.md               -- 系统修复记录
 ```
 
 ---
@@ -82,17 +87,19 @@ src/pages/
 │   ├── types.ts                  -- 浮窗类型定义 (FloatMode, ActionLog)
 │   ├── chat-mode.tsx             -- Chat 模式：LLM 流式对话，命令确认
 │   ├── task-mode.tsx             -- Task 模式：桌面自动化执行，实时日志
-│   ├── watcher-mode.tsx          -- Watcher 模式：屏幕监控管理
+│   ├── watcher-mode.tsx          -- 后台任务模式：定时/监控管理
 │   └── learn-mode.tsx            -- Learn 模式：UI 能力学习 (半自动/级联/受控浏览)
 ├── web.tsx                       -- Web 自动化页：Playwright 浏览器控制
 ├── phone.tsx                     -- 手机控制页 (占位)
 ├── models.tsx                    -- 模型配置管理：Provider CRUD
 ├── skills.tsx                    -- 技能管理：创建、编辑、删除技能
 ├── settings.tsx                  -- 设置页：主题、语言、工具偏好
-├── apps.tsx                      -- 应用页 (占位)
-├── watchers.tsx                  -- Watcher 管理页：查看、编辑、删除
+├── apps.tsx                      -- 项目页：项目列表、文件树、代码编辑器、HTML 预览、内嵌 Chat (多轮工具调用)
+├── watchers.tsx                  -- 后台任务管理页 (/scheduled-tasks)：查看、编辑、删除
 ├── knowledge.tsx                 -- 页面知识库：存储页面元素信息
 ├── agents.tsx                    -- Agent 管理页
+├── tasks.tsx                     -- 任务管理页：查看、编辑、删除任务
+├── free-agent.tsx                  -- FreeAgent 页：全能力 AI 开发者，左侧对话 + 右侧预览
 ```
 
 ### src/types/ -- 类型定义
@@ -107,7 +114,7 @@ src/types/
 ├── goal.ts                       -- 目标解析类型 (once/timer/screen_change)
 ├── cache.ts                      -- 缓存类型 (UI缓存/子目标缓存/技能模板)
 ├── scheduler.ts                  -- 调度器类型
-├── watcher.ts                    -- Watcher 类型 (监控配置/差异策略/工作流)
+├── watcher.ts                    -- 监控共享类型 (差异策略/工作流/区域/聊天上下文)
 ├── automation-template.ts        -- 自动化模板类型
 ├── recording-session.ts          -- 录制会话类型
 ├── semantic-event.ts             -- 语义事件类型
@@ -186,6 +193,7 @@ src/stores/
 ├── settings-store.ts             -- 设置状态：主题、语言、工具偏好
 ├── model-config-store.ts         -- 模型配置状态：Provider CRUD、API Key 加密
 ├── skill-store.ts                -- 技能状态：DB CRUD、Markdown 同步
+├── project-store.ts              -- 项目状态：当前选中项目 (项目页内部使用)
 ```
 
 ### src/skills/ -- 技能系统
@@ -194,22 +202,43 @@ src/stores/
 
 ```
 src/skills/
-├── skill.ts                      -- Skill 接口 + 工具格式化辅助
-├── executor.ts                   -- SkillExecutor：注册、分发、构建 LLM 工具列表
+├── skill.ts                      -- Skill 接口 + 工具格式化辅助 (toolToOpenAI)
+├── executor.ts                   -- SkillExecutor：注册、分发、构建 LLM 工具列表 + LEGACY_MAP 向后兼容
 ├── loader.ts                     -- Markdown 技能解析器 (从 public/skills/ 加载)
-├── builtin-executor.ts           -- 内置执行器工厂
+├── builtin-executor.ts           -- 内置执行器工厂：按 DB config 按需实例化 Skill
+├── tool-disclosure.ts            -- ToolDisclosure：渐进式工具披露 (菜单→门卫→按需加载完整定义)
 ├── desktop.ts                    -- 桌面视觉技能：截图、点击、拖拽、键盘、OCR、窗口管理
 ├── desktop_uia.ts                -- 桌面 UIA 技能：语义元素操作
 ├── web.ts                        -- Web 自动化技能 (含 run_playwright_script 脚本沙箱)
 ├── phone.ts                      -- 手机控制技能
 ├── app-builder.ts                -- 应用构建器技能
 ├── office-doc.ts                 -- Office 文档生成技能
-├── code-tools.ts                 -- 代码工具技能：代码生成、沙箱执行、Shell 命令、代码搜索、联网搜索 (web_search/web_fetch)
-├── system-config.ts              -- 系统配置技能：技能管理、模型管理、设置管理、Watcher 管理 (Chat Agent 自配置)
+├── code-tools.ts                 -- 代码工具技能 Barrel 导出 (详见 code-tools/ 子目录)
+├── system-config.ts              -- 系统配置技能：技能管理、模型管理、设置管理、后台任务管理 (Chat Agent 自配置)
+├── scheduler-tools.ts            -- 任务调度技能：create_timer_task / create_screen_watcher / cancel / list (Agent 自主调度)
+├── chat-tools.ts                 -- 对话+控制工具：agent_memory_update / search_chat_history / recall_memory / think / request_user_input / finalize
 ├── user-defined.ts               -- 用户自定义技能 (沙盒 JS / 步骤回放)
 ├── plugin-loader.ts              -- 插件加载器 (动态加载第三方技能插件)
 ├── plugins/                      -- 插件目录
 │   └── example-plugin.ts         -- 示例插件
+```
+
+### src/skills/code-tools/ -- 代码工具子模块
+
+> code-tools.ts 的实现模块，每个处理器一个文件
+
+```
+src/skills/code-tools/
+├── index.ts                   -- CodeToolsSkill 主类 + 工具定义 + 执行分发
+├── helpers.ts                 -- 共享辅助：文件 I/O、代码块提取、提示构建
+├── shell-utils.ts             -- Shell 工具：命令安全、执行、目录列表、文件搜索、Glob
+├── file-ops.ts                -- write_file / read_file 处理器
+├── code-gen.ts                -- generate_code / execute_code 处理器
+├── registry.ts                -- save_code / list_code / generate_project 处理器
+├── shell-cmd.ts               -- run_command 处理器
+├── file-search.ts             -- grep_files / glob_files 处理器
+├── web-tools.ts               -- web_search / web_fetch 处理器
+└── memory.ts                  -- agent_memory_update 处理器
 ```
 
 ### src/services/ -- 核心服务
@@ -219,6 +248,7 @@ src/skills/
 ```
 src/services/
 ├── chat-service.ts               -- 聊天服务：LLM 流式编排、工具调用分发
+├── agent-loop.ts                 -- 共享 Agent 循环：流式→工具调用→执行→多轮 (chat-store 和项目 Chat 共用)
 ├── desktop-service.ts            -- 桌面服务：Tauri API 封装
 ├── extension-bridge.ts           -- 浏览器扩展桥：Chrome 扩展通信
 ├── web-screen-service.ts         -- Web 屏幕服务
@@ -235,9 +265,9 @@ src/services/
 ├── event-bus.ts                  -- 全局事件总线 (agent/app/watcher 事件)
 ├── app-logger.ts                 -- 应用日志器
 ├── global-listener.ts            -- 全局输入监听服务
-├── unified-analyzer.ts           -- 统一分析器：数据流、坐标模式检测
+├── unified-analyzer.ts           -- 统一分析器 Barrel 导出 (详见 analyzer/ 子目录)
 ├── unified-executor.ts           -- 统一执行引擎
-├── unified-recorder.ts           -- 统一录制器
+├── unified-recorder.ts           -- 统一录制器 Barrel 导出 (详见 recorder/ 子目录)
 ├── web-recorder.ts               -- Web 录制器 (Playwright DOM 采集)
 ├── page-knowledge.ts             -- 页面知识库服务
 ├── code-gateway.ts               -- 代码生成入口 (独立文件，CodeAgent 子目录外的旧入口)
@@ -249,6 +279,32 @@ src/services/
 ├── app-events.ts                 -- 应用事件服务
 ├── clipboard-capture.ts          -- 剪贴板捕获服务
 ├── temporary-task-store.ts       -- 临时任务存储
+```
+
+### src/services/recorder/ -- 统一录制器
+
+> 多源事件采集、手势分类、去重合并、会话管理
+
+```
+src/services/recorder/
+├── index.ts                   -- UnifiedRecorder 主类 + 单例导出
+└── gesture-classifier.ts      -- GestureClassifier (手势分类器)
+```
+
+### src/services/analyzer/ -- 统一分析器
+
+> 从录制会话中提取数据流、检测坐标规律、调用 LLM 生成通用自动化模板
+
+```
+src/services/analyzer/
+├── index.ts                   -- UnifiedAnalyzer 主类 (组合) + 单例导出
+├── types.ts                   -- LLMAnalysisResult, CoordinatePattern 类型
+├── utils.ts                   -- median, variance, diffs, getScreenCoord
+├── data-flow.ts               -- extractDataFlow + 辅助函数
+├── coord-patterns.ts          -- 坐标模式检测、摘要、应用 + 冗余点击清理
+├── prompt-builder.ts          -- LLM 提示构建 (分析/微调)
+├── template-generator.ts      -- 本地模板生成 + 模式检测
+└── llm-client.ts              -- LLM 调用 + JSON 解析/修复
 ```
 
 ### src/services/llm-gateway/ -- 统一 LLM 调用入口
@@ -303,28 +359,29 @@ src/services/agent/
 
 ### src/services/scheduler/ -- 任务调度器
 
-> 1s TickLoop 通用调度，支持定时任务和屏幕变化触发
+> 1s TickLoop 通用调度，支持定时任务、屏幕变化、事件监听
+> action-executor 四路分发：agent_execute → TaskAgentRunner / workflow → executor-v2 / script → 沙箱 / notify → 通知
 
 ```
 src/services/scheduler/
 ├── scheduler.ts                  -- TickLoop：1s 通用 tick 循环
 ├── trigger.ts                    -- Trigger 接口
-├── base-watcher.ts               -- BaseWatcher 基类
-├── screen-change-watcher.ts      -- 屏幕变化 Watcher (含 screen-change-task 逻辑)
+├── base-watcher.ts               -- BaseWatcher 基类 (tick 生命周期)
+├── screen-change-watcher.ts      -- 屏幕变化 Watcher
 ├── screen-change-trigger.ts      -- 屏幕变化触发器
-├── timer-watcher.ts              -- 定时 Watcher (含 timer-task 逻辑)
-├── task-factory.ts               -- 任务工厂 + WatcherConfig 迁移
-├── screen-change-source.ts       -- 屏幕变化事件源 (含 event-bridge 逻辑)
-├── action-executor.ts            -- 动作执行器 (含 event-bridge 逻辑)
+├── timer-watcher.ts              -- 定时 Watcher
+├── task-factory.ts               -- 任务工厂：TriggerConfig → Tickable
+├── screen-change-source.ts       -- 屏幕变化事件源
+├── action-executor.ts            -- 动作执行器 (纯分发：agent_execute / workflow / script / notify)
 └── watcher-runtime-state.ts      -- Watcher 运行时状态
 ```
 
-### src/services/watcher/ -- 屏幕监控系统
+### src/services/watcher/ -- 后台任务管理与监控
 
 ```
 src/services/watcher/
 ├── index.ts                      -- Barrel 导出
-├── watcher-manager.ts            -- WatcherManager 单例
+├── watcher-manager.ts            -- ScheduledTaskManager 单例 (原 WatcherManager)
 ├── diff-detector.ts              -- 多阶段差异检测器
 ├── region-capture.ts             -- 区域截图
 ├── region-discovery.ts           -- 自动区域发现
@@ -386,7 +443,7 @@ src/services/task-agent/
 ├── gateway.ts                    -- TaskGateway 入口：意图分类 + 复杂度判断 + 工具筛选 + 路由
 ├── orchestrator.ts               -- TaskOrchestrator：4 阶段编排 (Decompose → Execute → Verify)
 ├── runner.ts                     -- TaskAgentRunner：LLM 工具调用循环 + SkillExecutor 委托
-├── context-builder.ts            -- 上下文构建器 (user 消息，系统提示由后端注入)
+├── context-builder.ts            -- 上下文构建器 (user 消息构建，项目上下文由调用方注入)
 ├── tools.ts                      -- Task 工具集定义 (decomposer/verifier 静态，executor/doc 动态)
 ├── index.ts                      -- Barrel 导出
 ```
@@ -414,10 +471,22 @@ src/services/web-agent/
 ### src/services/code-agent/ -- 代码/文件 Agent
 
 > 与 task-agent/doc-agent/web-agent 同级，处理文件操作、代码生成、Shell 命令执行等任务
+> 项目页内嵌 Chat 直接调用 AgentEndpoint.codeAgent + runAgentLoop，不经过 request_agent 路由
 
 ```
 src/services/code-agent/
 ├── code-gateway.ts               -- CodeGateway 入口：工具筛选 + TaskAgentRunner 执行
+├── index.ts                      -- Barrel 导出
+```
+
+### src/services/free-agent/ -- 全能力 AI 开发者 Agent
+
+> 独立页面调用，全工具开放 + Python 完全访问 + ToolDisclosure 渐进式披露
+> 不经过 Chat 的 request_agent 路由，页面直接调用 FreeAgentGateway
+
+```
+src/services/free-agent/
+├── free-gateway.ts               -- FreeAgentGateway：全工具开放 + Python 完全访问 + 菜单注入
 ├── index.ts                      -- Barrel 导出
 ```
 
@@ -483,7 +552,7 @@ src/components/
 ├── model-config-form.tsx         -- 模型配置表单
 ├── float-window-toggle.tsx       -- 浮窗开关
 ├── region-selector.tsx           -- 区域选择器
-├── watcher-dialog.tsx            -- Watcher 对话框
+├── watcher-dialog.tsx            -- 后台任务编辑对话框
 ├── bbox-overlay.tsx              -- 包围框叠加层
 ├── ui/switch.tsx                 -- Toggle 开关
 ├── chat/                         -- 聊天组件
@@ -496,11 +565,14 @@ src/components/
 │   └── tool-selector-panel.tsx   -- 工具选择面板
 ├── recorder/                     -- 录制器组件
 │   ├── index.tsx                 -- 桶文件
-│   ├── recorder-mode.tsx         -- 录制流程控制
+│   ├── recorder-mode.tsx         -- 录制流程控制 (主壳)
 │   ├── recorder-panel.tsx        -- 录制面板
 │   ├── event-list.tsx            -- 事件列表
 │   ├── manual-recorder.tsx       -- 手动录制器
-│   └── template-preview.tsx      -- 模板预览
+│   ├── template-preview.tsx      -- 模板预览
+│   ├── insert-step-dialog.tsx    -- 插入步骤对话框
+│   ├── param-dialog.tsx          -- 参数输入对话框
+│   └── refine-panel.tsx          -- 模板微调对话面板
 ```
 
 ### src/docs/ -- 内部文档
@@ -519,10 +591,19 @@ src/docs/
 ```
 src-tauri/
 ├── Cargo.toml                    -- Rust 依赖与项目元信息
+├── Cargo.lock                    -- Rust 依赖锁
 ├── build.rs                      -- Tauri 构建脚本
 ├── tauri.conf.json               -- Tauri 窗口/插件/权限配置
+├── index.html                    -- Tauri HTML 入口
+├── package.json                  -- Tauri 前端包配置
+├── vite.config.ts                -- Tauri Vite 配置
+├── tsconfig.json                 -- Tauri TypeScript 配置
+├── tsconfig.node.json            -- Tauri Node TypeScript 配置
+├── list_d_drive_sizes.ps1        -- D 盘大小调试脚本
+├── .gitignore                    -- Tauri Git 忽略配置
 ├── capabilities/
 │   └── default.json              -- 权限能力声明 (IPC、文件系统等)
+├── icons/                        -- 应用图标 (Tauri 自动生成的多尺寸 ico/png/icns)
 ```
 
 ### src-tauri/src/ -- Rust 后端源码
@@ -530,7 +611,7 @@ src-tauri/
 ```
 src-tauri/src/
 ├── main.rs                       -- Tauri 入口
-├── lib.rs                        -- 应用构建器：命令注册、插件、托盘
+├── lib.rs                        -- 应用构建器：命令注册、插件(含 tauri-plugin-dialog)、托盘
 ├── commands/
 │   ├── mod.rs                    -- 模块声明
 │   ├── screenshot.rs             -- 截图：全屏、窗口、子区域
@@ -603,10 +684,13 @@ python-engine/
 ├── main.py                       -- 引擎入口 (JSON Line 协议 + WebSocket 扩展服务)
 ├── protocol.py                   -- 协议定义
 ├── requirements.txt              -- Python 依赖 (含 websockets 扩展通信)
+├── test_com.py                   -- COM 接口测试
+├── test_resolve.py               -- 解析器测试
 ├── extension/                    -- Chrome 扩展 (--load-extension 自动加载)
 │   ├── manifest.json             -- Manifest V3 扩展清单
 │   ├── background.js             -- 后台脚本：WebSocket ws://127.0.0.1:19840/extension
 │   └── stealth.js                -- 内容脚本：反检测 (navigator.webdriver/plugins/languages)
+├── scripts/                      -- 调查/测试脚本 (WPS COM 排查等临时脚本)
 └── engine/
     ├── __init__.py                -- 包标记
     ├── screenshot.py             -- 截图
@@ -626,12 +710,6 @@ python-engine/
         ├── com_excel.py          -- Excel COM 自动化 (pywin32, 实时编辑已打开工作簿)
         ├── com_ppt.py            -- PPT COM 自动化 (pywin32, 实时编辑已打开演示文稿)
         └── com_resolver.py       -- COM 类型解析器
-    ├── scripts/                  -- 调查/测试脚本
-    │   ├── wps_investigate.py    -- WPS COM 排查脚本
-    │   ├── wps_investigate2.py   -- WPS COM 排查脚本 2
-    │   └── wps_investigate3.py   -- WPS COM 排查脚本 3
-    ├── test_com.py               -- COM 接口测试
-    └── test_resolve.py           -- 解析器测试
 ```
 
 ---
@@ -683,6 +761,14 @@ Chat LLM (系统配置工具 + request_agent)
               ├── run_command → Shell 命令执行
               ├── execute_code → 沙箱执行
               └── code_done → 完成
+
+项目页 Chat (直达 code agent，不经 Chat LLM 路由)：
+  用户输入 (项目页内嵌 Chat)
+    ↓
+  runAgentLoop(codeAgent 端点, 多轮工具调用循环)
+    ├── 流式响应实时更新 UI
+    ├── 工具调用 → SkillExecutor 执行 → 结果发回 LLM
+    └── 用户可手动停止 (不限轮数)
 ```
 
 坐标还原：executor 层自动处理（ToolContext + SkillExecutor.applyCoordinateScale）
@@ -765,7 +851,7 @@ src/pages/float/
 5 种模式：
   ├── Chat      -- LLM 流式对话，支持图片、命令确认
   ├── Task      -- 桌面自动化执行，实时日志、录制功能
-  ├── Watcher   -- 屏幕监控管理，差异检测、图片对比
+  ├── 后台任务  -- 定时任务/屏幕监控管理，差异检测、图片对比
   ├── Recorder  -- 操作录制 (RecorderMode 组件)
   └── Learn     -- UI 能力学习 (半自动/级联/受控浏览)
 

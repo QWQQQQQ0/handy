@@ -2,41 +2,43 @@
 
 import { useState, useEffect } from 'react';
 import { Monitor, MonitorSmartphone, Timer, Activity } from 'lucide-react';
-import type { WatcherConfig, ScreenRegion, DiffStrategyType, ActionConfig, ActionType, MonitorTargetType, MonitorTarget, RegionMode } from '@/types/watcher';
+import type { ScreenRegion, DiffStrategyType, MonitorTargetType, MonitorTarget, RegionMode } from '@/types/watcher';
+import type { TaskConfig, TaskActionConfig } from '@/types/scheduler';
 import { desktopService, type WindowInfo } from '@/services/desktop-service';
 import { RegionSelector } from './region-selector';
 
 interface WatcherDialogProps {
-  config?: WatcherConfig;
-  onSave: (c: WatcherConfig) => void;
+  config?: TaskConfig;
+  onSave: (c: TaskConfig) => void;
   onClose: () => void;
-  compact?: boolean; // For float window mode
+  compact?: boolean;
 }
 
 export function WatcherDialog({ config, onSave, onClose, compact = false }: WatcherDialogProps) {
-  const [triggerType, setTriggerType] = useState<'timer' | 'screen_change'>('screen_change');
+  const scTrigger = config?.trigger.type === 'screen_change' ? config.trigger : null;
+  const [triggerType, setTriggerType] = useState<'timer' | 'screen_change'>(config?.trigger.type === 'timer' ? 'timer' : 'screen_change');
   const [name, setName] = useState(config?.name ?? '');
-  const [monitorTargetType, setMonitorTargetType] = useState<MonitorTargetType>(config?.monitorTarget?.type ?? 'fullscreen');
-  const [selectedWindowHwnd, setSelectedWindowHwnd] = useState<number | undefined>(config?.monitorTarget?.windowHwnd);
-  const [selectedWindowTitle, setSelectedWindowTitle] = useState<string>(config?.monitorTarget?.windowTitle ?? '');
-  const [selectedAppName, setSelectedAppName] = useState<string>(config?.monitorTarget?.appName ?? '');
+  const [monitorTargetType, setMonitorTargetType] = useState<MonitorTargetType>(scTrigger?.monitorTarget?.type ?? 'fullscreen');
+  const [selectedWindowHwnd, setSelectedWindowHwnd] = useState<number | undefined>(scTrigger?.monitorTarget?.windowHwnd);
+  const [selectedWindowTitle, setSelectedWindowTitle] = useState<string>(scTrigger?.monitorTarget?.windowTitle ?? '');
+  const [selectedAppName, setSelectedAppName] = useState<string>(scTrigger?.monitorTarget?.appName ?? '');
   const [windows, setWindows] = useState<WindowInfo[]>([]);
   const [loadingWindows, setLoadingWindows] = useState(false);
-  const [regionX, setRegionX] = useState(config?.region.x ?? 0);
-  const [regionY, setRegionY] = useState(config?.region.y ?? 0);
-  const [regionW, setRegionW] = useState(config?.region.width ?? 400);
-  const [regionH, setRegionH] = useState(config?.region.height ?? 300);
-  const [pollMs, setPollMs] = useState(config?.pollIntervalMs ?? 2000);
-  const [strategy, setStrategy] = useState<DiffStrategyType>(config?.diffStrategy ?? 'fast_visual');
-  const [debounceMs, setDebounceMs] = useState(config?.debounceMs ?? 300);
-  const [cooldownMs, setCooldownMs] = useState(config?.cooldownMs ?? 5000);
-  const [minConfidence, setMinConfidence] = useState(config?.minConfidence ?? 0.9);
-  const [actionType, setActionType] = useState<ActionType>(config?.action.type ?? 'agent_execute');
-  const [goalTemplate, setGoalTemplate] = useState(config?.action.goalTemplate ?? '');
-  const [notifyTemplate, setNotifyTemplate] = useState(config?.action.notifyTemplate ?? '');
+  const [regionX, setRegionX] = useState(scTrigger?.region.x ?? 0);
+  const [regionY, setRegionY] = useState(scTrigger?.region.y ?? 0);
+  const [regionW, setRegionW] = useState(scTrigger?.region.width ?? 400);
+  const [regionH, setRegionH] = useState(scTrigger?.region.height ?? 300);
+  const [pollMs, setPollMs] = useState(scTrigger?.pollIntervalMs ?? 2000);
+  const [strategy, setStrategy] = useState<DiffStrategyType>(scTrigger?.diffStrategy ?? 'fast_visual');
+  const [debounceMs, setDebounceMs] = useState(scTrigger?.debounceMs ?? 300);
+  const [cooldownMs, setCooldownMs] = useState(scTrigger?.cooldownMs ?? 5000);
+  const [minConfidence, setMinConfidence] = useState(scTrigger?.minConfidence ?? 0.9);
+  const [actionType, setActionType] = useState<string>(config?.action.type ?? 'agent_execute');
+  const [goalTemplate, setGoalTemplate] = useState((config?.action.type === 'agent_execute' ? config.action.goalTemplate : '') ?? '');
+  const [notifyTemplate, setNotifyTemplate] = useState((config?.action.type === 'notify' ? config.action.notifyTemplate : '') ?? '');
   const [context, setContext] = useState(config?.context ?? '');
-  const [regionMode, setRegionMode] = useState<RegionMode>(config?.regionMode ?? 'manual');
-  const [regionDescription, setRegionDescription] = useState(config?.regionDescription ?? '');
+  const [regionMode, setRegionMode] = useState<RegionMode>(scTrigger?.regionMode ?? 'manual');
+  const [regionDescription, setRegionDescription] = useState(scTrigger?.regionDescription ?? '');
   const [screenshotForSelector, setScreenshotForSelector] = useState<string | null>(null);
   const [screenshotDimensions, setScreenshotDimensions] = useState({ width: 0, height: 0 });
   const [loadingScreenshot, setLoadingScreenshot] = useState(false);
@@ -95,11 +97,9 @@ export function WatcherDialog({ config, onSave, onClose, compact = false }: Watc
 
   const handleSave = () => {
     const now = Math.floor(Date.now() / 1000);
-    const action: ActionConfig = {
-      type: actionType,
-      goalTemplate: actionType === 'agent_execute' ? goalTemplate : undefined,
-      notifyTemplate: actionType === 'notify' ? notifyTemplate : undefined,
-    };
+    const action: TaskActionConfig = actionType === 'notify'
+      ? { type: 'notify', notifyTemplate }
+      : { type: 'agent_execute', goalTemplate };
 
     const monitorTarget: MonitorTarget = {
       type: monitorTargetType,
@@ -112,17 +112,20 @@ export function WatcherDialog({ config, onSave, onClose, compact = false }: Watc
       id: config?.id ?? crypto.randomUUID(),
       name,
       enabled: config?.enabled ?? true,
-      monitorTarget,
-      region: { x: regionX, y: regionY, width: regionW, height: regionH },
-      pollIntervalMs: pollMs,
-      diffStrategy: strategy,
-      debounceMs,
-      cooldownMs,
-      minConfidence,
+      trigger: {
+        type: 'screen_change' as const,
+        pollIntervalMs: pollMs,
+        diffStrategy: strategy,
+        debounceMs,
+        cooldownMs,
+        minConfidence,
+        monitorTarget,
+        region: { x: regionX, y: regionY, width: regionW, height: regionH },
+        regionMode,
+        regionDescription: regionMode === 'auto' ? regionDescription : undefined,
+      },
       action,
       context: context || undefined,
-      regionMode,
-      regionDescription: regionMode === 'auto' ? regionDescription : undefined,
       createdAt: config?.createdAt ?? now,
       updatedAt: now,
     });
@@ -304,7 +307,7 @@ export function WatcherDialog({ config, onSave, onClose, compact = false }: Watc
         {/* Action type */}
         <select
           value={actionType}
-          onChange={e => setActionType(e.target.value as ActionType)}
+          onChange={e => setActionType(e.target.value as string)}
           className="w-full px-2 py-1 text-[11px] rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 outline-none"
         >
           <option value="agent_execute">Agent Execute</option>
@@ -585,7 +588,7 @@ export function WatcherDialog({ config, onSave, onClose, compact = false }: Watc
           {/* Action type */}
           <div>
             <label className="block text-[12px] font-medium text-zinc-500 mb-1">触发动作</label>
-            <select value={actionType} onChange={e => setActionType(e.target.value as ActionType)}
+            <select value={actionType} onChange={e => setActionType(e.target.value as string)}
               className="w-full px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-sm text-zinc-900 dark:text-zinc-100">
               <option value="agent_execute">Agent 执行</option>
               <option value="notify">系统通知</option>

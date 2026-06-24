@@ -7,6 +7,7 @@ and DOM event recording for automation recording.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 import traceback
@@ -20,9 +21,9 @@ except ImportError:
 
 # JS code injected into the page to capture DOM events with semantic info
 _RECORD_LISTENERS_JS = """() => {
-    if (window.__openpaw_recording) return;  // already injected
-    window.__openpaw_recording = true;
-    window.__openpaw_event_buffer = [];
+    if (window.__handy_recording) return;  // already injected
+    window.__handy_recording = true;
+    window.__handy_event_buffer = [];
 
     function getElementInfo(el) {
         if (!el || el === document.documentElement || el === document.body) return null;
@@ -68,8 +69,8 @@ _RECORD_LISTENERS_JS = """() => {
     }
 
     // Physical screen size (set by Python backend, used for coordinate correction)
-    if (!window.__openpaw_physical_screen) {
-        window.__openpaw_physical_screen = { width: 0, height: 0 };
+    if (!window.__handy_physical_screen) {
+        window.__handy_physical_screen = { width: 0, height: 0 };
     }
 
     function pushEvent(type, e, extra) {
@@ -87,8 +88,8 @@ _RECORD_LISTENERS_JS = """() => {
             screenWidth: screen.width,
             screenHeight: screen.height,
             // Physical screen size from backend (for coordinate correction)
-            physicalWidth: window.__openpaw_physical_screen.width,
-            physicalHeight: window.__openpaw_physical_screen.height,
+            physicalWidth: window.__handy_physical_screen.width,
+            physicalHeight: window.__handy_physical_screen.height,
             element: info,
             key: extra && extra.key ? extra.key : undefined,
             modifiers: extra && extra.modifiers ? extra.modifiers : undefined,
@@ -97,16 +98,16 @@ _RECORD_LISTENERS_JS = """() => {
             title: document.title,
         };
         // Push to Python if exposed (real-time path)
-        if (window.__openpaw_push_event) {
+        if (window.__handy_push_event) {
             try {
-                window.__openpaw_push_event(eventData);
+                window.__handy_push_event(eventData);
             } catch(e) {
-                console.warn('[OpenPaw] __openpaw_push_event call failed, buffering:', e);
-                window.__openpaw_event_buffer.push(eventData);
+                console.warn('[Handy] __handy_push_event call failed, buffering:', e);
+                window.__handy_event_buffer.push(eventData);
             }
         } else {
             // Buffer as fallback when push function not available
-            window.__openpaw_event_buffer.push(eventData);
+            window.__handy_event_buffer.push(eventData);
         }
     }
 
@@ -127,8 +128,8 @@ _RECORD_LISTENERS_JS = """() => {
 }"""
 
 _REMOVE_LISTENERS_JS = """() => {
-    window.__openpaw_recording = false;
-    window.__openpaw_event_buffer = [];
+    window.__handy_recording = false;
+    window.__handy_event_buffer = [];
 }"""
 
 
@@ -463,7 +464,7 @@ class BrowserEngine:
                 print(f"[browser] real profile locked (lockfile={lock_file}), falling back to temp", file=sys.stderr, flush=True)
 
         if user_data_dir is None:
-            user_data_dir = tempfile.mkdtemp(prefix="openpaw_debug_")
+            user_data_dir = tempfile.mkdtemp(prefix="handy_debug_")
             profile_dir = None  # don't pass --profile-directory for temp dirs
             print(f"[browser] temp profile: {user_data_dir}", file=sys.stderr, flush=True)
 
@@ -861,7 +862,7 @@ class BrowserEngine:
             w = user32.GetSystemMetrics(0)  # SM_CXSCREEN
             h = user32.GetSystemMetrics(1)  # SM_CYSCREEN
             self._page.evaluate(
-                f"() => {{ window.__openpaw_physical_screen = {{ width: {w}, height: {h} }}; }}"
+                f"() => {{ window.__handy_physical_screen = {{ width: {w}, height: {h} }}; }}"
             )
         except Exception:
             pass
@@ -886,7 +887,7 @@ class BrowserEngine:
 
             # Always try to expose — handle both first-time and re-expose
             try:
-                self._page.expose_function("__openpaw_push_event", self._event_handler_ref)
+                self._page.expose_function("__handy_push_event", self._event_handler_ref)
             except Exception as e:
                 # Already exposed from previous session — verify it's callable
                 if "already registered" in str(e).lower() or "already exposed" in str(e).lower():
@@ -903,12 +904,12 @@ class BrowserEngine:
             self._inject_physical_screen_size()
 
             # Verify injection succeeded
-            is_injected = self._page.evaluate("() => !!window.__openpaw_recording")
-            has_push_fn = self._page.evaluate("() => typeof window.__openpaw_push_event === 'function'")
+            is_injected = self._page.evaluate("() => !!window.__handy_recording")
+            has_push_fn = self._page.evaluate("() => typeof window.__handy_push_event === 'function'")
             if not is_injected:
                 return {"recording": False, "error": "JS listener injection failed"}
             if not has_push_fn:
-                return {"recording": False, "error": "expose_function binding not available — __openpaw_push_event is not a function"}
+                return {"recording": False, "error": "expose_function binding not available — __handy_push_event is not a function"}
 
             # Re-inject on page navigation (same-origin loads)
             def on_load(page: Page) -> None:
@@ -937,7 +938,7 @@ class BrowserEngine:
                 pass
             # Collect any remaining events from the page buffer
             try:
-                buffer = self._page.evaluate("() => window.__openpaw_event_buffer || []")
+                buffer = self._page.evaluate("() => window.__handy_event_buffer || []")
                 for evt in buffer:
                     evt["_received_at"] = time.time()
                     self._recorded_events.append(evt)
@@ -953,14 +954,14 @@ class BrowserEngine:
     def get_recorded_events(self) -> dict[str, Any]:
         """Return newly recorded events since last call and clear the buffer.
 
-        Also drains the JS-side buffer as a fallback (in case __openpaw_push_event
+        Also drains the JS-side buffer as a fallback (in case __handy_push_event
         is unavailable, e.g. after cross-origin navigation).
         """
         # Drain JS buffer as fallback
         if self._page and self._recording_active:
             try:
                 js_events = self._page.evaluate(
-                    "() => { const buf = window.__openpaw_event_buffer || []; window.__openpaw_event_buffer = []; return buf; }"
+                    "() => { const buf = window.__handy_event_buffer || []; window.__handy_event_buffer = []; return buf; }"
                 )
                 for evt in js_events:
                     evt["_received_at"] = time.time()

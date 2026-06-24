@@ -228,6 +228,7 @@ export class DesktopAutomationAgent {
     let toolCtx: ToolContext = { scale: null };
 
     let llmAborted = false;
+    let taskCompleted = false;
     console.log(`[Agent]   Entering per-turn LLM loop (maxTurns=${maxTurns})...`);
 
     // 主循环：逐轮调用LLM → 执行工具 → 更新状态
@@ -542,6 +543,7 @@ export class DesktopAutomationAgent {
         const verified = await this.verifyCompletion(goal, provider, apiKey, ctx, focusedHwnd);
         if (verified) {
           console.log(`[TaskEnd] ✓ verification PASSED`);
+          taskCompleted = true;
           break;
         }
         console.log(`[TaskEnd] ✗ verification FAILED — continuing`);
@@ -552,12 +554,28 @@ export class DesktopAutomationAgent {
       }
     }
 
-    // 缓存存储
+    // 缓存存储（仅在任务有进展时缓存，避免存储不完整的执行）
     if (ctx.turns.length > 0 && !llmAborted) {
       await this.storeExecutionCache(goal, ctx.turns, l1Fingerprint, provider, apiKey);
     }
 
-    console.log(`[TaskEnd] main loop done — turns=${ctx.turns.length}, llmAborted=${llmAborted}`);
+    // ── 退出诊断 ──
+    if (taskCompleted) {
+      console.log(`[TaskEnd] main loop done — turns=${ctx.turns.length}, completed ✓`);
+    } else if (signal?.aborted) {
+      console.log(`[TaskEnd] main loop aborted — turns=${ctx.turns.length}, signal.aborted`);
+    } else if (llmAborted) {
+      console.log(`[TaskEnd] main loop done — turns=${ctx.turns.length}, LLM stopped producing tool calls`);
+    } else {
+      // 关键：maxTurns 耗尽但任务未完成 — 不应静默忽略
+      const toolNames = ctx.turns.flatMap(t => t.toolCalls.map(tc => tc.name));
+      const uniqueTools = [...new Set(toolNames)];
+      const summary = uniqueTools.length > 0
+        ? `executed ${toolNames.length} tool calls (${uniqueTools.join(', ')})`
+        : 'no tools executed';
+      console.warn(`[TaskEnd] ⚠ maxTurns (${maxTurns}) exhausted WITHOUT task completion! ${ctx.turns.length} turns, ${summary}. The task may need splitting or a higher maxTurns.`);
+    }
+
     return ctx.turns.length > 0 ? ctx.turns : null;
   }
 

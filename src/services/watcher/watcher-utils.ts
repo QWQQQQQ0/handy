@@ -2,8 +2,6 @@
 // tool filtering, and provider loading. Used by WatcherInstance, ScreenChangeEventSource,
 // action executors, and template compiler.
 
-import type { WatcherConfig } from '@/types/watcher';
-
 /** Keywords indicating the task is ongoing monitoring, not a one-shot action */
 const ONGOING_KEYWORDS = [
   '监听', '监控', '实时', 'watch', 'monitor', 'listen',

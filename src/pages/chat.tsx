@@ -317,6 +317,8 @@ export default function ChatPage() {
     loadConversations,
     confirmToolCall,
     rejectToolCall,
+    deleteMessage,
+    editMessage,
   } = useChatStore();
   const { favoriteTools, setFavoriteTools } = useSettingsStore();
 
@@ -341,12 +343,18 @@ export default function ChatPage() {
   useEffect(() => {
     loadConversations();
     (async () => {
-      const { useSkillStore } = await import('@/stores/skill-store');
-      await useSkillStore.getState().initializeSkills();
-      const configs = useSkillStore.getState().allConfigs;
-      if (configs.length > 0) {
-        await initBuiltinExecutor(configs);
-        setExecutorReady(true);
+      try {
+        const { useSkillStore } = await import('@/stores/skill-store');
+        await useSkillStore.getState().initializeSkills();
+        const configs = useSkillStore.getState().allConfigs;
+        if (configs.length > 0) {
+          await initBuiltinExecutor(configs);
+          setExecutorReady(true);
+        } else {
+          console.warn('[chat] 技能配置为空，executor 未初始化');
+        }
+      } catch (err) {
+        console.error('[chat] executor 初始化失败:', err);
       }
     })();
   }, [loadConversations]);
@@ -523,6 +531,8 @@ export default function ChatPage() {
                       key={msg.id}
                       message={msg}
                       previousMessage={allIdx > 0 ? visibleMessages[allIdx - 1] : undefined}
+                      onDelete={deleteMessage}
+                      onEdit={editMessage}
                     />
                   );
                 });

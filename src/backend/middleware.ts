@@ -25,6 +25,7 @@ import {
   handleDocAgent,
   handleWebAgent,
   handleCodeAgent,
+  handleFreeAgent,
 } from './handlers';
 
 // ── 路由表：端点 → handler → 是否流式 ──
@@ -59,6 +60,7 @@ const routes: Record<string, RouteEntry> = {
   [AgentEndpoint.docAgent]:                   { handler: handleDocAgent as HandlerFn,               streaming: true },
   [AgentEndpoint.webAgent]:                   { handler: handleWebAgent as HandlerFn,               streaming: true },
   [AgentEndpoint.codeAgent]:                  { handler: handleCodeAgent as HandlerFn,              streaming: true },
+  [AgentEndpoint.freeAgent]:                  { handler: handleFreeAgent as HandlerFn,              streaming: true },
 };
 
 // ── 请求体解析 ──

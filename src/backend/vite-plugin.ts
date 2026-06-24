@@ -5,7 +5,7 @@ import type { Plugin, ViteDevServer } from 'vite';
 
 export function agentApiPlugin(): Plugin {
   return {
-    name: 'openpaw-agent-api',
+    name: 'handy-agent-api',
     configureServer(server: ViteDevServer) {
       // 在 Vite 服务器完全就绪后注册中间件
       // 使用 server.ssrLoadModule 通过 Vite 的模块解析加载后端 handler

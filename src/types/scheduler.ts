@@ -1,6 +1,7 @@
 // Generic task scheduler types — decoupled from any specific trigger or action
+// WatcherConfig has been merged into TaskConfig; this is now the single source of truth.
 
-import type { MonitorTarget, ScreenRegion, DiffStrategyType, RegionMode, WorkflowStep } from './watcher';
+import type { MonitorTarget, ScreenRegion, DiffStrategyType, RegionMode, WorkflowStep, WorkflowTemplate, ChatContext } from './watcher';
 
 // ── Trigger Config (discriminated union) ──
 
@@ -31,7 +32,7 @@ export interface ScreenChangeTriggerConfig {
 
 // ── Action Config (discriminated union) ──
 
-export type TaskActionConfig = AgentExecuteTaskAction | NotifyTaskAction | CustomTaskAction;
+export type TaskActionConfig = AgentExecuteTaskAction | WorkflowTaskAction | ScriptTaskAction | NotifyTaskAction | CustomTaskAction;
 
 export interface AgentExecuteTaskAction {
   type: 'agent_execute';
@@ -41,11 +42,31 @@ export interface AgentExecuteTaskAction {
   /** 是否需要截图传给 LLM（默认 true）。纯文本任务如回复消息可设为 false */
   requiresScreenshot?: boolean;
   /** 学到的工作流模板：首次执行成功后自动录制，后续执行直接回放 */
-  workflowTemplate?: import('@/types/watcher').WorkflowTemplate;
+  workflowTemplate?: WorkflowTemplate;
   /** 执行次数：首次为 0，每次成功执行后 +1 */
   executionCount?: number;
   /** 上次执行记录：帮助 Agent 了解之前发生了什么 */
   lastExecution?: TaskExecutionRecord;
+}
+
+/** 回放已录制的工作流步骤 */
+export interface WorkflowTaskAction {
+  type: 'workflow';
+  /** 工作流步骤列表 */
+  steps: WorkflowStep[];
+  /** 可选的目标描述 */
+  goalTemplate?: string;
+}
+
+/** 在沙箱中执行脚本 */
+export interface ScriptTaskAction {
+  type: 'script';
+  /** 脚本语言 */
+  language: 'javascript' | 'python' | 'shell';
+  /** 脚本代码 */
+  code: string;
+  /** 超时时间（毫秒），默认 60000 */
+  timeoutMs?: number;
 }
 
 /** 跨调度的执行记录，帮助 Agent 携带上下文 */
@@ -69,6 +90,7 @@ export interface CustomTaskAction {
 }
 
 // ── Task Config (persisted to DB) ──
+// 统一类型：替代旧的 TaskConfig + WatcherConfig 两套体系
 
 export interface TaskConfig {
   id: string;
@@ -78,7 +100,7 @@ export interface TaskConfig {
   action: TaskActionConfig;
   context?: string;
   /** 聊天上下文：用于聊天回复场景 */
-  chatContext?: import('@/types/watcher').ChatContext;
+  chatContext?: ChatContext;
   createdAt: number;
   updatedAt: number;
 }

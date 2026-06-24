@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { GripHorizontal, X, Minus, MessageSquare, Wrench, Eye, Circle, BookOpen, Cpu, Link, ImageIcon, Trash2, Sparkles, Settings, Globe, LoaderCircle } from 'lucide-react';
+import { GripHorizontal, X, Minus, MessageSquare, Wrench, Clock, Circle, BookOpen, Cpu, Link, ImageIcon, Trash2, Sparkles, Settings, Globe, LoaderCircle } from 'lucide-react';
 import { ToolMode } from '@/stores/chat-store';
 import { useSettingsStore } from '@/stores/settings-store';
 import { getBuiltinSkill, getBuiltinExecutor, initBuiltinExecutor } from '@/skills/builtin-executor';
@@ -7,8 +7,8 @@ import { watcherManager } from '@/services/watcher';
 import type { LearningProgress } from '@/types/cache';
 import * as capabilityLearner from '@/services/capability-learner';
 import { RecorderMode } from '@/components/recorder';
-import { readLocal, writeLocal } from './utils';
-import type { FloatMode } from './types';
+import { readLocal, writeLocal, readToolGroups, writeToolGroups } from './utils';
+import type { FloatMode, ToolGroup } from './types';
 import ChatMode, { type ChatModeHandle } from './chat-mode';
 import TaskMode from './task-mode';
 import WatcherMode from './watcher-mode';
@@ -54,8 +54,9 @@ export default function FloatPage() {
   const persistNoSystemPrompt = useCallback((v: boolean) => { setNoSystemPrompt(v); writeLocal('float_no_system_prompt', v); }, []);
 
   // ── Tool mode (shared between Task and Watcher) ──
-  const [toolMode, setToolMode] = useState<ToolMode>(() => readLocal('float_tool_mode', ToolMode.all));
+  const [toolMode, setToolMode] = useState<ToolMode>(() => readLocal('float_tool_mode', ToolMode.basic));
   const [customTools, setCustomTools] = useState<Set<string>>(() => new Set(readLocal<string[]>('float_custom_tools', [])));
+  const [groups, setGroups] = useState<ToolGroup[]>(() => readToolGroups());
   const [executorReady, setExecutorReady] = useState(false);
   const allTools = executorReady ? getBuiltinExecutor().allTools : [];
 
@@ -68,6 +69,34 @@ export default function FloatPage() {
     setCustomTools(tools);
     writeLocal('float_custom_tools', [...tools]);
   }, []);
+
+  const handleSaveGroup = useCallback((name: string) => {
+    const newGroup: ToolGroup = {
+      id: crypto.randomUUID(),
+      name,
+      tools: [...customTools],
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...groups, newGroup];
+    setGroups(updated);
+    writeToolGroups(updated);
+  }, [customTools, groups]);
+
+  const handleDeleteGroup = useCallback((groupId: string) => {
+    const updated = groups.filter(g => g.id !== groupId);
+    setGroups(updated);
+    writeToolGroups(updated);
+  }, [groups]);
+
+  const handleGroupSelect = useCallback((groupId: string) => {
+    const group = groups.find(g => g.id === groupId);
+    if (group) {
+      setCustomTools(new Set(group.tools));
+      writeLocal('float_custom_tools', [...group.tools]);
+      setToolMode(ToolMode.custom);
+      writeLocal('float_tool_mode', ToolMode.custom);
+    }
+  }, [groups]);
 
   // ── State from child components ──
   const [isAutomating, setIsAutomating] = useState(false);
@@ -127,6 +156,34 @@ export default function FloatPage() {
 
   // ── Mount effects ──
   useEffect(() => { useSettingsStore.getState().load(); watcherManager.restore().catch(() => {}); watcherManager.initSync().catch(() => {}); }, []);
+
+  // 检测窗口是否卡在缩小状态（React 状态丢失但 Tauri 窗口仍为 tiny size），自动恢复
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        const win = getCurrentWebviewWindow();
+        const size = await win.innerSize();
+        const scale = await win.scaleFactor();
+        const logicalH = Math.round(size.height / (scale || 1));
+        // 高度小于 100px = 窗口卡在缩小状态，需要恢复
+        if (logicalH < 100 && !cancelled) {
+          console.log(`[float] 检测到窗口卡在缩小状态 (${logicalH}px)，自动恢复`);
+          setIsMinimized(false);
+          const prev = readLocal<{ width: number; height: number }>('float_prev_size', { width: 360, height: 480 });
+          const { LogicalSize } = await import('@tauri-apps/api/dpi');
+          const w = Math.max(280, Math.min(prev.width, 600));
+          const h = Math.max(320, Math.min(prev.height, 800));
+          await win.setMinSize(new LogicalSize(200, 200));
+          await win.setMaxSize(new LogicalSize(2000, 2000));
+          await win.setSize(new LogicalSize(w, h));
+          await win.setResizable(true);
+        }
+      } catch { /* 非 Tauri 环境 */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -277,7 +334,7 @@ export default function FloatPage() {
           {([
             { key: 'chat' as const, icon: <MessageSquare size={12} />, tip: 'Chat' },
             { key: 'task' as const, icon: <Wrench size={12} />, tip: 'Task' },
-            { key: 'watcher' as const, icon: <Eye size={12} />, tip: 'Watcher' },
+            { key: 'watcher' as const, icon: <Clock size={12} />, tip: '后台任务' },
             { key: 'recorder' as const, icon: <Circle size={12} />, tip: 'Recorder' },
             { key: 'learn' as const, icon: <BookOpen size={12} />, tip: 'Learn' },
           ]).map((tab) => (
@@ -338,7 +395,21 @@ export default function FloatPage() {
 
       {/* Content area */}
       {mode === 'chat' ? (
-        <ChatMode ref={chatModeRef} sendToModel={sendToModel} allowImagePaste={allowImagePaste} noSystemPrompt={noSystemPrompt} />
+        <ChatMode
+          ref={chatModeRef}
+          sendToModel={sendToModel}
+          allowImagePaste={allowImagePaste}
+          noSystemPrompt={noSystemPrompt}
+          toolMode={toolMode}
+          customTools={customTools}
+          groups={groups}
+          onToolModeChange={handleToolModeChange}
+          onCustomToolsChange={handleCustomToolsChange}
+          onSaveGroup={handleSaveGroup}
+          onDeleteGroup={handleDeleteGroup}
+          onGroupSelect={handleGroupSelect}
+          executorReady={executorReady}
+        />
       ) : mode === 'watcher' ? (
         <WatcherMode mode={mode} toolMode={toolMode} customTools={customTools} />
       ) : mode === 'recorder' ? (
@@ -351,10 +422,14 @@ export default function FloatPage() {
         <TaskMode
           toolMode={toolMode}
           customTools={customTools}
+          groups={groups}
           executorReady={executorReady}
           allTools={allTools}
           onToolModeChange={handleToolModeChange}
           onCustomToolsChange={handleCustomToolsChange}
+          onSaveGroup={handleSaveGroup}
+          onDeleteGroup={handleDeleteGroup}
+          onGroupSelect={handleGroupSelect}
           onRefreshWatcherConfigs={refreshWatcherConfigs}
           onModeChange={persistMode}
           onAutomatingChange={setIsAutomating}

@@ -11,6 +11,8 @@ export interface PythonExecParams {
   code: string;
   timeoutSec?: number;
   params?: Record<string, unknown>;
+  /** Bypass SAFE_MODULES whitelist, allow all Python imports */
+  allowAllImports?: boolean;
 }
 
 export interface PythonExecResult {
@@ -37,6 +39,7 @@ export async function bridgeExecPython(params: PythonExecParams): Promise<Python
     code: params.code,
     timeoutSec: params.timeoutSec ?? 30,
     params: params.params ?? {},
+    allowAllImports: params.allowAllImports ?? false,
   });
 
   return result;

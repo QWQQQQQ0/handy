@@ -28,5 +28,9 @@ export default defineConfig({
   server: {
     port: 3000,
     logLevel: 'warn',
+    watch: {
+      // code agent 写入 workspace/ 时不触发 HMR 重载
+      ignored: ['**/workspace/**'],
+    },
   },
 });

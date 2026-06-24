@@ -3,7 +3,7 @@
 export type AgentType = 'orchestrator' | 'architect' | 'developer' | 'reviewer' | 'integrator';
 
 /** Task 专用 agent 类型 */
-export type TaskAgentType = 'decomposer' | 'executor' | 'verifier' | 'assembler' | 'doc' | 'web' | 'code';
+export type TaskAgentType = 'decomposer' | 'executor' | 'verifier' | 'assembler' | 'doc' | 'web' | 'code' | 'free';
 
 export type TaskStatus = 'pending' | 'analyzing' | 'coding' | 'reviewing' | 'done' | 'failed';
 

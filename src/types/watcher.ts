@@ -147,54 +147,7 @@ export interface DiffResult {
   };
 }
 
-export type ActionType = 'agent_execute' | 'notify' | 'custom';
-
-export interface ActionConfig {
-  type: ActionType;
-  goalTemplate?: string;
-  notifyTemplate?: string;
-  customHandler?: string;
-  /** 是否需要截图传给 LLM（默认 true）。纯文本任务如回复消息可设为 false */
-  requiresScreenshot?: boolean;
-}
-
-export interface WatcherConfig {
-  id: string;
-  name: string;
-  enabled: boolean;
-  monitorTarget: MonitorTarget;
-  region: ScreenRegion;
-  pollIntervalMs: number;
-  diffStrategy: DiffStrategyType;
-  debounceMs: number;
-  cooldownMs: number;
-  minConfidence: number;   // 0.0-1.0, minimum confidence to trigger action (default 0.9)
-  action: ActionConfig;
-  context?: string;
-  regionMode?: RegionMode;        // 'manual' (default) or 'auto'
-  regionDescription?: string;     // e.g. "微信消息列表" — only for auto mode
-  /** 监控前的准备动作目标，Watcher 启动时执行一次（如"确保微信已打开并停留在消息列表页面"） */
-  preparationGoal?: string;
-  /** 触发后的详细动作描述，比 action.goalTemplate 更具体，注入 agent 执行上下文 */
-  actionGoal?: string;
-  toolMode?: string;              // ToolMode enum value: 'all'|'none'|'favorites'|'custom'
-  customTools?: string[];         // tool names when toolMode='custom'
-  /** 学到的工作流模板：首次执行成功后自动录制，后续执行直接回放 */
-  workflowTemplate?: WorkflowTemplate;
-  /** 执行次数：首次为 0，每次成功执行后 +1 */
-  executionCount?: number;
-  /** 上次执行记录：帮助 Agent 了解之前的执行上下文 */
-  lastExecution?: {
-    timestamp: number;
-    success: boolean;
-    summary: string;
-    turnsCount: number;
-  };
-  /** 聊天上下文：用于聊天回复场景，记录历史消息和发送者信息 */
-  chatContext?: ChatContext;
-  createdAt: number;
-  updatedAt: number;
-}
+// ── Runtime state types (used by WatcherManager / UI) ──
 
 export type WatcherStatus = 'idle' | 'running' | 'paused' | 'triggered' | 'error';
 

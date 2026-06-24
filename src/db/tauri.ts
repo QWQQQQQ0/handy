@@ -14,7 +14,7 @@ let db: TauriDb | null = null;
 async function getTauriDb(): Promise<TauriDb> {
   if (!db) {
     const { default: Database } = await import('@tauri-apps/plugin-sql');
-    db = (await Database.load('sqlite:openpaw.db')) as unknown as TauriDb;
+    db = (await Database.load('sqlite:handy.db')) as unknown as TauriDb;
   }
   return db;
 }

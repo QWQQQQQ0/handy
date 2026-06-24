@@ -17,6 +17,7 @@ pub fn run() {
     .plugin(tauri_plugin_sql::Builder::new().build())
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_fs::init())
+    .plugin(tauri_plugin_dialog::init())
     .manage(commands::bridge::BridgeState {
       bridge: std::sync::Arc::new(std::sync::Mutex::new(None)),
     })
@@ -171,6 +172,18 @@ pub fn run() {
             .level(log::LevelFilter::Info)
             .build(),
         )?;
+      }
+
+      // ── 主窗口关闭拦截：X 按钮隐藏到托盘而非真正关闭 ──
+      #[cfg(desktop)]
+      if let Some(main_window) = app.get_webview_window("main") {
+        let window = main_window.clone();
+        main_window.on_window_event(move |event| {
+          if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window.hide();
+          }
+        });
       }
 
       // ── System tray (desktop only) ──

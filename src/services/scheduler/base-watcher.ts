@@ -160,8 +160,6 @@ export abstract class BaseWatcher implements Tickable {
       variables: triggerResult.variables ?? {},
       toolFilter: this.buildToolFilter(),
       signal,
-      workflowTemplate: action.type === 'agent_execute' ? action.workflowTemplate : undefined,
-      chatContext: this.config.chatContext,
     };
   }
 

@@ -3,10 +3,15 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Play, Trash2, Edit3, Save, X, Plus,
   Mouse, Keyboard, Copy, Clipboard, Repeat, GitBranch, Scroll, Focus,
-  ChevronDown, ChevronRight, Settings, Check,
+  ChevronDown, ChevronRight, Settings, Check, Image, ArrowRight, Square as SquareIcon,
+  GripVertical,
 } from 'lucide-react';
 import { loadTemporaryTasks, saveTemporaryTask, deleteTemporaryTask } from '@/services/temporary-task-store';
 import { unifiedExecutor } from '@/services/unified-executor';
+import { applyStepFieldEdit } from '@/services/template-edit-utils';
+import { VariableHints } from '@/components/recorder/variable-hints';
+import { VariableComboInput } from '@/components/recorder/variable-combo-input';
+import { StepDetailFields } from '@/components/recorder/step-detail-fields';
 import type { AutomationTemplate, TemplateStep } from '@/types/automation-template';
 
 function getActionIcon(action: string) {
@@ -19,6 +24,10 @@ function getActionIcon(action: string) {
     case 'scroll': return <Scroll size={14} />;
     case 'loop_start': case 'loop_end': return <Repeat size={14} />;
     case 'if': case 'break': case 'continue': return <GitBranch size={14} />;
+    case 'else': case 'endif': return <GitBranch size={14} />;
+    case 'goto': return <ArrowRight size={14} />;
+    case 'llm_call': return <Settings size={14} />;
+    case 'tool_call': return <Settings size={14} />;
     default: return <Mouse size={14} />;
   }
 }
@@ -51,7 +60,16 @@ export default function TasksPage() {
   const [insertScrollAmt, setInsertScrollAmt] = useState('500');
   const [insertCode, setInsertCode] = useState('');
   const [insertToolArgs, setInsertToolArgs] = useState<Record<string, string>>({});
+  const [insertCondition, setInsertCondition] = useState('');
+  const [insertGotoStepId, setInsertGotoStepId] = useState('');
+  const [insertSystemPrompt, setInsertSystemPrompt] = useState('');
+  const [insertMultimodal, setInsertMultimodal] = useState(false);
+  const [insertScreenshots, setInsertScreenshots] = useState<string[]>([]);
   const [availableTools, setAvailableTools] = useState<Array<{ skillName: string; toolName: string; description: string; parameters: Record<string, unknown> }>>([]);
+
+  // ── Drag-and-drop state ──
+  const [dragFromIdx, setDragFromIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   useEffect(() => {
     setTasks(loadTemporaryTasks());
@@ -79,25 +97,7 @@ export default function TasksPage() {
       if (!prev) return prev;
       return {
         ...prev,
-        steps: prev.steps.map(s => {
-          if (s.id !== stepId) return s;
-          if (field === 'coordinate_x') {
-            return { ...s, target: { ...s.target, coordinate: { ...s.target?.coordinate, x: value as number | string } } };
-          }
-          if (field === 'coordinate_y') {
-            return { ...s, target: { ...s.target, coordinate: { ...s.target?.coordinate, y: value as number | string } } };
-          }
-          if (field === 'waitBefore') {
-            return { ...s, waitBefore: value as number };
-          }
-          if (field === 'description') {
-            return { ...s, description: value as string };
-          }
-          if (field === 'key') {
-            return { ...s, params: { ...s.params, key: value as string } };
-          }
-          return s;
-        }),
+        steps: prev.steps.map(s => s.id === stepId ? applyStepFieldEdit(s, field, value) : s),
       };
     });
   }, []);
@@ -105,6 +105,19 @@ export default function TasksPage() {
   const handleDeleteStep = useCallback((stepId: string) => {
     setEditTask(prev => prev ? { ...prev, steps: prev.steps.filter(s => s.id !== stepId) } : prev);
   }, []);
+
+  const handleMoveStep = useCallback((fromIdx: number, toIdx: number) => {
+    if (toIdx < 0 || toIdx >= (editTask?.steps.length ?? 0)) return;
+    setEditTask(prev => {
+      if (!prev) return prev;
+      const steps = [...prev.steps];
+      const [moved] = steps.splice(fromIdx, 1);
+      steps.splice(toIdx, 0, moved);
+      return { ...prev, steps };
+    });
+    setDragFromIdx(null);
+    setDragOverIdx(null);
+  }, [editTask]);
 
   const handleOpenInsert = useCallback(async (afterIdx: number, step?: TemplateStep) => {
     setInsertAfterIdx(afterIdx);
@@ -145,6 +158,11 @@ export default function TasksPage() {
       setInsertToolName(step.params?.toolName ? String(step.params.toolName) : '');
       setInsertLLMPrompt(step.params?.prompt ? String(step.params.prompt) : '');
       setInsertCode(step.params?.code ? String(step.params.code) : '');
+      setInsertCondition(step.condition || '');
+      setInsertGotoStepId(step.params?.stepId ? String(step.params.stepId) : '');
+      setInsertSystemPrompt(step.params?.systemPrompt ? String(step.params.systemPrompt) : '');
+      setInsertMultimodal(!!step.params?.multimodal);
+      setInsertScreenshots((step.params?.include_screenshots as string[]) || []);
       if (step.params?.direction) setInsertScrollDir(step.params.direction as 'down' | 'up');
       if (step.params?.amount) setInsertScrollAmt(String(step.params.amount));
     } else {
@@ -159,6 +177,11 @@ export default function TasksPage() {
       setInsertToolName('');
       setInsertLLMPrompt('');
       setInsertCode('');
+      setInsertCondition('');
+      setInsertGotoStepId('');
+      setInsertSystemPrompt('');
+      setInsertMultimodal(false);
+      setInsertScreenshots([]);
       setInsertScrollDir('down');
       setInsertScrollAmt('500');
     }
@@ -206,12 +229,25 @@ export default function TasksPage() {
       }
       // llm call
       if (insertType === 'llm_call') {
-        base.params = { prompt: insertLLMPrompt };
+        base.params = {
+          prompt: insertLLMPrompt,
+          systemPrompt: insertSystemPrompt,
+          multimodal: insertMultimodal,
+          include_screenshots: insertMultimodal ? insertScreenshots : [],
+        };
       }
       // code
       if (insertType === 'code') {
         base.params = { code: insertCode };
       }
+      // if / else / endif / goto
+      if (insertType === 'if') {
+        base.condition = insertCondition;
+      }
+      if (insertType === 'goto') {
+        base.params = { stepId: insertGotoStepId };
+      }
+      // else / endif: no extra params needed
       return base;
     };
 
@@ -233,7 +269,7 @@ export default function TasksPage() {
       return { ...prev, steps };
     });
     setShowInsert(false);
-  }, [insertType, insertToolName, insertLLMPrompt, insertDesc, insertAfterIdx, editingStepId, insertCoordX, insertCoordY, insertKey, insertWait, insertScrollDir, insertScrollAmt, insertCode]);
+  }, [insertType, insertToolName, insertLLMPrompt, insertDesc, insertAfterIdx, editingStepId, insertCoordX, insertCoordY, insertKey, insertWait, insertScrollDir, insertScrollAmt, insertCode, insertCondition, insertGotoStepId, insertSystemPrompt, insertMultimodal, insertScreenshots]);
 
   const handleSaveEdit = useCallback(() => {
     if (!editTask) return;
@@ -476,20 +512,100 @@ export default function TasksPage() {
             />
           </div>
 
+          {/* Variable hints panel */}
+          <div className="px-4 py-1 shrink-0">
+            <VariableHints
+              previousSteps={editTask.steps.filter(s => s.action === 'tool_call' || s.action === 'llm_call' || s.action === 'copy')}
+              onInsertVariable={(expr) => {
+                navigator.clipboard.writeText(expr).catch(() => {});
+              }}
+              maxHeight={100}
+            />
+          </div>
+
           {/* Steps */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          <div className="flex-1 overflow-y-auto p-4 space-y-1">
             {editTask.steps.map((step, i) => (
-              <div key={step.id} className="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900">
+              <div
+                key={step.id}
+                draggable
+                onDragStart={(e) => {
+                  setDragFromIdx(i);
+                  setDragOverIdx(i);
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', step.id);
+                  // 拖拽半透明效果
+                  (e.currentTarget as HTMLElement).style.opacity = '0.4';
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  setDragOverIdx(i);
+                }}
+                onDragLeave={() => {
+                  // keep dragOverIdx until over another item
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (dragFromIdx !== null && dragFromIdx !== i) {
+                    handleMoveStep(dragFromIdx, i);
+                  }
+                }}
+                onDragEnd={(e) => {
+                  (e.currentTarget as HTMLElement).style.opacity = '1';
+                  setDragFromIdx(null);
+                  setDragOverIdx(null);
+                }}
+                className={`rounded-lg border bg-white dark:bg-zinc-900 transition-colors ${
+                  dragOverIdx === i && dragFromIdx !== null && dragFromIdx !== i
+                    ? 'border-blue-400 dark:border-blue-500 border-t-2'
+                    : 'border-zinc-200 dark:border-zinc-700'
+                }`}
+              >
+                {/* Drop indicator line */}
+                {dragOverIdx === i && dragFromIdx !== null && dragFromIdx !== i && (
+                  <div className="h-0.5 bg-blue-500 rounded-full mx-2 -mb-px" />
+                )}
+
                 {/* Step header */}
                 <div
-                  className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800 rounded-t-lg"
+                  className="flex items-center gap-1.5 px-2 py-2 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800 rounded-t-lg"
                   onClick={() => toggleStep(step.id)}
                 >
+                  {/* Drag handle */}
+                  <span
+                    className="shrink-0 text-zinc-300 dark:text-zinc-600 hover:text-zinc-500 dark:hover:text-zinc-400 cursor-grab active:cursor-grabbing"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <GripVertical size={14} />
+                  </span>
                   <span className="text-[11px] text-zinc-400 w-5">{i + 1}</span>
                   <span className="text-zinc-500">{getActionIcon(step.action)}</span>
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400">
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
+                    step.action === 'if' || step.action === 'else' || step.action === 'endif' || step.action === 'goto'
+                      ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
+                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                  }`}>
                     {step.action}
                   </span>
+                  {/* if 条件 */}
+                  {step.action === 'if' && step.condition && (
+                    <span className="text-[10px] text-blue-500 dark:text-blue-400 font-mono truncate max-w-[200px]" title={step.condition}>
+                      {step.condition}
+                    </span>
+                  )}
+                  {/* goto 目标 */}
+                  {step.action === 'goto' && step.params?.stepId && (
+                    <span className="text-[10px] text-blue-500 dark:text-blue-400 font-mono truncate max-w-[100px]">
+                      → {String(step.params.stepId).substring(0, 8)}...
+                    </span>
+                  )}
+                  {/* llm_call 多模态标记 */}
+                  {step.action === 'llm_call' && step.params?.multimodal && (
+                    <span className="flex items-center gap-0.5 text-[10px] text-purple-500 shrink-0">
+                      <Image size={10} />
+                    </span>
+                  )}
                   <span className="text-[12px] text-zinc-700 dark:text-zinc-300 flex-1 truncate">
                     {step.description || '未命名步骤'}
                   </span>
@@ -512,125 +628,73 @@ export default function TasksPage() {
                 {/* Step detail editor */}
                 {expandedSteps.has(step.id) && (
                   <div className="px-4 pb-3 space-y-2 border-t border-zinc-100 dark:border-zinc-800">
-                    <div>
-                      <label className="block text-[10px] text-zinc-500 mb-0.5">描述</label>
-                      <input
-                        type="text"
-                        value={step.description}
-                        onChange={e => handleEditStepField(step.id, 'description', e.target.value)}
-                        className="w-full px-2 py-1 text-[12px] rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500"
-                      />
-                    </div>
-
-                    {step.target?.coordinate && (
-                      <div className="flex gap-3">
-                        <div className="flex-1">
-                          <label className="block text-[10px] text-zinc-500 mb-0.5">X 坐标</label>
-                          <input
-                            type="text"
-                            value={String(step.target.coordinate.x)}
-                            onChange={e => {
-                              const v = e.target.value;
-                              handleEditStepField(step.id, 'coordinate_x', isNaN(parseFloat(v)) ? v : parseFloat(v));
-                            }}
-                            className="w-full px-2 py-1 text-[12px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
-                          />
-                        </div>
-                        <div className="flex-1">
-                          <label className="block text-[10px] text-zinc-500 mb-0.5">Y 坐标</label>
-                          <input
-                            type="text"
-                            value={String(step.target.coordinate.y)}
-                            onChange={e => {
-                              const v = e.target.value;
-                              handleEditStepField(step.id, 'coordinate_y', isNaN(parseFloat(v)) ? v : parseFloat(v));
-                            }}
-                            className="w-full px-2 py-1 text-[12px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {step.waitBefore !== undefined && (
-                      <div>
-                        <label className="block text-[10px] text-zinc-500 mb-0.5">等待时间 (ms)</label>
-                        <input
-                          type="number"
-                          value={step.waitBefore}
-                          onChange={e => handleEditStepField(step.id, 'waitBefore', parseInt(e.target.value) || 0)}
-                          className="w-24 px-2 py-1 text-[12px] rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
-                        />
-                      </div>
-                    )}
-
-                    {step.params?.key && (
-                      <div>
-                        <label className="block text-[10px] text-zinc-500 mb-0.5">按键</label>
-                        <input
-                          type="text"
-                          value={String(step.params.key)}
-                          onChange={e => handleEditStepField(step.id, 'key', e.target.value)}
-                          className="w-40 px-2 py-1 text-[12px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
-                        />
-                      </div>
-                    )}
-
-                    {step.params && !step.params.key && step.params.toolName && (
-                      <div className="space-y-2">
-                        <div>
-                          <label className="block text-[10px] text-zinc-500 mb-0.5">工具名</label>
-                          <input
-                            type="text"
-                            value={String(step.params.toolName)}
-                            onChange={e => {
-                              setEditTask(prev => prev ? {
-                                ...prev, steps: prev.steps.map(s =>
-                                  s.id === step.id ? { ...s, params: { ...s.params, toolName: e.target.value } } : s
-                                )
-                              } : prev);
-                            }}
-                            className="w-full px-2 py-1 text-[12px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
-                          />
-                        </div>
-                        {step.params.arguments && typeof step.params.arguments === 'object' && (
+                    <StepDetailFields
+                      step={step}
+                      stepIndex={i}
+                      previousSteps={editTask.steps.slice(0, i)}
+                      onEditField={handleEditStepField}
+                      onInsertVariable={(expr) => { navigator.clipboard.writeText(expr).catch(() => {}); }}
+                      showStepId
+                    >
+                      {/* tool_call 额外参数编辑（tasks 页面特有） */}
+                      {step.params && !step.params.key && step.params.toolName && (
+                        <div className="space-y-2">
                           <div>
-                            <label className="block text-[10px] text-zinc-500 mb-0.5">参数</label>
-                            {Object.entries(step.params.arguments as Record<string, unknown>).map(([argKey, argVal]) => (
-                              <div key={argKey} className="flex items-center gap-2 mb-1">
-                                <span className="text-[10px] text-zinc-400 w-20 shrink-0">{argKey}:</span>
-                                <input
-                                  type="text"
-                                  value={String(argVal ?? '')}
-                                  onChange={e => {
-                                    setEditTask(prev => prev ? {
-                                      ...prev, steps: prev.steps.map(s =>
-                                        s.id === step.id ? {
-                                          ...s,
-                                          params: {
-                                            ...s.params,
-                                            arguments: { ...(s.params?.arguments as Record<string, unknown> || {}), [argKey]: e.target.value }
-                                          }
-                                        } : s
-                                      )
-                                    } : prev);
-                                  }}
-                                  className="flex-1 px-2 py-1 text-[12px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
-                                />
-                              </div>
-                            ))}
+                            <label className="block text-[10px] text-zinc-500 mb-0.5">工具名</label>
+                            <input
+                              type="text"
+                              value={String(step.params.toolName)}
+                              onChange={e => {
+                                setEditTask(prev => prev ? {
+                                  ...prev, steps: prev.steps.map(s =>
+                                    s.id === step.id ? { ...s, params: { ...s.params, toolName: e.target.value } } : s
+                                  )
+                                } : prev);
+                              }}
+                              className="w-full px-2 py-1 text-[12px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
+                            />
                           </div>
-                        )}
-                      </div>
-                    )}
+                          {step.params.arguments && typeof step.params.arguments === 'object' && (
+                            <div>
+                              <label className="block text-[10px] text-zinc-500 mb-0.5">参数</label>
+                              {Object.entries(step.params.arguments as Record<string, unknown>).map(([argKey, argVal]) => (
+                                <div key={argKey} className="flex items-center gap-2 mb-1">
+                                  <span className="text-[10px] text-zinc-400 w-20 shrink-0">{argKey}:</span>
+                                  <input
+                                    type="text"
+                                    value={String(argVal ?? '')}
+                                    onChange={e => {
+                                      setEditTask(prev => prev ? {
+                                        ...prev, steps: prev.steps.map(s =>
+                                          s.id === step.id ? {
+                                            ...s,
+                                            params: {
+                                              ...s.params,
+                                              arguments: { ...(s.params?.arguments as Record<string, unknown> || {}), [argKey]: e.target.value }
+                                            }
+                                          } : s
+                                        )
+                                      } : prev);
+                                    }}
+                                    className="flex-1 px-2 py-1 text-[12px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950 outline-none focus:border-blue-500"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
 
-                    {step.params && Object.keys(step.params).length > 0 && !step.params.key && !step.params.toolName && (
-                      <div>
-                        <label className="block text-[10px] text-zinc-500 mb-0.5">参数</label>
-                        <pre className="text-[11px] p-2 rounded bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 overflow-x-auto whitespace-pre-wrap">
-                          {JSON.stringify(step.params, null, 2)}
-                        </pre>
-                      </div>
-                    )}
+                      {/* 通用参数 JSON 显示（tasks 页面特有） */}
+                      {step.params && Object.keys(step.params).length > 0 && !step.params.key && !step.params.toolName && (
+                        <div>
+                          <label className="block text-[10px] text-zinc-500 mb-0.5">参数</label>
+                          <pre className="text-[11px] p-2 rounded bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-700 overflow-x-auto whitespace-pre-wrap">
+                            {JSON.stringify(step.params, null, 2)}
+                          </pre>
+                        </div>
+                      )}
+                    </StepDetailFields>
                   </div>
                 )}
               </div>
@@ -687,6 +751,10 @@ export default function TasksPage() {
                     <option value="code">📝 code — 执行代码</option>
                     <option value="loop_start">🔁 loop_start — 循环开始</option>
                     <option value="loop_end">🔁 loop_end — 循环结束</option>
+                    <option value="if">🔀 if — 条件判断</option>
+                    <option value="else">🔀 else — 否则</option>
+                    <option value="endif">🔀 endif — 条件结束</option>
+                    <option value="goto">↪️ goto — 跳转</option>
                   </select>
                 </div>
 
@@ -802,11 +870,127 @@ export default function TasksPage() {
 
                 {/* LLM call */}
                 {insertType === 'llm_call' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-[12px] text-zinc-500 mb-2">系统提示词（可选）</label>
+                      <input type="text" value={insertSystemPrompt} onChange={e => setInsertSystemPrompt(e.target.value)}
+                        placeholder="系统提示词..."
+                        className="w-full px-3 py-2 text-[13px] rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100" />
+                    </div>
+                    <div>
+                      <label className="block text-[12px] text-zinc-500 mb-2">LLM 提示词</label>
+                      <VariableComboInput
+                        value={insertLLMPrompt}
+                        onChange={setInsertLLMPrompt}
+                        placeholder="描述 LLM 需要做什么... 可用 {{变量}} 引用前序步骤输出"
+                        multiline
+                        rows={5}
+                        previousSteps={editTask ? editTask.steps.slice(0, insertAfterIdx + 1) : []}
+                      />
+                    </div>
+                    {/* 多模态开关 */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => { setInsertMultimodal(!insertMultimodal); if (insertMultimodal) setInsertScreenshots([]); }}
+                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[11px] transition-colors ${
+                          insertMultimodal
+                            ? 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 border border-purple-300'
+                            : 'border border-zinc-200 dark:border-zinc-700 text-zinc-500'
+                        }`}
+                      >
+                        {insertMultimodal ? <Check size={12} /> : <SquareIcon size={12} />}
+                        多模态（附加上下文截图）
+                      </button>
+                    </div>
+                    {/* 截图选择 —— 只显示明确产出截图的 tool_call 步骤 */}
+                    {insertMultimodal && editTask && (() => {
+                      const SCREENSHOT_TOOLS = new Set(['desktop_screenshot', 'screenshot']);
+                      const allSteps = editTask.steps.slice(0, insertAfterIdx + 1);
+                      const prevScreenshots = allSteps
+                        .map((s, origIdx) => ({ step: s, origIdx }))
+                        .filter(({ step: s }) =>
+                          s.action === 'tool_call' && SCREENSHOT_TOOLS.has(s.params?.toolName as string)
+                        )
+                        .map(({ step: s, origIdx }) => ({
+                          stepId: s.id,
+                          toolName: (s.params?.toolName as string) || 'screenshot',
+                          label: `Step ${origIdx + 1}: ${(s.params?.toolName as string) || 'screenshot'}${s.description ? ' — ' + s.description.substring(0, 30) : ''}`,
+                        }));
+                      return prevScreenshots.length > 0 ? (
+                        <div>
+                          <label className="block text-[12px] text-zinc-500 mb-1">
+                            选择截图步骤
+                            <span className="text-zinc-400 ml-1 text-[10px]">（仅截图类 tool_call）</span>
+                          </label>
+                          <div className="max-h-[120px] overflow-y-auto space-y-0.5 bg-zinc-50 dark:bg-zinc-900 rounded p-1.5">
+                            {prevScreenshots.map(ss => (
+                              <button
+                                key={ss.stepId}
+                                onClick={() => setInsertScreenshots(prev =>
+                                  prev.includes(ss.stepId) ? prev.filter(id => id !== ss.stepId) : [...prev, ss.stepId]
+                                )}
+                                className={`w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-[10px] text-left ${
+                                  insertScreenshots.includes(ss.stepId)
+                                    ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-700'
+                                    : 'hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600'
+                                }`}
+                              >
+                                {insertScreenshots.includes(ss.stepId) ? <Check size={11} /> : <SquareIcon size={11} />}
+                                <Image size={11} />
+                                <span className="truncate">{ss.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-[10px] text-zinc-400">
+                          当前步骤前无截图类 tool_call 步骤。请先在前面添加 desktop_screenshot 或 screenshot 工具调用。
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {/* if 条件 */}
+                {insertType === 'if' && (
                   <div>
-                    <label className="block text-[12px] text-zinc-500 mb-2">LLM 提示词</label>
-                    <textarea value={insertLLMPrompt} onChange={e => setInsertLLMPrompt(e.target.value)}
-                      placeholder="描述 LLM 需要做什么..." rows={5}
-                      className="w-full px-3 py-2 text-[13px] rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 resize-none" />
+                    <label className="block text-[12px] text-zinc-500 mb-2">
+                      条件表达式
+                      <span className="text-zinc-400 ml-1 text-[10px]">如: {"{{clipboard}} != ''"}、{"{{index}} >= 5"}</span>
+                    </label>
+                    <VariableComboInput
+                      value={insertCondition}
+                      onChange={setInsertCondition}
+                      placeholder='{{clipboard}} != ""'
+                      previousSteps={editTask ? editTask.steps.slice(0, insertAfterIdx + 1) : []}
+                    />
+                    <div className="mt-2 text-[10px] text-zinc-400 space-y-0.5">
+                      <p>支持：<code>{"{{var}}"}</code> 模板引用、<code>==</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> 比较、<code>and</code>/<code>or</code>/<code>not</code> 逻辑</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* goto 目标 */}
+                {insertType === 'goto' && (
+                  <div>
+                    <label className="block text-[12px] text-zinc-500 mb-2">
+                      目标步骤 ID
+                      <span className="text-zinc-400 ml-1 text-[10px]">（在模板步骤中可看到各步骤 ID）</span>
+                    </label>
+                    <input type="text" value={insertGotoStepId} onChange={e => setInsertGotoStepId(e.target.value)}
+                      placeholder="步骤 UUID"
+                      className="w-full px-3 py-2 text-[13px] font-mono rounded border border-blue-200 dark:border-blue-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100" />
+                  </div>
+                )}
+
+                {/* else / endif 提示 */}
+                {(insertType === 'else' || insertType === 'endif') && (
+                  <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded p-3">
+                    <p className="text-[12px] text-blue-600 dark:text-blue-400">
+                      {insertType === 'else'
+                        ? 'else 作为 if 条件不成立时的分支。确保对应 if 步骤已存在。'
+                        : 'endif 标记条件分支结束，无需额外配置。'}
+                    </p>
                   </div>
                 )}
 
@@ -814,9 +998,14 @@ export default function TasksPage() {
                 {insertType === 'code' && (
                   <div>
                     <label className="block text-[12px] text-zinc-500 mb-2">代码</label>
-                    <textarea value={insertCode} onChange={e => setInsertCode(e.target.value)}
-                      placeholder="vars.xxx = ..." rows={5}
-                      className="w-full px-3 py-2 text-[13px] font-mono rounded border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 resize-none" />
+                    <VariableComboInput
+                      value={insertCode}
+                      onChange={setInsertCode}
+                      placeholder="vars.xxx = ..."
+                      multiline
+                      rows={5}
+                      previousSteps={editTask ? editTask.steps.slice(0, insertAfterIdx + 1) : []}
+                    />
                   </div>
                 )}
 

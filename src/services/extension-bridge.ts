@@ -27,7 +27,7 @@ class ExtensionBridge implements IExtensionBridge {
   }
 
   init(): void {
-    window.addEventListener('openpaw-response', ((event: CustomEvent) => {
+    window.addEventListener('handy-response', ((event: CustomEvent) => {
       const detail = event.detail;
       if (!detail) return;
       const id = detail['id'] as string | undefined;
@@ -45,7 +45,7 @@ class ExtensionBridge implements IExtensionBridge {
       }
     }) as EventListener);
 
-    window.addEventListener('openpaw-state-changed', ((event: CustomEvent) => {
+    window.addEventListener('handy-state-changed', ((event: CustomEvent) => {
       const detail = event.detail;
       if (detail && typeof detail === 'object') {
         const state = detail as Record<string, unknown>;
@@ -55,7 +55,7 @@ class ExtensionBridge implements IExtensionBridge {
       }
     }) as EventListener);
 
-    window.addEventListener('openpaw-command', ((event: CustomEvent) => {
+    window.addEventListener('handy-command', ((event: CustomEvent) => {
       const detail = event.detail;
       if (detail && typeof detail === 'object') {
         const command = detail['command'] as string | undefined;
@@ -73,7 +73,7 @@ class ExtensionBridge implements IExtensionBridge {
 
   private _checkConnection(): void {
     try {
-      const ready = localStorage.getItem('__openpawReady');
+      const ready = localStorage.getItem('__handyReady');
       if (ready === 'true') {
         this._isConnected = true;
         return;
@@ -111,7 +111,7 @@ class ExtensionBridge implements IExtensionBridge {
       this._pending.set(id, { resolve, reject, timer });
 
       try {
-        window.dispatchEvent(new CustomEvent('openpaw-call', {
+        window.dispatchEvent(new CustomEvent('handy-call', {
           detail: { id, method, args },
         }));
       } catch (e) {

@@ -71,7 +71,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "hwnd": { "type": "integer", "description": "Target window handle — ALWAYS pass this when you have a target window. Smaller image, faster analysis." },
         "region": { "type": "object", "description": "Sub-region to capture {left, top, width, height}. Use when you only need part of the screen.", "properties": { "left": { "type": "integer" }, "top": { "type": "integer" }, "width": { "type": "integer" }, "height": { "type": "integer" } } }
       }
-    }
+    },
+    "returns": "The screenshot is injected as a multimodal image message directly into the conversation — you will SEE the screen visually after this call, not read it as JSON text. The JSON tool result contains only metadata: {\"format\":\"bmp\",\"hwnd\":number,\"note\":\"description\"}. Do NOT look for base64 image_data in the tool result JSON — it is stripped and delivered as a real image you can analyze visually."
   },
   {
     "name": "desktop_list_windows",
@@ -81,7 +82,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
     "parameters": {
       "type": "object",
       "properties": {}
-    }
+    },
+    "returns": "{\"windows\":[{\"hwnd\":number,\"title\":\"string\",\"x\":number,\"y\":number,\"width\":number,\"height\":number}],\"count\":number}"
   },
   {
     "name": "desktop_focus_window",
@@ -94,7 +96,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "hwnd": { "type": "integer", "description": "Window handle" }
       },
       "required": ["hwnd"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"hwnd\":number,\"windowTitle\":\"string (matched window title)\"}"
   },
   {
     "name": "desktop_minimize_window",
@@ -133,7 +136,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "hwnd": { "type": "integer", "description": "Window handle" }
       },
       "required": ["hwnd"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"hwnd\":number}"
   },
   {
     "name": "desktop_resize_window",
@@ -148,14 +152,16 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "height": { "type": "integer", "description": "New height in pixels" }
       },
       "required": ["hwnd", "width", "height"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"hwnd\":number}"
   },
   {
     "name": "desktop_get_clipboard",
     "description": "Get the current text content of the system clipboard.",
     "name_cn": "获取剪贴板",
     "description_cn": "获取系统剪贴板当前的文本内容。",
-    "parameters": { "type": "object", "properties": {} }
+    "parameters": { "type": "object", "properties": {} },
+    "returns": "{\"text\":\"clipboard text content (string)\"}"
   },
   {
     "name": "desktop_set_clipboard",
@@ -168,7 +174,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "text": { "type": "string", "description": "Text to copy to clipboard" }
       },
       "required": ["text"]
-    }
+    },
+    "returns": "{\"success\":true,\"text\":\"the text that was set\"}"
   },
   {
     "name": "desktop_ocr",
@@ -180,7 +187,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
       "properties": {
         "image_base64": { "type": "string", "description": "Base64-encoded image (optional, screenshots full screen if omitted)" }
       }
-    }
+    },
+    "returns": "{\"texts\":[{\"text\":\"recognized text\",\"bbox\":{\"left\":number,\"top\":number,\"width\":number,\"height\":number},\"confidence\":number}],\"raw\":\"full OCR result\"}"
   },
   {
     "name": "desktop_click",
@@ -197,7 +205,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "window_hwnd": { "type": "integer", "description": "Optional window handle — x,y are treated as offsets from the window's top-left corner" }
       },
       "required": ["x", "y"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_click\",\"x\":number,\"y\":number,\"button\":\"left/right/middle\",\"clicks\":1/2,\"note\":\"execution note\",\"region_screenshot\":\"base64 data URL of 150x150 area around click point\"}"
   },
   {
     "name": "desktop_drag",
@@ -215,7 +224,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "button": { "type": "string", "description": "Mouse button: left (default), right, middle" }
       },
       "required": ["start_x", "start_y", "end_x", "end_y"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_drag\",\"from\":{\"x\":number,\"y\":number},\"to\":{\"x\":number,\"y\":number},\"note\":\"Drag completed\",\"region_screenshot\":\"base64 data URL\"}"
   },
   {
     "name": "desktop_move_cursor",
@@ -231,7 +241,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "window_hwnd": { "type": "integer", "description": "Optional window handle to adjust path coordinates relative to the window" }
       },
       "required": ["path"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_move_cursor\",\"path\":\"the SVG path used\",\"waypoints\":number,\"durationMs\":number}"
   },
   {
     "name": "desktop_type",
@@ -244,7 +255,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "text": { "type": "string", "description": "Text to type" }
       },
       "required": ["text"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_type\",\"text\":\"the text typed\",\"note\":\"Type executed\"}"
   },
   {
     "name": "desktop_press_key",
@@ -257,7 +269,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "key": { "type": "string", "description": "Key name or combo (e.g. 'Enter', 'Ctrl+A', 'Alt+Tab')" }
       },
       "required": ["key"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_press_key\",\"key\":\"the key/combo pressed\",\"note\":\"Key press simulated\"}"
   },
   {
     "name": "desktop_key_down",
@@ -270,7 +283,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "key": { "type": "string", "description": "Key name (e.g. 'Shift', 'Ctrl', 'a')" }
       },
       "required": ["key"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_key_down\",\"x\":number,\"y\":number,\"button\":\"the button held\"}"
   },
   {
     "name": "desktop_key_up",
@@ -283,7 +297,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "key": { "type": "string", "description": "Key name (e.g. 'Shift', 'Ctrl', 'a')" }
       },
       "required": ["key"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_key_up\",\"x\":number,\"y\":number,\"button\":\"the button released\"}"
   },
   {
     "name": "desktop_scroll",
@@ -298,7 +313,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "delta": { "type": "integer", "description": "Scroll amount, 120 = one notch" }
       },
       "required": ["x", "y", "delta"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_scroll\",\"x\":number,\"y\":number,\"delta\":number}"
   },
   {
     "name": "desktop_wait",
@@ -311,7 +327,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "milliseconds": { "type": "integer" }
       },
       "required": ["milliseconds"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_wait\",\"milliseconds\":number,\"note\":\"Wait completed\"}"
   },
   {
     "name": "desktop_done",
@@ -324,7 +341,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "message": { "type": "string", "description": "Summary of what was accomplished" }
       },
       "required": ["message"]
-    }
+    },
+    "returns": "{\"action\":\"desktop_done\",\"message\":\"the completion message\"}"
   },
   {
     "name": "desktop_list_apps",
@@ -334,7 +352,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
     "parameters": {
       "type": "object",
       "properties": {}
-    }
+    },
+    "returns": "{\"apps\":[{\"name\":\"app name\",\"path\":\"executable path\",\"icon\":\"base64\"}],\"count\":number}"
   },
   {
     "name": "desktop_open_app",
@@ -348,7 +367,8 @@ Supports full desktop screenshot, window management, mouse/keyboard automation, 
         "windowTitle": { "type": "string", "description": "Known window title to look up the app (used as fallback when name is not provided)" },
         "hwnd": { "type": "number", "description": "If you already know the window handle, pass it to skip launching entirely" }
       }
-    }
+    },
+    "returns": "{\"action\":\"desktop_open_app\",\"name\":\"app name or alias used\",\"success\":true/false,\"hwnd\":number (window handle if launched/found)}"
   },
   {
     "name": "code_exec",

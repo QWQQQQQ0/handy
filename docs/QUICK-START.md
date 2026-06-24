@@ -1,8 +1,8 @@
-# OpenPaw JS 快速开始
+# Handy 快速开始
 
 ## 一分钟了解项目
 
-OpenPaw JS 是一个 AI 桌面助手，支持：
+Handy 是一个 AI 桌面助手，支持：
 - 🖥️ 桌面自动化（截图、点击、输入）
 - 🌐 浏览器控制
 - 📱 手机操控
@@ -18,7 +18,7 @@ OpenPaw JS 是一个 AI 桌面助手，支持：
 ```bash
 # 克隆项目
 git clone <repo-url>
-cd openpaw-js
+cd handy
 
 # 安装依赖
 npm install
@@ -85,7 +85,7 @@ const myPlugin: SkillPlugin = {
         
         return {
           success: true,
-          message: `Hello, ${name}! Welcome to OpenPaw!`,
+          message: `Hello, ${name}! Welcome to Handy!`,
           data: { greeting: `Hello, ${name}!` },
         };
       },

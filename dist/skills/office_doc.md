@@ -181,7 +181,8 @@ Generate, read, and edit Word, Excel, and PowerPoint documents.
         }
       },
       "required": ["type", "title"]
-    }
+    },
+    "returns": "{\"path\":\"saved file path\",\"size\":number,\"format\":\"docx/xlsx/pptx\"} or {\"filename\":\"downloaded filename\",\"size\":number,\"format\":\"docx/xlsx/pptx\"}"
   },
   {
     "name": "office_detect",
@@ -192,7 +193,8 @@ Generate, read, and edit Word, Excel, and PowerPoint documents.
       "type": "object",
       "properties": {},
       "required": []
-    }
+    },
+    "returns": "{\"available_apps\":{\"word\":{\"available\":true/false,\"documents\":[{\"name\":\"title\",\"path\":\"full path\",\"paragraphs\":number,\"pages\":number}]},\"excel\":{\"available\":true/false,\"workbooks\":[{\"name\":\"title\",\"path\":\"full path\",\"sheets\":[{\"name\":\"sheet name\",\"rows\":number,\"columns\":number}]}]},\"ppt\":{\"available\":true/false,\"presentations\":[{\"name\":\"title\",\"path\":\"full path\",\"slides\":number}]}}"
   },
   {
     "name": "com_read",
@@ -220,7 +222,8 @@ Generate, read, and edit Word, Excel, and PowerPoint documents.
         "find_text": { "type": "boolean", "description": "[PPT] Find all text-containing shapes" }
       },
       "required": ["app"]
-    }
+    },
+    "returns": "For Word: {\"title\":\"doc title\",\"paragraphs\":[{\"index\":number,\"text\":\"paragraph text\"}],\"total_paragraphs\":number}. For Excel: {\"sheets\":[{\"name\":\"sheet name\",\"rows\":[[\"cell value\"]],\"range\":\"A1:Z99\"}],\"total_rows\":number}. For PPT: {\"slides\":[{\"index\":number,\"title\":\"slide title\",\"shapes\":[{\"name\":\"shape name\",\"text\":\"shape text\",\"type\":\"shape type\"}]}],\"total_slides\":number}"
   },
   {
     "name": "com_edit",
@@ -273,7 +276,8 @@ Generate, read, and edit Word, Excel, and PowerPoint documents.
         "new_order": { "type": "array", "description": "[PPT:reorder] New slide order as 0-based indices, e.g. [2,0,1]", "items": { "type": "number" } }
       },
       "required": ["app", "operation"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"message\":\"operation result description\",\"details\":{...}}"
   },
   {
     "name": "doc_code_exec",
@@ -297,7 +301,8 @@ Generate, read, and edit Word, Excel, and PowerPoint documents.
         }
       },
       "required": ["code"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"result\":\"return value from result variable\",\"output\":\"stdout text\",\"error\":\"error message if failed\",\"duration_ms\":number}"
   }
 ]
 ```

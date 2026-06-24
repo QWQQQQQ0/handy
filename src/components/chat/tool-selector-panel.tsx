@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Search } from 'lucide-react';
 import type { SkillTool } from '@/skills/skill';
 import { useSettingsStore } from '@/stores/settings-store';
@@ -11,56 +11,59 @@ interface ToolSelectorPanelProps {
   selected: Set<string>;
   setSelected: (tools: Set<string>) => void;
   onClose: () => void;
+  compact?: boolean;
+  onSaveGroup?: (name: string) => void;
 }
 
-// Group tools by their skill prefix (e.g. "desktop_click" → "desktop", "generate_code" → "code")
+// Group tools by category for the tool selector panel.
+// Only includes actually registered tool names (stale aliases removed).
 // Tool name → group key
 const TOOL_GROUP_MAP: Record<string, string> = {
-  // Desktop
-  desktop_click: 'desktop', desktop_double_click: 'desktop', desktop_right_click: 'desktop',
-  desktop_type: 'desktop', desktop_type_text: 'desktop', desktop_press_key: 'desktop',
-  desktop_drag: 'desktop', desktop_move_cursor: 'desktop', desktop_move_mouse: 'desktop',
-  desktop_scroll: 'desktop', desktop_screenshot: 'desktop', desktop_ocr: 'desktop',
-  desktop_open_app: 'desktop', desktop_list_apps: 'desktop', desktop_list_windows: 'desktop',
-  desktop_focus_window: 'desktop', desktop_minimize_window: 'desktop', desktop_maximize_window: 'desktop',
-  desktop_close_window: 'desktop', desktop_resize_window: 'desktop', desktop_wait: 'desktop',
-  desktop_done: 'desktop', desktop_get_clipboard: 'desktop', desktop_set_clipboard: 'desktop',
-  desktop_find_app: 'desktop', desktop_find_app_by_title: 'desktop', desktop_refresh_apps: 'desktop',
-  // UIA
-  uia_click: 'uia', uia_double_click: 'uia', uia_right_click: 'uia',
-  uia_type: 'uia', uia_expand: 'uia', uia_select: 'uia', uia_scroll: 'uia',
-  uia_get_interactive: 'uia', uia_find_element: 'uia', uia_find_element_at_point: 'uia',
-  uia_get_property: 'uia', uia_fingerprint: 'uia',
-  // Web
-  web_pw_launch: 'web', web_pw_navigate: 'web', web_pw_click: 'web',
-  web_pw_fill: 'web', web_pw_scroll: 'web', web_pw_get_interactive: 'web',
-  web_pw_close: 'web', web_pw_start_recording: 'web', web_pw_stop_recording: 'web',
-  web_pw_get_recorded_events: 'web',
-  web_click_selector: 'web', web_click_role: 'web', web_fill: 'web', web_scroll: 'web',
-  web_launch: 'web', web_navigate: 'web', web_get_interactive: 'web', web_close: 'web',
-  web_start_recording: 'web', web_stop_recording: 'web', web_get_recorded_events: 'web',
-  // Phone
-  phone_screenshot: 'phone', phone_tap: 'phone', phone_swipe: 'phone',
-  phone_type: 'phone', phone_press_key: 'phone', phone_open_app: 'phone',
-  // Code generation
-  generate_project: 'codegen', generate_code: 'codegen',
-  // Code execution
-  execute_code: 'codeexec', iterate_code: 'codeexec',
-  // File I/O
-  write_file: 'fileio', read_file: 'fileio',
-  // Code registry
-  save_code: 'codereg', list_code: 'codereg',
-  // App builder
-  app_build: 'appbuilder', app_preview: 'appbuilder',
-  // Office
-  word_generate: 'office', excel_generate: 'office', ppt_generate: 'office',
-  // Global listener
-  global_listener_start: 'listener', global_listener_stop: 'listener', global_listener_poll: 'listener',
-  // System config
-  list_skills: 'sysconfig', toggle_skill: 'sysconfig',
-  list_models: 'sysconfig', switch_model: 'sysconfig', add_model: 'sysconfig', update_model: 'sysconfig',
-  get_settings: 'sysconfig', update_settings: 'sysconfig',
-  list_watchers: 'sysconfig',
+  // ── Desktop screen ──
+  desktop_screenshot: 'desktop', desktop_list_windows: 'desktop', desktop_focus_window: 'desktop',
+  desktop_minimize_window: 'desktop', desktop_maximize_window: 'desktop', desktop_close_window: 'desktop',
+  desktop_resize_window: 'desktop', desktop_get_clipboard: 'desktop', desktop_set_clipboard: 'desktop',
+  desktop_ocr: 'desktop', desktop_click: 'desktop', desktop_drag: 'desktop',
+  desktop_move_cursor: 'desktop', desktop_type: 'desktop', desktop_press_key: 'desktop',
+  desktop_key_down: 'desktop', desktop_key_up: 'desktop', desktop_scroll: 'desktop',
+  desktop_wait: 'desktop', desktop_done: 'desktop', desktop_list_apps: 'desktop',
+  desktop_open_app: 'desktop', code_exec: 'desktop',
+  // ── UIA ──
+  uia_click: 'uia', uia_type: 'uia', uia_get_interactive: 'uia',
+  uia_find_element: 'uia', uia_get_property: 'uia', uia_fingerprint: 'uia',
+  // ── Web ──
+  web_launch: 'web', web_navigate: 'web', web_get_interactive: 'web',
+  web_click: 'web', web_fill: 'web', web_close: 'web', web_wait: 'web', web_done: 'web',
+  run_playwright_script: 'web',
+  // ── Phone ──
+  phone_screenshot: 'phone', phone_tap: 'phone', phone_tap_element: 'phone',
+  phone_swipe: 'phone', phone_type: 'phone', phone_scroll: 'phone',
+  phone_back: 'phone', phone_home: 'phone', phone_get_ui: 'phone',
+  phone_poll_events: 'phone', phone_wait: 'phone', phone_done: 'phone',
+  // ── Code tools ──
+  write_file: 'code', read_file: 'code', glob_files: 'code', grep_files: 'code',
+  generate_code: 'code', generate_project: 'code', execute_code: 'code',
+  save_code: 'code', list_code: 'code', run_command: 'code',
+  web_search: 'code', web_fetch: 'code',
+  // ── App builder ──
+  save_app: 'app', list_apps: 'app', get_app: 'app', update_app: 'app', delete_app: 'app',
+  // ── Office ──
+  generate_doc: 'office', office_detect: 'office', com_read: 'office', com_edit: 'office',
+  doc_code_exec: 'office',
+  // ── System ──
+  list_skills: 'system', toggle_skill: 'system',
+  list_models: 'system', switch_model: 'system', add_model: 'system', update_model: 'system',
+  get_settings: 'system', update_settings: 'system',
+  list_scheduled_tasks: 'system', list_watchers: 'system',
+  // ── Memory / Chat ──
+  agent_memory_update: 'system', search_chat_history: 'system', recall_memory: 'system',
+  think: 'system', request_user_input: 'system', finalize: 'system',
+  // ── Scheduler ──
+  create_timer_task: 'system', create_screen_watcher: 'system',
+  list_recorded_workflows: 'system', cancel_scheduled_task: 'system',
+  // ── Plugin ──
+  string_case_convert: 'plugin', json_format: 'plugin',
+  markdown_to_html: 'plugin', chain_tools_demo: 'plugin',
 };
 
 function getToolGroup(name: string): string {
@@ -72,25 +75,24 @@ const GROUP_LABELS: Record<string, string> = {
   uia: '♿ UIA',
   web: '🌐 Web',
   phone: '📱 Phone',
-  codegen: '🔧 Code Generation',
-  codeexec: '⚡ Code Execution',
-  fileio: '📝 File I/O',
-  codereg: '💾 Code Registry',
-  appbuilder: '📦 App Builder',
+  code: '💻 Code',
+  app: '📦 App Builder',
   office: '📄 Office',
-  listener: '🎧 Global Listener',
-  sysconfig: '⚙️ System Config',
+  system: '⚙️ System',
+  plugin: '🔌 Plugin',
 };
 
 function getGroupLabel(group: string): string {
   return GROUP_LABELS[group] || `📌 ${group}`;
 }
 
-export function ToolSelectorPanel({ tools, selected, setSelected, onClose }: ToolSelectorPanelProps) {
+export function ToolSelectorPanel({ tools, selected, setSelected, onClose, compact, onSaveGroup }: ToolSelectorPanelProps) {
   const t = useT();
   const storeLocale = useSettingsStore((s) => s.locale);
   const isZh = storeLocale === 'zh' || !storeLocale;
   const { disabledTools } = useSettingsStore();
+  const groupNameRef = useRef<HTMLInputElement>(null);
+  const [groupName, setGroupName] = useState('');
 
   const enabledTools = useMemo(() => tools.filter((tool) => !disabledTools.has(tool.name)), [tools, disabledTools]);
 
@@ -200,8 +202,8 @@ export function ToolSelectorPanel({ tools, selected, setSelected, onClose }: Too
         </button>
       </div>
 
-      {/* Grouped tool list — 3 columns */}
-      <div className="max-h-52 overflow-y-auto px-2 pb-1">
+      {/* Grouped tool list — 3 columns (2 in compact) */}
+      <div className={`${compact ? 'max-h-40' : 'max-h-52'} overflow-y-auto px-2 pb-1`}>
         {[...grouped.entries()].map(([group, groupTools]) => {
           const allChecked = groupTools.every(t => localSelected.has(t.name));
           const someChecked = groupTools.some(t => localSelected.has(t.name));
@@ -225,7 +227,7 @@ export function ToolSelectorPanel({ tools, selected, setSelected, onClose }: Too
                 {groupTools.filter(t => localSelected.has(t.name)).length}/{groupTools.length}
               </span>
             </div>
-            <div className="grid grid-cols-3 gap-x-1 gap-y-0.5">
+            <div className={`grid ${compact ? 'grid-cols-2' : 'grid-cols-3'} gap-x-1 gap-y-0.5`}>
               {groupTools.map((tool) => {
                 const displayName = (isZh && tool.nameCn) || tool.name;
                 const isChecked = localSelected.has(tool.name);
@@ -258,6 +260,38 @@ export function ToolSelectorPanel({ tools, selected, setSelected, onClose }: Too
           </div>
         )}
       </div>
+
+      {/* Save as Group */}
+      {onSaveGroup && localSelected.size > 0 && (
+        <div className={`flex items-center gap-1.5 border-t border-zinc-100 dark:border-zinc-800 ${compact ? 'px-2 py-1' : 'px-3 py-1.5'}`}>
+          <input
+            ref={groupNameRef}
+            type="text"
+            value={groupName}
+            onChange={(e) => setGroupName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && groupName.trim()) {
+                onSaveGroup(groupName.trim());
+                setGroupName('');
+              }
+            }}
+            placeholder={t('toolmode.saveGroupName')}
+            className={`flex-1 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded focus:outline-none focus:ring-1 focus:ring-purple-500 text-zinc-800 dark:text-zinc-200 ${compact ? 'px-2 py-0.5 text-[10px]' : 'px-2 py-1 text-[11px]'}`}
+          />
+          <button
+            onClick={() => {
+              if (groupName.trim()) {
+                onSaveGroup(groupName.trim());
+                setGroupName('');
+              }
+            }}
+            disabled={!groupName.trim()}
+            className={`rounded font-medium bg-purple-500 text-white hover:bg-purple-600 disabled:opacity-40 transition-colors shrink-0 ${compact ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-[12px]'}`}
+          >
+            {t('toolmode.saveGroup')}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -38,6 +38,13 @@ const DEFAULT_CONFIG: SandboxConfig = {
 // ---------------------------------------------------------------------------
 
 export class CodeSandboxService {
+  private _pythonFullAccess = false;
+
+  /** Enable full Python import access (bypass SAFE_MODULES whitelist). */
+  setPythonFullAccess(enabled: boolean): void {
+    this._pythonFullAccess = enabled;
+  }
+
   /**
    * Execute code in a sandboxed environment.
    *
@@ -53,6 +60,10 @@ export class CodeSandboxService {
     config?: Partial<SandboxConfig>,
   ): Promise<SandboxResult> {
     const merged: SandboxConfig = { ...DEFAULT_CONFIG, ...config };
+    // Auto-inject allowAllImports when Python full access is enabled
+    if (language === 'python' && this._pythonFullAccess) {
+      merged.allowAllImports = true;
+    }
 
     switch (language) {
       case 'javascript':

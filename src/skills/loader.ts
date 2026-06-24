@@ -66,6 +66,7 @@ export function parseSkillMarkdown(md: string): SkillConfig {
       name: t['name'] as string,
       description: t['description'] as string,
       parameters: (t['parameters'] as Record<string, unknown>) ?? {},
+      returns: (t['returns'] as string) || undefined,
       nameCn: (t['name_cn'] as string) || undefined,
       descriptionCn: (t['description_cn'] as string) || undefined,
     }));

@@ -1,8 +1,8 @@
-# OpenPaw Skill Plugin 开发指南
+# Handy Skill Plugin 开发指南
 
 ## 概述
 
-OpenPaw 支持通过插件机制扩展 Skill 系统。外部开发者可以按照本指南的接口规范编写自定义工具，并接入项目。
+Handy 支持通过插件机制扩展 Skill 系统。外部开发者可以按照本指南的接口规范编写自定义工具，并接入项目。
 
 ## 插件结构
 

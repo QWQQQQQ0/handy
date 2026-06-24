@@ -1,12 +1,18 @@
 import { useRef, useCallback, useEffect, useImperativeHandle, forwardRef, useState, useDeferredValue, useMemo } from 'react';
-import { ChevronDown, ChevronUp, MessageSquarePlus, Trash2, MessageCircle, Terminal, CheckCircle, XCircle, Loader2 } from 'lucide-react';
-import { useChatStore } from '@/stores/chat-store';
+import { ChevronDown, ChevronUp, MessageSquarePlus, Trash2, Pencil, Check, X, MessageCircle, Terminal, CheckCircle, XCircle, Loader2 } from 'lucide-react';
+import { useChatStore, ToolMode } from '@/stores/chat-store';
+import { useSettingsStore } from '@/stores/settings-store';
 import { extractBbox, BboxOverlay } from '@/components/bbox-overlay';
 import { MessageInput } from '@/components/chat/message-input';
 import { StreamingText } from '@/components/chat/streaming-text';
 import { MarkdownBody } from '@/components/chat/markdown-body';
+import { ToolModeBar } from '@/components/chat/tool-mode-bar';
+import { ToolSelectorPanel } from '@/components/chat/tool-selector-panel';
 import { formatRelativeTime } from '@/i18n/strings';
+import type { SkillTool } from '@/skills/skill';
 import type { MessageContent, ChatMessage } from '@/types/message';
+import type { ToolGroup } from './types';
+import { writeLocal } from './utils';
 
 export interface ChatModeHandle {
   clearMessages: () => void;
@@ -16,6 +22,15 @@ interface Props {
   sendToModel: boolean;
   allowImagePaste: boolean;
   noSystemPrompt: boolean;
+  toolMode: ToolMode;
+  customTools: Set<string>;
+  groups: ToolGroup[];
+  executorReady: boolean;
+  onToolModeChange: (mode: ToolMode) => void;
+  onCustomToolsChange: (tools: Set<string>) => void;
+  onSaveGroup: (name: string) => void;
+  onDeleteGroup: (groupId: string) => void;
+  onGroupSelect: (groupId: string) => void;
 }
 
 function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
@@ -260,7 +275,134 @@ function ConversationDropdown({
   );
 }
 
-const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({ sendToModel, allowImagePaste, noSystemPrompt }, ref) {
+// ── Float message bubble with hover delete/edit ──
+
+function FloatMessageBubble({
+  message,
+  isStreaming,
+  text,
+  bbox,
+  userImage,
+  onDelete,
+  onEdit,
+}: {
+  message: ChatMessage;
+  isStreaming: boolean;
+  text: string;
+  bbox: ReturnType<typeof extractBbox>;
+  userImage: string | null;
+  onDelete: (id: string) => void;
+  onEdit: (id: string, content: string) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+
+  // Only user text messages can be edited
+  const canEdit = message.role === 'user' && typeof message.content === 'string' && (message.status === 'done' || message.status === 'error') && !isStreaming;
+  const canDelete = message.role === 'user' && (message.status === 'done' || message.status === 'error') && !isStreaming;
+
+  if (editing && typeof message.content === 'string') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] w-full">
+          <textarea
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            className="w-full bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-blue-400 dark:border-blue-600 rounded-lg px-2.5 py-1.5 text-[12px] leading-relaxed resize-y min-h-[48px] focus:outline-none focus:ring-1 focus:ring-blue-400"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && editValue.trim()) { e.preventDefault(); onEdit(message.id, editValue); setEditing(false); }
+              if (e.key === 'Escape') { setEditing(false); }
+            }}
+          />
+          <div className="flex gap-1 mt-1 justify-end">
+            <button
+              onClick={() => setEditing(false)}
+              className="px-2 py-0.5 text-[10px] text-zinc-500 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => { if (editValue.trim()) { onEdit(message.id, editValue); setEditing(false); } }}
+              className="px-2 py-0.5 text-[10px] text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[13px] leading-relaxed ${
+        message.role === 'user'
+          ? 'bg-blue-600 text-white'
+          : message.status === 'error'
+          ? 'bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400'
+          : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100'
+      }`}>
+        {message.role === 'user' && Array.isArray(message.content) && (
+          <div className="flex gap-1 mb-1 flex-wrap">
+            {message.content.filter((p) => 'type' in p && p.type === 'image_url').map((p, i) => (
+              <img key={i} src={(p as { image_url: { url: string } }).image_url.url} alt="" className="max-w-[120px] max-h-[80px] rounded object-cover" />
+            ))}
+          </div>
+        )}
+        {message.role === 'assistant' && (
+          <>
+            {message.reasoning_content && <ThinkingBlock content={message.reasoning_content} streaming={isStreaming} />}
+            {isStreaming
+              ? <StreamingText text={text} isStreaming={isStreaming} />
+              : <MarkdownBody content={text} />
+            }
+          </>
+        )}
+        {message.role === 'user' && typeof message.content === 'string' && (
+          <div className="whitespace-pre-wrap break-words">{text}</div>
+        )}
+        {bbox && userImage && <BboxOverlay imageUrl={userImage} bbox={bbox} />}
+        {isStreaming && !text && (
+          <span className="inline-block w-2 h-4 bg-zinc-400 animate-pulse rounded-sm" />
+        )}
+      </div>
+      {(canEdit || canDelete) && (
+        <div className={`flex flex-col items-center gap-0.5 self-start mt-1 ml-0.5 transition-opacity ${hovered ? 'opacity-100' : 'opacity-0'}`}>
+          {canEdit && (
+            <button
+              onClick={() => { setEditValue(typeof message.content === 'string' ? message.content : ''); setEditing(true); }}
+              className="p-0.5 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+              title="编辑"
+            >
+              <Pencil size={11} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300" />
+            </button>
+          )}
+          {canDelete && (
+            <button
+              onClick={() => onDelete(message.id)}
+              className="p-0.5 rounded hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+              title="删除"
+            >
+              <Trash2 size={11} className="text-zinc-400 hover:text-red-500" />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
+  sendToModel, allowImagePaste, noSystemPrompt,
+  toolMode, customTools, groups,
+  onToolModeChange, onCustomToolsChange, onSaveGroup, onDeleteGroup, onGroupSelect,
+  executorReady,
+}, ref) {
   const {
     messages,
     isStreaming,
@@ -273,10 +415,14 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({ sendToMod
     rejectToolCall,
     awaitingUserInput,
     submitUserInput,
+    deleteMessage,
+    editMessage,
   } = useChatStore();
 
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [manualMode, setManualMode] = useState(false);
+  const [allTools, setAllTools] = useState<SkillTool[]>([]);
+  const [showSelectorPanel, setShowSelectorPanel] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -290,9 +436,13 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({ sendToMod
       if (store.providers.length === 0) {
         await store.load();
       }
+      // 加载工具列表（用于选择面板）
+      const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
+      const exec = getBuiltinExecutor();
+      if (exec?.allTools && exec.allTools.length > 0) setAllTools(exec.allTools);
       setReady(true);
     })();
-  }, []);
+  }, [executorReady]);
 
   useImperativeHandle(ref, () => ({
     clearMessages: () => newChat(),
@@ -302,10 +452,25 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({ sendToMod
   useEffect(() => { setManualMode(false); setFormValues({}); }, [awaitingUserInput]);
 
   const handleSend = useCallback(async (content: MessageContent) => {
-    if (!sendToModel) return;
+    if (!sendToModel) {
+      // 本地模式：消息直接渲染，不联网发给 LLM
+      const newMsg = {
+        id: crypto.randomUUID(),
+        conversationId: activeConversation?.id ?? '',
+        role: 'user' as const,
+        content,
+        timestamp: new Date().toISOString(),
+        status: 'done' as const,
+      };
+      useChatStore.setState((s) => ({ messages: [...s.messages, newMsg] }));
+      return;
+    }
     if (!ready) return;
+    // 同步浮窗的 toolMode 到 store，让 sendMessage 使用正确的工具筛选
+    useChatStore.getState().setToolMode(toolMode);
+    useChatStore.getState().setCustomTools(customTools);
     await sendMessage(content, '', { noSystemPrompt });
-  }, [sendToModel, sendMessage, ready, noSystemPrompt]);
+  }, [sendToModel, sendMessage, ready, noSystemPrompt, toolMode, customTools, activeConversation?.id]);
 
   // Use deferred value to avoid DOM race conditions during streaming
   const deferredMessages = useDeferredValue(messages);
@@ -399,39 +564,16 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({ sendToMod
                 : null;
 
               return (
-                <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[13px] leading-relaxed ${
-                    msg.role === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : msg.status === 'error'
-                      ? 'bg-red-50 dark:bg-red-950 text-red-600 dark:text-red-400'
-                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100'
-                  }`}>
-                    {msg.role === 'user' && Array.isArray(msg.content) && (
-                      <div className="flex gap-1 mb-1 flex-wrap">
-                        {msg.content.filter((p) => 'type' in p && p.type === 'image_url').map((p, i) => (
-                          <img key={i} src={(p as { image_url: { url: string } }).image_url.url} alt="" className="max-w-[120px] max-h-[80px] rounded object-cover" />
-                        ))}
-                      </div>
-                    )}
-                    {msg.role === 'assistant' && (
-                      <>
-                        {msg.reasoning_content && <ThinkingBlock content={msg.reasoning_content} streaming={isStreaming} />}
-                        {isStreaming
-                          ? <StreamingText text={text} isStreaming={isStreaming} />
-                          : <MarkdownBody content={text} />
-                        }
-                      </>
-                    )}
-                    {msg.role === 'user' && typeof msg.content === 'string' && (
-                      <div className="whitespace-pre-wrap break-words">{text}</div>
-                    )}
-                    {bbox && userImage && <BboxOverlay imageUrl={userImage} bbox={bbox} />}
-                    {isStreaming && !text && (
-                      <span className="inline-block w-2 h-4 bg-zinc-400 animate-pulse rounded-sm" />
-                    )}
-                  </div>
-                </div>
+                <FloatMessageBubble
+                  key={msg.id}
+                  message={msg}
+                  isStreaming={!!isStreaming}
+                  text={text}
+                  bbox={bbox}
+                  userImage={userImage}
+                  onDelete={deleteMessage}
+                  onEdit={editMessage}
+                />
               );
             });
           });
@@ -522,6 +664,50 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({ sendToMod
           )}
         </div>
       )}
+
+      {/* Tool selector panel (favorites/custom mode) */}
+      {showSelectorPanel && (toolMode === ToolMode.favorites || toolMode === ToolMode.custom) && allTools.length > 0 && (
+        <ToolSelectorPanel
+          tools={allTools}
+          selected={toolMode === ToolMode.favorites ? useSettingsStore.getState().favoriteTools : customTools}
+          setSelected={toolMode === ToolMode.favorites ? useSettingsStore.getState().setFavoriteTools : onCustomToolsChange}
+          onClose={() => setShowSelectorPanel(false)}
+          compact={true}
+          onSaveGroup={toolMode === ToolMode.custom ? onSaveGroup : undefined}
+        />
+      )}
+
+      {/* Tool mode bar (compact) */}
+      <ToolModeBar
+        mode={toolMode}
+        selectedCount={customTools.size}
+        onModeChanged={(m) => {
+          onToolModeChange(m);
+          if (m === ToolMode.custom || m === ToolMode.favorites) {
+            setShowSelectorPanel(true);
+          } else {
+            setShowSelectorPanel(false);
+          }
+        }}
+        onFavoritesDoubleClick={() => {
+          onToolModeChange(ToolMode.favorites);
+          writeLocal('float_tool_mode', ToolMode.favorites);
+          setShowSelectorPanel(true);
+        }}
+        compact={true}
+        groups={groups}
+        onGroupSelect={(groupId) => {
+          const group = groups.find(g => g.id === groupId);
+          if (group) {
+            onCustomToolsChange(new Set(group.tools));
+            onToolModeChange(ToolMode.custom);
+            writeLocal('float_custom_tools', [...group.tools]);
+            writeLocal('float_tool_mode', ToolMode.custom);
+            setShowSelectorPanel(true);
+          }
+        }}
+        onDeleteGroup={onDeleteGroup}
+      />
 
       <MessageInput
         onSend={handleSend}

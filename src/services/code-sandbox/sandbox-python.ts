@@ -42,6 +42,7 @@ export async function executePython(
       code,
       timeoutSec: Math.ceil(timeoutMs / 1000),
       params: context,
+      allowAllImports: config?.allowAllImports ?? false,
     });
 
     return {

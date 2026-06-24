@@ -156,7 +156,8 @@
       "Bash(wc *)",
       "Bash(wmic logicaldisk *)",
       "Bash(./gradlew clean *)",
-      "Bash(where python3 *)"
+      "Bash(where python3 *)",
+      "Bash(/d/software/android_studio/JDK/platform-tools/sqlite3 *)"
     ]
   }
 }

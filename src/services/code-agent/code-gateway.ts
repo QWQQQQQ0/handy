@@ -16,16 +16,20 @@ export interface CodeGatewayResponse {
 // Code agent 允许使用的工具
 const CODE_TOOL_FILTER = new Set([
   // 文件操作
-  'read_file', 'write_file', 'glob', 'search_files',
+  'read_file', 'write_file', 'glob_files', 'grep_files',
   // 代码生成 & 执行
-  'generate_code', 'generate_project', 'execute_code', 'iterate_code',
+  'generate_code', 'generate_project', 'execute_code',
   'save_code', 'list_code',
+  // App 入库
+  'save_app', 'save_project',
   // Shell
   'run_command',
   // 联网搜索
   'web_search', 'web_fetch',
   // 记忆
   'agent_memory_update',
+  // 历史聊天搜索
+  'search_chat_history',
   // 控制
   'think', 'request_user_input', 'code_done', 'finalize',
 ]);
@@ -71,6 +75,7 @@ export class CodeGateway {
       maxTurns: maxTurns ?? 20,
       signal,
       toolFilter: CODE_TOOL_FILTER,
+      chatMessages: messages,
       onConfirm,
       onUserInput,
       onProgress,

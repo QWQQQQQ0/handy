@@ -8,7 +8,6 @@ import { GoogleAdapter } from '@/adapters/google';
 import type { LLMAdapter } from '@/adapters/types';
 import type { LLMMessage, ToolCallResponse } from '@/types/message';
 import type { ProviderConfig } from '@/types/provider';
-import { formatMemoriesForPrompt } from '@/services/agent-memory';
 import systemPrompts from '@/config/system-prompts.json';
 // LLM 缓存存储和命中检查已全部移至前端 client.ts
 import type { IModelService } from '@/interfaces/model-service';
@@ -34,6 +33,7 @@ export enum ModelScenario {
   docAgent = 'docAgent',
   webAgent = 'webAgent',
   codeAgent = 'codeAgent',
+  freeAgent = 'freeAgent',
 }
 
 export interface LengthCheckResult {
@@ -52,13 +52,14 @@ const MAX_TOKENS_PER_SCENARIO: Record<ModelScenario, number> = {
   [ModelScenario.watcherResponse]: 8000,
   [ModelScenario.recorderAnalysis]: 8000,
   [ModelScenario.raw]: 96000,
-  [ModelScenario.codeGeneration]: 32000,
-  [ModelScenario.codeIteration]: 32000,
+  [ModelScenario.codeGeneration]: 96000,
+  [ModelScenario.codeIteration]: 96000,
   [ModelScenario.taskDecomposer]: 4000,
   [ModelScenario.taskVerifier]: 8000,
   [ModelScenario.docAgent]: 32000,
   [ModelScenario.webAgent]: 16000,
-  [ModelScenario.codeAgent]: 32000,
+  [ModelScenario.codeAgent]: 96000,
+  [ModelScenario.freeAgent]: 96000,
   [ModelScenario.adminAgent]: 16000,
   [ModelScenario.complexityJudge]: 8000,
 };
@@ -196,9 +197,6 @@ export class LlmGateway implements IModelService {
     switch (scenario) {
       case ModelScenario.chat:
         base = extra ? `${systemPrompts.chat}\n\n${extra}` : systemPrompts.chat;
-        // Inject agent long-term memories into system prompt
-        { const mems = formatMemoriesForPrompt('chat');
-          if (mems) base += mems; }
         break;
       case ModelScenario.desktopAutomation:
         base = systemPrompts.desktopAutomation.replaceAll('{goal}', goal);
@@ -245,6 +243,9 @@ export class LlmGateway implements IModelService {
         break;
       case ModelScenario.codeAgent:
         base = (systemPrompts as Record<string, string>).codeAgent ?? systemPrompts.chat;
+        break;
+      case ModelScenario.freeAgent:
+        base = (systemPrompts as Record<string, string>).freeAgent ?? systemPrompts.chat;
         break;
     }
     if (requiredTool) {

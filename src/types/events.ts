@@ -1,7 +1,7 @@
 // Generic event types for cross-module event bus
 // Any module (watcher, agent, web, phone) emits AppEvent; consumers subscribe independently.
 
-export type AppEventSource = 'watcher' | 'agent' | 'web_agent' | 'phone_agent' | 'app';
+export type AppEventSource = 'watcher' | 'scheduler' | 'agent' | 'web_agent' | 'phone_agent' | 'app';
 export type AppEventLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface AppEvent {

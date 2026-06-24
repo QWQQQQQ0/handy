@@ -66,6 +66,9 @@ function getActionIcon(action: string) {
     case 'loop_end':
       return <Repeat size={14} />;
     case 'if':
+    case 'else':
+    case 'endif':
+    case 'goto':
     case 'break':
     case 'continue':
       return <GitBranch size={14} />;

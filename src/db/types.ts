@@ -30,6 +30,10 @@ export interface MessageRow {
   content: string;
   timestamp: string;
   reasoning_content?: string | null;
+  tool_calls?: string | null;
+  tool_call_id?: string | null;
+  agent_internal?: number | null;
+  agent_type?: string | null;
 }
 
 export interface SavedAppRow {
@@ -37,6 +41,13 @@ export interface SavedAppRow {
   name: string;
   code: string;
   created_at: string;
+  description?: string;
+  project_type?: string;
+  files_json?: string;
+  entry_file?: string;
+  updated_at?: string;
+  source_type?: string;
+  local_path?: string;
 }
 
 export interface SkillRow {

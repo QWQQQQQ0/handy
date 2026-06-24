@@ -13,11 +13,11 @@ usage: |
   2. **Read a file**: read_file({file_path}) — loads file content from the project
   3. **Generate code**: generate_code({task, language, context?, constraints?}) — LLM generates code from a description
   4. **Execute code**: execute_code({code, language, timeout_ms?}) — runs code in a sandbox (JS/Python/SQL/HTML)
-  5. **Iterate code**: iterate_code({task, code, language, max_iterations?}) — auto-fix errors up to 3 iterations
-  6. **Save to registry**: save_code({name, code, language, description?, tags?}) — persist for reuse
-  7. **Search registry**: list_code({search?, language?, tag?}) — find saved code snippets
-  8. **Run shell command**: run_command({command, cwd?, timeout_ms?}) — execute any CLI tool (npm, git, python, etc.)
-  9. **Search files**: search_files({pattern, path?, glob?, case_sensitive?, max_results?}) — grep-like content search
+  5. **Save to registry**: save_code({name, code, language, description?, tags?}) — persist for reuse
+  6. **Search registry**: list_code({search?, language?, tag?}) — find saved code snippets
+  7. **Run shell command**: run_command({command, cwd?, timeout_ms?}) — execute any CLI tool (npm, git, python, etc.)
+  8. **Find files**: glob_files({pattern, path?}) — match filenames by glob pattern
+  9. **Search content**: grep_files({pattern, path?, glob?, case_sensitive?, max_results?}) — regex search file contents
 
   ## Execution Environment
 
@@ -34,11 +34,11 @@ usage_cn: |
   2. **读取文件**：read_file({file_path}) — 从项目加载文件内容
   3. **生成代码**：generate_code({task, language, context?, constraints?}) — LLM 根据描述生成代码
   4. **执行代码**：execute_code({code, language, timeout_ms?}) — 在沙箱中运行代码（JS/Python/SQL/HTML）
-  5. **迭代代码**：iterate_code({task, code, language, max_iterations?}) — 自动修复错误（最多 3 次）
-  6. **保存到注册表**：save_code({name, code, language, description?, tags?}) — 持久化以供重用
-  7. **搜索注册表**：list_code({search?, language?, tag?}) — 查找已保存的代码片段
-  8. **执行命令**：run_command({command, cwd?, timeout_ms?}) — 执行任意 CLI 工具（npm、git、python 等）
-  9. **搜索文件**：search_files({pattern, path?, glob?, case_sensitive?, max_results?}) — 类 grep 内容搜索
+  5. **保存到注册表**：save_code({name, code, language, description?, tags?}) — 持久化以供重用
+  6. **搜索注册表**：list_code({search?, language?, tag?}) — 查找已保存的代码片段
+  7. **执行命令**：run_command({command, cwd?, timeout_ms?}) — 执行任意 CLI 工具（npm、git、python 等）
+  8. **查找文件**：glob_files({pattern, path?}) — 按 glob 模式匹配文件名
+  9. **搜索内容**：grep_files({pattern, path?, glob?, case_sensitive?, max_results?}) — 类 grep 内容搜索
 
   ## 执行环境
 
@@ -67,7 +67,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         "project_name": { "type": "string", "description": "Project name (auto-generated from request if omitted)" }
       },
       "required": ["request"]
-    }
+    },
+    "returns": "{\"project_id\":\"uuid\",\"name\":\"project name\",\"files\":{\"filename\":\"content\"},\"entry_file\":\"index.html\"}"
   },
   {
     "name": "write_file",
@@ -87,7 +88,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         }
       },
       "required": ["file_path", "content"]
-    }
+    },
+    "returns": "{\"path\":\"absolute file path\",\"written\":true,\"size\":number (bytes written)}"
   },
   {
     "name": "read_file",
@@ -111,7 +113,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         }
       },
       "required": ["file_path"]
-    }
+    },
+    "returns": "{\"path\":\"absolute file path\",\"content\":\"file content string\",\"line_count\":number}"
   },
   {
     "name": "generate_code",
@@ -139,7 +142,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         }
       },
       "required": ["task", "language"]
-    }
+    },
+    "returns": "{\"code\":\"generated source code\",\"allBlocks\":[\"individual code blocks\"],\"language\":\"the language used\",\"files\":{\"filepath\":\"content\"} (for multi-file generation),\"app_id\":\"uuid (if HTML auto-saved)\"}"
   },
   {
     "name": "execute_code",
@@ -164,36 +168,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         }
       },
       "required": ["code", "language"]
-    }
-  },
-  {
-    "name": "iterate_code",
-    "description": "Execute code in a loop, fixing errors via LLM up to 3 iterations. Returns final result and fixed code.",
-    "name_cn": "迭代代码",
-    "description_cn": "循环执行代码，通过 LLM 修复错误（最多 3 次迭代），返回最终结果和修复后的代码",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "task": {
-          "type": "string",
-          "description": "Original task description"
-        },
-        "code": {
-          "type": "string",
-          "description": "Initial code to execute and iterate on"
-        },
-        "language": {
-          "type": "string",
-          "description": "Language (javascript, python, sql, html)",
-          "enum": ["javascript", "python", "sql", "html"]
-        },
-        "max_iterations": {
-          "type": "number",
-          "description": "Maximum fix iterations (default 3)"
-        }
-      },
-      "required": ["task", "code", "language"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"output\":\"stdout/stderr text\",\"result\":\"return value\",\"error\":\"error if failed\",\"duration_ms\":number}"
   },
   {
     "name": "save_code",
@@ -227,7 +203,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         }
       },
       "required": ["name", "code", "language"]
-    }
+    },
+    "returns": "{\"code_id\":\"uuid\",\"name\":\"code name\",\"language\":\"language\",\"tags\":[\"tag1\"]}"
   },
   {
     "name": "list_code",
@@ -250,7 +227,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
           "description": "Optional tag filter"
         }
       }
-    }
+    },
+    "returns": "{\"codes\":[{\"id\":\"uuid\",\"name\":\"code name\",\"language\":\"language\",\"description\":\"...\",\"tags\":[...]}],\"count\":number}"
   },
   {
     "name": "run_command",
@@ -265,12 +243,13 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         "timeout_ms": { "type": "number", "description": "Timeout in milliseconds (default 30000)" }
       },
       "required": ["command"]
-    }
+    },
+    "returns": "{\"stdout\":\"command output\",\"stderr\":\"error output\",\"exit_code\":number}"
   },
   {
-    "name": "search_files",
+    "name": "grep_files",
     "description": "Search file contents by regex pattern (like grep). Returns matching file paths, line numbers, and surrounding context.",
-    "name_cn": "搜索文件",
+    "name_cn": "内容搜索",
     "description_cn": "按正则表达式搜索文件内容（类似 grep），返回匹配的文件路径、行号和上下文。",
     "parameters": {
       "type": "object",
@@ -283,12 +262,13 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         "context_lines": { "type": "number", "description": "Number of context lines before/after each match (default 0)" }
       },
       "required": ["pattern"]
-    }
+    },
+    "returns": "{\"files\":[{\"path\":\"matched file path\",\"matches\":[{\"line\":number,\"content\":\"matching line text\"}]}],\"total_matches\":number}"
   },
   {
-    "name": "glob",
-    "description": "Find files matching a glob pattern (e.g. \"**/*.ts\", \"src/**/*.test.*\"). Returns matching file paths sorted by modification time.",
-    "name_cn": "文件名匹配",
+    "name": "glob_files",
+    "description": "Find files by glob pattern (e.g. \"**/*.ts\", \"src/**/*.test.*\"). Returns matching file paths sorted by modification time.",
+    "name_cn": "文件名搜索",
     "description_cn": "按 glob 模式查找文件（如 \"**/*.ts\"），返回匹配的文件路径（按修改时间排序）。",
     "parameters": {
       "type": "object",
@@ -297,7 +277,8 @@ Code generation, file I/O, and sandbox execution tools for Developer Agents.
         "path": { "type": "string", "description": "Directory to search in (default: current directory)" }
       },
       "required": ["pattern"]
-    }
+    },
+    "returns": "{\"files\":[\"matched file path\"],\"count\":number}"
   }
 ]
 ```

@@ -36,6 +36,8 @@ export interface ChatMessage {
     args: Record<string, unknown>;
     status: 'running' | 'done' | 'error';
   };
+  /** 任务上下文 — 上次 agent 执行的产出物，供后续 agent 串联 */
+  _taskContext?: Record<string, string>;
 }
 
 export interface LLMMessage {

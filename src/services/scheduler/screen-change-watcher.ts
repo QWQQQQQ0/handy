@@ -92,22 +92,20 @@ export class ScreenChangeWatcher extends BaseWatcher {
     const triggerConfig = this.config.trigger as ScreenChangeTriggerConfig;
     const action = this.config.action;
 
+    // 屏幕特有上下文注入到 variables 和 currentState
+    const variables: Record<string, string> = { ...triggerResult.variables };
+    if (triggerConfig.monitorTarget?.windowHwnd) {
+      variables['targetHwnd'] = String(triggerConfig.monitorTarget.windowHwnd);
+    }
+
     const actionCtx: ActionContext = {
       ...this.buildBaseActionCtx(triggerResult, signal),
       currentState: this.buildCurrentState(triggerConfig, action),
-      monitorTarget: triggerConfig.monitorTarget,
-      preparationGoal: triggerConfig.preparationGoal,
-      actionGoal: triggerConfig.actionGoal,
-      lastExecutionSummary: action.type === 'agent_execute' ? action.lastExecution?.summary : undefined,
+      variables,
     };
 
     this.emit('trigger_start', 'info', `Triggering action: ${action.type}`);
     const result = await executeAction(action, actionCtx);
-
-    // 学到了新的工作流模板 → 通知 WatcherManager 持久化
-    if (result.learnedWorkflow && result.learnedWorkflow.length > 0 && this._onWorkflowLearned) {
-      this._onWorkflowLearned(result.learnedWorkflow);
-    }
 
     // 执行摘要 → 持久化供下次执行参考
     if (result.executionSummary && this._onExecutionComplete) {

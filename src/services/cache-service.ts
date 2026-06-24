@@ -671,127 +671,224 @@ export async function getAllStepCacheRows(): Promise<StepCacheRow[]> {
   return db.query<StepCacheRow>('SELECT * FROM step_cache ORDER BY hit_count DESC LIMIT 200');
 }
 
-// ── Watcher config CRUD ──
+// ── Scheduled task CRUD ──
 
-import type { WatcherConfig, ScreenRegion, ActionConfig } from '@/types/watcher';
+import type { TaskConfig, ScreenChangeTriggerConfig, TimerTriggerConfig } from '@/types/scheduler';
 
-export async function storeWatcherConfig(config: WatcherConfig): Promise<void> {
+export async function storeScheduledTask(config: TaskConfig): Promise<void> {
   const db = await getDB();
   const now = Math.floor(Date.now() / 1000);
-  // Build trigger_json from WatcherConfig fields for generic scheduler
-  const triggerJson = JSON.stringify({
-    type: 'screen_change',
-    pollIntervalMs: config.pollIntervalMs,
-    cooldownMs: config.cooldownMs,
-    debounceMs: config.debounceMs,
-    minConfidence: config.minConfidence ?? 0.9,
-    monitorTarget: config.monitorTarget,
-    region: config.region,
-    diffStrategy: config.diffStrategy,
-    regionMode: config.regionMode ?? 'manual',
-    regionDescription: config.regionDescription,
-  });
+  const triggerJson = JSON.stringify(config.trigger);
+  const taskType = config.trigger.type;
+  const action = config.action;
+
+  // Extract screen-specific fields from trigger
+  const sc = config.trigger.type === 'screen_change' ? config.trigger as ScreenChangeTriggerConfig : null;
+  const timer = config.trigger.type === 'timer' ? config.trigger as TimerTriggerConfig : null;
+
   await db.execute(
-    `INSERT OR REPLACE INTO watcher_configs
-     (id, name, enabled, monitor_target_json, region_json, poll_interval_ms, diff_strategy, debounce_ms, cooldown_ms, min_confidence, action_json, context, region_mode, region_description, created_at, updated_at, trigger_json, task_type, preparation_goal, action_goal, tool_mode, custom_tools)
+    `INSERT OR REPLACE INTO scheduled_tasks
+     (id, name, enabled, task_type, trigger_json, action_json, context,
+      monitor_target_json, region_json, poll_interval_ms, diff_strategy,
+      debounce_ms, cooldown_ms, min_confidence, region_mode, region_description,
+      preparation_goal, action_goal, tool_mode, custom_tools, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       config.id,
       config.name,
       config.enabled ? 1 : 0,
-      JSON.stringify(config.monitorTarget),
-      JSON.stringify(config.region),
-      config.pollIntervalMs,
-      config.diffStrategy,
-      config.debounceMs,
-      config.cooldownMs,
-      config.minConfidence ?? 0.9,
-      JSON.stringify(config.action),
+      taskType,
+      triggerJson,
+      JSON.stringify(action),
       config.context ?? null,
-      config.regionMode ?? 'manual',
-      config.regionDescription ?? null,
+      JSON.stringify(sc?.monitorTarget ?? { type: 'fullscreen' }),
+      JSON.stringify(sc?.region ?? { x: 0, y: 0, width: 1, height: 1 }),
+      sc?.pollIntervalMs ?? timer?.intervalMs ?? 2000,
+      sc?.diffStrategy ?? 'fast_visual',
+      sc?.debounceMs ?? 0,
+      timer?.cooldownMs ?? sc?.cooldownMs ?? 5000,
+      sc?.minConfidence ?? 0.9,
+      sc?.regionMode ?? 'manual',
+      sc?.regionDescription ?? null,
+      sc?.preparationGoal ?? null,
+      sc?.actionGoal ?? null,
+      (action.type === 'agent_execute' ? action.toolMode : null) ?? 'all',
+      (action.type === 'agent_execute' ? JSON.stringify(action.customTools ?? []) : null),
       config.createdAt,
       now,
-      triggerJson,
-      'screen_change',
-      config.preparationGoal ?? null,
-      config.actionGoal ?? null,
-      config.toolMode ?? 'all',
-      config.customTools ? JSON.stringify(config.customTools) : null,
     ],
   );
 }
 
-export async function getWatcherConfig(id: string): Promise<WatcherConfig | null> {
+export async function getScheduledTask(id: string): Promise<TaskConfig | null> {
   const db = await getDB();
   const row = await db.get<{
     id: string; name: string; enabled: number;
-    region_json: string; poll_interval_ms: number; diff_strategy: string;
-    debounce_ms: number; cooldown_ms: number; min_confidence: number; action_json: string;
+    task_type: string; trigger_json: string; action_json: string;
     context: string | null; created_at: number; updated_at: number;
-    region_mode?: string | null; region_description?: string | null;
-  }>('SELECT * FROM watcher_configs WHERE id = ?', [id]);
+    monitor_target_json?: string | null;
+    region_json?: string | null;
+    poll_interval_ms?: number | null;
+    diff_strategy?: string | null;
+    debounce_ms?: number | null;
+    cooldown_ms?: number | null;
+    min_confidence?: number | null;
+    region_mode?: string | null;
+    region_description?: string | null;
+    preparation_goal?: string | null;
+    action_goal?: string | null;
+    tool_mode?: string | null;
+    custom_tools?: string | null;
+  }>('SELECT * FROM scheduled_tasks WHERE id = ?', [id]);
   if (!row) return null;
-  return rowToWatcherConfig(row);
+  return rowToScheduledTask(row);
 }
 
-export async function getAllWatcherConfigs(): Promise<WatcherConfig[]> {
+export async function getAllScheduledTasks(): Promise<TaskConfig[]> {
   const db = await getDB();
   const rows = await db.query<{
     id: string; name: string; enabled: number;
-    region_json: string; poll_interval_ms: number; diff_strategy: string;
-    debounce_ms: number; cooldown_ms: number; min_confidence: number; action_json: string;
+    task_type: string; trigger_json: string; action_json: string;
     context: string | null; created_at: number; updated_at: number;
-    region_mode?: string | null; region_description?: string | null;
-  }>('SELECT * FROM watcher_configs ORDER BY created_at DESC');
-  return rows.map(rowToWatcherConfig);
+    monitor_target_json?: string | null;
+    region_json?: string | null;
+    poll_interval_ms?: number | null;
+    diff_strategy?: string | null;
+    debounce_ms?: number | null;
+    cooldown_ms?: number | null;
+    min_confidence?: number | null;
+    region_mode?: string | null;
+    region_description?: string | null;
+    preparation_goal?: string | null;
+    action_goal?: string | null;
+    tool_mode?: string | null;
+    custom_tools?: string | null;
+  }>('SELECT * FROM scheduled_tasks ORDER BY created_at DESC');
+  return rows.map(rowToScheduledTask);
 }
 
-export async function deleteWatcherConfig(id: string): Promise<void> {
+export async function deleteScheduledTask(id: string): Promise<void> {
   const db = await getDB();
-  await db.execute('DELETE FROM watcher_configs WHERE id = ?', [id]);
+  await db.execute('DELETE FROM scheduled_tasks WHERE id = ?', [id]);
 }
 
-function rowToWatcherConfig(row: {
+function rowToScheduledTask(row: {
   id: string; name: string; enabled: number;
-  region_json: string; poll_interval_ms: number; diff_strategy: string;
-  debounce_ms: number; cooldown_ms: number; min_confidence: number; action_json: string;
+  task_type: string; trigger_json: string; action_json: string;
   context: string | null; created_at: number; updated_at: number;
   monitor_target_json?: string | null;
+  region_json?: string | null;
+  poll_interval_ms?: number | null;
+  diff_strategy?: string | null;
+  debounce_ms?: number | null;
+  cooldown_ms?: number | null;
+  min_confidence?: number | null;
   region_mode?: string | null;
   region_description?: string | null;
   preparation_goal?: string | null;
   action_goal?: string | null;
   tool_mode?: string | null;
   custom_tools?: string | null;
-}): WatcherConfig {
-  // 解析 monitorTarget，如果不存在则默认为 fullscreen
-  const monitorTarget = row.monitor_target_json
-    ? JSON.parse(row.monitor_target_json)
-    : { type: 'fullscreen' };
+}): TaskConfig {
+  const triggerJson = row.trigger_json ? JSON.parse(row.trigger_json) : {};
+  const actionJson = JSON.parse(row.action_json) as Record<string, unknown>;
+
+  // Build trigger from stored JSON or fall back to individual columns
+  const trigger = Object.keys(triggerJson).length > 0
+    ? triggerJson as TaskConfig['trigger']
+    : buildTriggerFromColumns(row, actionJson);
+
+  // Build action
+  const action = buildActionFromRow(actionJson, row);
 
   return {
     id: row.id,
     name: row.name,
     enabled: row.enabled === 1,
-    monitorTarget,
-    region: JSON.parse(row.region_json) as ScreenRegion,
-    pollIntervalMs: row.poll_interval_ms,
-    diffStrategy: row.diff_strategy as WatcherConfig['diffStrategy'],
-    debounceMs: row.debounce_ms,
-    cooldownMs: row.cooldown_ms,
-    minConfidence: row.min_confidence,
-    action: JSON.parse(row.action_json) as ActionConfig,
+    trigger,
+    action,
     context: row.context ?? undefined,
-    regionMode: (row.region_mode as 'manual' | 'auto') ?? 'manual',
-    regionDescription: row.region_description ?? undefined,
-    preparationGoal: row.preparation_goal ?? undefined,
-    actionGoal: row.action_goal ?? undefined,
-    toolMode: row.tool_mode ?? 'all',
-    customTools: row.custom_tools ? JSON.parse(row.custom_tools) : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function buildTriggerFromColumns(row: {
+  task_type: string; poll_interval_ms?: number | null; cooldown_ms?: number | null;
+  debounce_ms?: number | null; min_confidence?: number | null;
+  monitor_target_json?: string | null; region_json?: string | null;
+  diff_strategy?: string | null; region_mode?: string | null;
+  region_description?: string | null; preparation_goal?: string | null;
+  action_goal?: string | null;
+}, actionJson: Record<string, unknown>): TaskConfig['trigger'] {
+  if (row.task_type === 'timer') {
+    return {
+      type: 'timer',
+      intervalMs: row.poll_interval_ms ?? 60000,
+      cooldownMs: row.cooldown_ms ?? 0,
+    };
+  }
+
+  const monitorTarget = row.monitor_target_json
+    ? JSON.parse(row.monitor_target_json)
+    : { type: 'fullscreen' };
+  const region = row.region_json
+    ? JSON.parse(row.region_json)
+    : { x: 0, y: 0, width: 1, height: 1 };
+
+  return {
+    type: 'screen_change',
+    pollIntervalMs: row.poll_interval_ms ?? 2000,
+    cooldownMs: row.cooldown_ms ?? 5000,
+    debounceMs: row.debounce_ms ?? 300,
+    minConfidence: row.min_confidence ?? 0.9,
+    monitorTarget,
+    region,
+    diffStrategy: (row.diff_strategy as ScreenChangeTriggerConfig['diffStrategy']) ?? 'fast_visual',
+    regionMode: (row.region_mode as ScreenChangeTriggerConfig['regionMode']) ?? 'manual',
+    regionDescription: row.region_description ?? undefined,
+    preparationGoal: row.preparation_goal ?? undefined,
+    actionGoal: row.action_goal ?? undefined,
+  };
+}
+
+function buildActionFromRow(actionJson: Record<string, unknown>, row: {
+  tool_mode?: string | null; custom_tools?: string | null;
+}): TaskConfig['action'] {
+  const type = (actionJson['type'] as string) || 'agent_execute';
+
+  switch (type) {
+    case 'notify':
+      return {
+        type: 'notify',
+        notifyTemplate: (actionJson['notifyTemplate'] as string) || '',
+      };
+    case 'workflow':
+      return {
+        type: 'workflow',
+        steps: (actionJson['steps'] as any[]) || [],
+        goalTemplate: actionJson['goalTemplate'] as string | undefined,
+      };
+    case 'script':
+      return {
+        type: 'script',
+        language: (actionJson['language'] as 'javascript' | 'python') || 'javascript',
+        code: (actionJson['code'] as string) || '',
+        timeoutMs: actionJson['timeoutMs'] as number | undefined,
+      };
+    case 'custom':
+      return {
+        type: 'custom',
+        handler: (actionJson['handler'] as string) || '',
+      };
+    default:
+      return {
+        type: 'agent_execute',
+        goalTemplate: (actionJson['goalTemplate'] as string) || '',
+        toolMode: row.tool_mode ?? 'all',
+        customTools: row.custom_tools ? JSON.parse(row.custom_tools) : undefined,
+      };
+  }
 }
 
 // ── App log CRUD ──
@@ -999,10 +1096,10 @@ class CacheServiceImpl implements ICacheService {
   deleteGoalDecomposition = deleteGoalDecomposition;
   clearGoalDecompositionCache = clearGoalDecompositionCache;
   testCacheHit = testCacheHit;
-  storeWatcherConfig = storeWatcherConfig;
-  getWatcherConfig = getWatcherConfig;
-  getAllWatcherConfigs = getAllWatcherConfigs;
-  deleteWatcherConfig = deleteWatcherConfig;
+  storeScheduledTask = storeScheduledTask;
+  getScheduledTask = getScheduledTask;
+  getAllScheduledTasks = getAllScheduledTasks;
+  deleteScheduledTask = deleteScheduledTask;
   storeAppLog = storeAppLog;
   queryAppLogs = queryAppLogs;
   cleanupOldLogs = cleanupOldLogs;

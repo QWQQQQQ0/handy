@@ -67,8 +67,8 @@ export class AppBuilderSkill implements Skill {
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
       await db.execute(
-        'INSERT INTO savedApps (id, name, code, description, project_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [id, name, code, description, 'single', now, now],
+        'INSERT INTO savedApps (id, name, code, description, project_type, source_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, name, code, description, 'single', 'generated', now, now],
       );
       return SkillOk(`App "${name}" saved successfully`, { id, name, description, code, created_at: now });
     } catch (e) {
@@ -97,9 +97,9 @@ export class AppBuilderSkill implements Skill {
       const entryContent = files[entryFile] || files[Object.keys(files)[0]] || '';
 
       await db.execute(
-        `INSERT INTO savedApps (id, name, code, description, project_type, files_json, entry_file, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, name, entryContent, description, 'multi', JSON.stringify(files), entryFile, now, now],
+        `INSERT INTO savedApps (id, name, code, description, project_type, source_type, files_json, entry_file, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, name, entryContent, description, 'multi', 'generated', JSON.stringify(files), entryFile, now, now],
       );
 
       return SkillOk(`Project "${name}" saved successfully`, {
@@ -119,7 +119,7 @@ export class AppBuilderSkill implements Skill {
     try {
       const db = await getDB();
       const rows = await db.query<SavedAppRow>(
-        'SELECT id, name, description, project_type, entry_file, created_at FROM savedApps ORDER BY created_at DESC',
+        'SELECT id, name, description, project_type, source_type, local_path, entry_file, created_at FROM savedApps ORDER BY created_at DESC',
       );
       return SkillOk(`Found ${rows.length} saved app${rows.length !== 1 ? 's' : ''}`, {
         apps: rows.map((r) => ({
@@ -127,6 +127,8 @@ export class AppBuilderSkill implements Skill {
           name: r.name,
           description: r.description,
           project_type: r.project_type || 'single',
+          source_type: r.source_type || 'generated',
+          local_path: r.local_path || '',
           entry_file: r.entry_file,
           created_at: r.created_at,
         })),

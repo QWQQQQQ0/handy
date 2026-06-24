@@ -1,10 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Eye, Plus, Trash2, Crosshair } from 'lucide-react';
+import { Clock, Plus, Trash2, Crosshair } from 'lucide-react';
 import { ToolMode } from '@/stores/chat-store';
-import { watcherManager } from '@/services/watcher';
+import { scheduledTaskManager } from '@/services/watcher';
 import { appEventBus } from '@/services/event-bus';
-import { getAllWatcherConfigs } from '@/services/cache-service';
-import type { WatcherConfig, WatcherState } from '@/types/watcher';
+import { getAllScheduledTasks } from '@/services/cache-service';
+import type { TaskConfig } from '@/types/scheduler';
+import type { WatcherState } from '@/types/watcher';
 import { WatcherDialog } from '@/components/watcher-dialog';
 
 interface Props {
@@ -14,7 +15,7 @@ interface Props {
 }
 
 export default function WatcherMode({ mode, toolMode, customTools }: Props) {
-  const [watcherConfigs, setWatcherConfigs] = useState<WatcherConfig[]>([]);
+  const [scheduledTasks, setScheduledTasks] = useState<TaskConfig[]>([]);
   const [watcherStates, setWatcherStates] = useState<Map<string, WatcherState>>(new Map());
   const [watcherLogs, setWatcherLogs] = useState<Array<{
     time: string;
@@ -28,27 +29,27 @@ export default function WatcherMode({ mode, toolMode, customTools }: Props) {
   }>>([]);
   const watcherLogsRef = useRef<HTMLDivElement>(null);
   const [showWatcherDialog, setShowWatcherDialog] = useState(false);
-  const [editWatcherConfig, setEditWatcherConfig] = useState<WatcherConfig | undefined>();
+  const [editTaskConfig, setEditTaskConfig] = useState<TaskConfig | undefined>();
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [compareImages, setCompareImages] = useState<{ baseline: string; current: string } | null>(null);
 
-  const refreshWatcherConfigs = useCallback(async () => {
-    const cfgs = await getAllWatcherConfigs();
-    setWatcherConfigs(cfgs);
+  const refreshScheduledTasks = useCallback(async () => {
+    const cfgs = await getAllScheduledTasks();
+    setScheduledTasks(cfgs);
   }, []);
 
-  // Expose refreshWatcherConfigs via a stable reference
-  const refreshRef = useRef(refreshWatcherConfigs);
-  refreshRef.current = refreshWatcherConfigs;
+  // Expose refreshScheduledTasks via a stable reference
+  const refreshRef = useRef(refreshScheduledTasks);
+  refreshRef.current = refreshScheduledTasks;
 
   useEffect(() => { watcherLogsRef.current?.scrollTo({ top: 0 }); }, [watcherLogs]);
 
   useEffect(() => {
     if (mode === 'watcher') {
-      refreshWatcherConfigs();
+      refreshScheduledTasks();
       const interval = setInterval(() => {
         const newStates = new Map<string, WatcherState>();
-        for (const { config, state } of watcherManager.getStates()) {
+        for (const { config, state } of scheduledTaskManager.getStates()) {
           newStates.set(config.id, state);
         }
         setWatcherStates(newStates);
@@ -73,86 +74,85 @@ export default function WatcherMode({ mode, toolMode, customTools }: Props) {
         unsub();
       };
     }
-  }, [mode, refreshWatcherConfigs]);
+  }, [mode, refreshScheduledTasks]);
 
-  const handleWatcherToggle = useCallback(async (config: WatcherConfig) => {
+  const handleWatcherToggle = useCallback(async (config: TaskConfig) => {
     const newEnabled = !config.enabled;
     try {
-      await watcherManager.update(config.id, { enabled: newEnabled });
+      await scheduledTaskManager.update(config.id, { enabled: newEnabled });
     } catch { /* ignore */ }
-    await refreshWatcherConfigs();
-  }, [refreshWatcherConfigs]);
+    await refreshScheduledTasks();
+  }, [refreshScheduledTasks]);
 
   const handleWatcherDelete = useCallback(async (id: string) => {
-    await watcherManager.remove(id);
-    await refreshWatcherConfigs();
-  }, [refreshWatcherConfigs]);
+    await scheduledTaskManager.remove(id);
+    await refreshScheduledTasks();
+  }, [refreshScheduledTasks]);
 
   const handleReResolve = useCallback(async (id: string) => {
     try {
-      await watcherManager.reResolveRegion(id);
+      await scheduledTaskManager.reResolveRegion(id);
     } catch { /* ignore */ }
   }, []);
 
-  const handleWatcherSave = useCallback(async (config: WatcherConfig) => {
-    const configWithTools: WatcherConfig = {
-      ...config,
-      toolMode: config.action.type === 'agent_execute' ? toolMode : undefined,
-      customTools: config.action.type === 'agent_execute' && toolMode === ToolMode.custom ? Array.from(customTools) : undefined,
-    };
-    if (editWatcherConfig) {
-      await watcherManager.update(editWatcherConfig.id, configWithTools);
+  const handleWatcherSave = useCallback(async (config: TaskConfig) => {
+    if (editTaskConfig) {
+      await scheduledTaskManager.update(editTaskConfig.id, config);
     } else {
-      await watcherManager.create(configWithTools);
+      await scheduledTaskManager.create(config);
     }
-    await refreshWatcherConfigs();
+    await refreshScheduledTasks();
     setShowWatcherDialog(false);
-    setEditWatcherConfig(undefined);
-  }, [editWatcherConfig, refreshWatcherConfigs, toolMode, customTools]);
+    setEditTaskConfig(undefined);
+  }, [editTaskConfig, refreshScheduledTasks, toolMode, customTools]);
 
   return (
     <>
       <div className="flex-1 overflow-y-auto px-2 py-1 min-h-0 scrollbar-hide">
         <button
-          onClick={() => { setEditWatcherConfig(undefined); setShowWatcherDialog(true); }}
+          onClick={() => { setEditTaskConfig(undefined); setShowWatcherDialog(true); }}
           className="w-full flex items-center justify-center gap-1 px-2 py-1.5 mb-2 rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700 text-[11px] text-zinc-500 hover:text-blue-500 hover:border-blue-400 dark:hover:border-blue-600 transition-colors"
         >
           <Plus size={12} />
           New Watcher
         </button>
 
-        {watcherConfigs.length === 0 ? (
+        {scheduledTasks.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-zinc-400 dark:text-zinc-500 text-[12px]">
-            <Eye size={24} className="mb-2 opacity-30" />
-            <p>No watchers configured</p>
-            <p className="text-[10px] mt-1">Click "New Watcher" to add one</p>
+            <Clock size={24} className="mb-2 opacity-30" />
+            <p>暂无后台任务</p>
+            <p className="text-[10px] mt-1">点击 "New Watcher" 创建</p>
           </div>
         ) : (
           <div className="space-y-1.5">
-            {watcherConfigs.map((config) => {
+            {scheduledTasks.map((config) => {
               const state = watcherStates.get(config.id);
               return (
                 <div key={config.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800">
                   <div className={`w-2 h-2 rounded-full shrink-0 ${state?.status === 'running' ? 'bg-green-500 animate-pulse' : state?.status === 'triggered' ? 'bg-blue-500' : 'bg-zinc-400'}`} />
                   <div
                     className="flex-1 min-w-0 cursor-pointer"
-                    onClick={() => { setEditWatcherConfig(config); setShowWatcherDialog(true); }}
+                    onClick={() => { setEditTaskConfig(config); setShowWatcherDialog(true); }}
                   >
                     <div className="text-[11px] font-medium text-zinc-900 dark:text-zinc-100 truncate">{config.name}</div>
                     <div className="text-[10px] text-zinc-400">
-                      {config.monitorTarget?.type === 'window' ? config.monitorTarget.windowTitle : 'Fullscreen'}
+                      {config.trigger.type === 'screen_change' && config.trigger.monitorTarget?.type === 'window'
+                        ? config.trigger.monitorTarget.windowTitle
+                        : config.trigger.type === 'timer'
+                        ? `定时 ${(config.trigger as any).intervalMs / 1000}s`
+                        : 'Fullscreen'}
                       {state && <span className="ml-2">Triggers: {state.triggerCount}</span>}
                       {state?.processing && <span className="ml-1 text-blue-500 animate-pulse">●</span>}
                       {state && state.queueSize > 0 && <span className="ml-1 text-amber-500">Q:{state.queueSize}</span>}
                     </div>
                   </div>
-                  {config.monitorTarget?.type === 'window' && (
+                  {config.trigger.type === 'screen_change' && config.trigger.monitorTarget?.type === 'window' && (
                     <button onClick={() => handleReResolve(config.id)} className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900" title="重新定位">
                       <Crosshair size={12} className="text-blue-500" />
                     </button>
                   )}
                   <button onClick={() => handleWatcherToggle(config)} className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700">
-                    <Eye size={12} className={config.enabled ? 'text-green-500' : 'text-zinc-400'} />
+                    <Clock size={12} className={config.enabled ? 'text-green-500' : 'text-zinc-400'} />
                   </button>
                   <button onClick={() => handleWatcherDelete(config.id)} className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-900">
                     <Trash2 size={12} className="text-red-400" />
@@ -261,9 +261,9 @@ export default function WatcherMode({ mode, toolMode, customTools }: Props) {
 
       {showWatcherDialog && (
         <WatcherDialog
-          config={editWatcherConfig}
+          config={editTaskConfig}
           onSave={handleWatcherSave}
-          onClose={() => { setShowWatcherDialog(false); setEditWatcherConfig(undefined); }}
+          onClose={() => { setShowWatcherDialog(false); setEditTaskConfig(undefined); }}
           compact={true}
         />
       )}

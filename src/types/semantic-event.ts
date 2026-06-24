@@ -132,7 +132,7 @@ export interface EventStats {
 export interface ManualStep {
   id: string;
   /** 步骤类型 */
-  stepType: 'tool_call' | 'llm_call';
+  stepType: 'tool_call' | 'llm_call' | 'if' | 'else' | 'endif' | 'goto';
   /** 插入位置（afterEventId 对应的录制事件之后，undefined 表示最前面） */
   afterEventId?: string;
   /** tool_call: 调用的 skill tool */
@@ -141,8 +141,16 @@ export interface ManualStep {
   toolArgs?: Record<string, unknown>;
   /** llm_call: 自定义提示词 */
   llmPrompt?: string;
+  /** llm_call: 是否启用多模态（附加上下文截图） */
+  multimodal?: boolean;
+  /** llm_call multimodal: 在 LLM 提示词中附加前序截图步骤的 stepId 列表 */
+  includeScreenshots?: string[];
   /** 人工写的步骤描述 */
   description: string;
   /** 该步骤需要的可用 skills（LLM 分析时参考） */
   requiredTools?: Array<{ name: string; description: string }>;
+  /** if: 条件表达式（如 "{{var}} > 5"、"{{clipboard}} != ''"） */
+  condition?: string;
+  /** goto: 跳转目标步骤 ID */
+  gotoStepId?: string;
 }

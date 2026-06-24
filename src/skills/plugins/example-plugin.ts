@@ -1,5 +1,5 @@
 /**
- * 示例插件 - 展示如何编写 OpenPaw Skill 插件
+ * 示例插件 - 展示如何编写 Handy Skill 插件
  *
  * 这个插件提供了一些实用的字符串处理和数据转换工具。
  */
@@ -15,7 +15,7 @@ const examplePlugin: SkillPlugin = {
     name: 'Example Utilities',
     version: '1.0.0',
     description: 'Example plugin with string and data utilities',
-    author: 'OpenPaw Team',
+    author: 'Handy Team',
     category: 'utility',
     nameCn: '示例工具集',
     descriptionCn: '包含字符串和数据处理工具的示例插件',

@@ -11,23 +11,27 @@ import { useSkillStore } from '@/stores/skill-store';
 import type { UserSkillConfig, AutomationStep } from '@/types/skill';
 import type { SkillTool } from '@/skills/skill';
 import { writeLocal } from './utils';
-import type { ActionLog, FloatMode } from './types';
+import type { ActionLog, FloatMode, ToolGroup } from './types';
 
 interface Props {
   toolMode: ToolMode;
   customTools: Set<string>;
+  groups: ToolGroup[];
   executorReady: boolean;
   allTools: SkillTool[];
   onToolModeChange: (mode: ToolMode) => void;
   onCustomToolsChange: (tools: Set<string>) => void;
+  onSaveGroup: (name: string) => void;
+  onDeleteGroup: (groupId: string) => void;
+  onGroupSelect: (groupId: string) => void;
   onRefreshWatcherConfigs: () => Promise<void>;
   onModeChange: (mode: FloatMode) => void;
   onAutomatingChange: (isAutomating: boolean) => void;
 }
 
 export default function TaskMode({
-  toolMode, customTools, executorReady, allTools,
-  onToolModeChange, onCustomToolsChange,
+  toolMode, customTools, groups, executorReady, allTools,
+  onToolModeChange, onCustomToolsChange, onSaveGroup, onDeleteGroup, onGroupSelect,
   onRefreshWatcherConfigs, onModeChange, onAutomatingChange,
 }: Props) {
   const [screenshot, setScreenshot] = useState<string | null>(null);
@@ -237,6 +241,10 @@ export default function TaskMode({
         selectedCount={customTools.size}
         onModeChanged={handleToolModeChange}
         onFavoritesDoubleClick={handleFavoritesDoubleClick}
+        compact={true}
+        groups={groups}
+        onGroupSelect={onGroupSelect}
+        onDeleteGroup={onDeleteGroup}
       />
 
       {showSelectorPanel && (toolMode === ToolMode.favorites || toolMode === ToolMode.custom) && (
@@ -245,6 +253,8 @@ export default function TaskMode({
           selected={toolMode === ToolMode.favorites ? favoriteTools : customTools}
           setSelected={toolMode === ToolMode.favorites ? setFavoriteTools : onCustomToolsChange}
           onClose={() => setShowSelectorPanel(false)}
+          compact={true}
+          onSaveGroup={toolMode === ToolMode.custom ? onSaveGroup : undefined}
         />
       )}
 

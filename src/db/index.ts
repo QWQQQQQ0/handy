@@ -135,19 +135,27 @@ CREATE TABLE IF NOT EXISTS goal_decomposition_cache (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
-CREATE TABLE IF NOT EXISTS watcher_configs (
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
+  task_type TEXT NOT NULL DEFAULT 'screen_change',
+  trigger_json TEXT NOT NULL DEFAULT '{}',
+  action_json TEXT NOT NULL,
+  context TEXT,
   monitor_target_json TEXT NOT NULL DEFAULT '{"type":"fullscreen"}',
-  region_json TEXT NOT NULL,
+  region_json TEXT NOT NULL DEFAULT '{"x":0,"y":0,"width":1,"height":1}',
   poll_interval_ms INTEGER NOT NULL DEFAULT 2000,
   diff_strategy TEXT NOT NULL DEFAULT 'fast_visual',
   debounce_ms INTEGER NOT NULL DEFAULT 300,
   cooldown_ms INTEGER NOT NULL DEFAULT 5000,
   min_confidence REAL NOT NULL DEFAULT 0.9,
-  action_json TEXT NOT NULL,
-  context TEXT,
+  region_mode TEXT NOT NULL DEFAULT 'manual',
+  region_description TEXT,
+  preparation_goal TEXT,
+  action_goal TEXT,
+  tool_mode TEXT DEFAULT 'all',
+  custom_tools TEXT,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
@@ -244,6 +252,30 @@ CREATE TABLE IF NOT EXISTS code_registry (
   hit_count INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_code_registry_lang ON code_registry(language);
+
+CREATE TABLE IF NOT EXISTS daily_memory_snapshots (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL UNIQUE,
+  summary_json TEXT NOT NULL,
+  compressed_text TEXT NOT NULL,
+  model TEXT NOT NULL,
+  token_count INTEGER DEFAULT 0,
+  conversation_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS long_term_memory (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL DEFAULT 'task_history',
+  content TEXT NOT NULL,
+  importance INTEGER DEFAULT 5,
+  source_date TEXT,
+  hit_count INTEGER DEFAULT 1,
+  last_updated_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ltm_type ON long_term_memory(type);
+CREATE INDEX IF NOT EXISTS idx_ltm_importance ON long_term_memory(importance);
 `;
 
 let _adapter: SQLiteAdapter | null = null;
@@ -322,17 +354,17 @@ async function runMigrations(db: SQLiteAdapter): Promise<void> {
   await addColumnIfMissing(db, 'skills', 'usage_cn', "TEXT DEFAULT ''");
   await addColumnIfMissing(db, 'skills', 'exposed_to_ai', 'INTEGER DEFAULT 1');
 
-  // watcher_configs
-  await addColumnIfMissing(db, 'watcher_configs', 'monitor_target_json', "TEXT NOT NULL DEFAULT '{\"type\":\"fullscreen\"}'");
-  await addColumnIfMissing(db, 'watcher_configs', 'region_mode', "TEXT NOT NULL DEFAULT 'manual'");
-  await addColumnIfMissing(db, 'watcher_configs', 'region_description', 'TEXT');
-  await addColumnIfMissing(db, 'watcher_configs', 'min_confidence', 'REAL NOT NULL DEFAULT 0.9');
-  await addColumnIfMissing(db, 'watcher_configs', 'trigger_json', 'TEXT');
-  await addColumnIfMissing(db, 'watcher_configs', 'task_type', "TEXT NOT NULL DEFAULT 'screen_change'");
-  await addColumnIfMissing(db, 'watcher_configs', 'preparation_goal', 'TEXT');
-  await addColumnIfMissing(db, 'watcher_configs', 'action_goal', 'TEXT');
-  await addColumnIfMissing(db, 'watcher_configs', 'tool_mode', "TEXT DEFAULT 'all'");
-  await addColumnIfMissing(db, 'watcher_configs', 'custom_tools', 'TEXT');
+  // scheduled_tasks
+  await addColumnIfMissing(db, 'scheduled_tasks', 'monitor_target_json', "TEXT NOT NULL DEFAULT '{\"type\":\"fullscreen\"}'");
+  await addColumnIfMissing(db, 'scheduled_tasks', 'region_mode', "TEXT NOT NULL DEFAULT 'manual'");
+  await addColumnIfMissing(db, 'scheduled_tasks', 'region_description', 'TEXT');
+  await addColumnIfMissing(db, 'scheduled_tasks', 'min_confidence', 'REAL NOT NULL DEFAULT 0.9');
+  await addColumnIfMissing(db, 'scheduled_tasks', 'trigger_json', "TEXT NOT NULL DEFAULT '{}'");
+  await addColumnIfMissing(db, 'scheduled_tasks', 'task_type', "TEXT NOT NULL DEFAULT 'screen_change'");
+  await addColumnIfMissing(db, 'scheduled_tasks', 'preparation_goal', 'TEXT');
+  await addColumnIfMissing(db, 'scheduled_tasks', 'action_goal', 'TEXT');
+  await addColumnIfMissing(db, 'scheduled_tasks', 'tool_mode', "TEXT DEFAULT 'all'");
+  await addColumnIfMissing(db, 'scheduled_tasks', 'custom_tools', 'TEXT');
 
   // llm_call_cache
   await addColumnIfMissing(db, 'llm_call_cache', 'request_text', "TEXT DEFAULT ''");
@@ -354,16 +386,53 @@ async function runMigrations(db: SQLiteAdapter): Promise<void> {
   // modelProviders — supports_multimodal for vision/image models
   await addColumnIfMissing(db, 'modelProviders', 'supports_multimodal', 'INTEGER DEFAULT 1');
 
+  // messages — is_summarized for long-term memory daily compression
+  await addColumnIfMissing(db, 'messages', 'is_summarized', 'INTEGER DEFAULT 0');
+  try { await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_summarized ON messages(is_summarized, timestamp)'); } catch {}
+
+  // messages — agent_internal flag + agent_type for nested agent execution
+  await addColumnIfMissing(db, 'messages', 'agent_internal', 'INTEGER DEFAULT 0');
+  await addColumnIfMissing(db, 'messages', 'agent_type', "TEXT DEFAULT ''");
+
   // savedApps — multi-file project support
   await addColumnIfMissing(db, 'savedApps', 'description', "TEXT DEFAULT ''");
   await addColumnIfMissing(db, 'savedApps', 'project_type', "TEXT DEFAULT 'single'");
   await addColumnIfMissing(db, 'savedApps', 'files_json', "TEXT DEFAULT '[]'");
   await addColumnIfMissing(db, 'savedApps', 'entry_file', "TEXT DEFAULT ''");
   await addColumnIfMissing(db, 'savedApps', 'updated_at', 'TEXT');
+  await addColumnIfMissing(db, 'savedApps', 'source_type', "TEXT DEFAULT 'generated'");
+  await addColumnIfMissing(db, 'savedApps', 'local_path', "TEXT DEFAULT ''");
 
   // data migrations
-  try { await db.execute("UPDATE watcher_configs SET diff_strategy = 'fast_visual' WHERE diff_strategy = 'pixel_hash'"); } catch {}
-  try { await db.execute("UPDATE watcher_configs SET diff_strategy = 'semantic_text' WHERE diff_strategy = 'ocr_text'"); } catch {}
+  try { await db.execute("UPDATE scheduled_tasks SET diff_strategy = 'fast_visual' WHERE diff_strategy = 'pixel_hash'"); } catch {}
+  try { await db.execute("UPDATE scheduled_tasks SET diff_strategy = 'semantic_text' WHERE diff_strategy = 'ocr_text'"); } catch {}
+
+  // Migrate old watcher_configs table to scheduled_tasks (if exists)
+  try {
+    const hasOldTable = await db.get<{ cnt: number }>(
+      "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='watcher_configs'"
+    );
+    if (hasOldTable && hasOldTable.cnt > 0) {
+      await db.execute(
+        `INSERT OR IGNORE INTO scheduled_tasks
+         (id, name, enabled, task_type, trigger_json, action_json, context,
+          monitor_target_json, region_json, poll_interval_ms, diff_strategy,
+          debounce_ms, cooldown_ms, min_confidence, region_mode, region_description,
+          preparation_goal, action_goal, tool_mode, custom_tools, created_at, updated_at)
+         SELECT id, name, enabled, COALESCE(task_type, 'screen_change'),
+                COALESCE(trigger_json, '{}'), action_json, context,
+                COALESCE(monitor_target_json, '{"type":"fullscreen"}'),
+                COALESCE(region_json, '{"x":0,"y":0,"width":1,"height":1}'),
+                poll_interval_ms, diff_strategy, debounce_ms, cooldown_ms,
+                min_confidence, COALESCE(region_mode, 'manual'), region_description,
+                preparation_goal, action_goal, COALESCE(tool_mode, 'all'), custom_tools,
+                created_at, updated_at
+         FROM watcher_configs`
+      );
+      await db.execute('DROP TABLE watcher_configs');
+      console.log('[DB] 已迁移 watcher_configs → scheduled_tasks');
+    }
+  } catch { /* table might not exist or migration already done */ }
 }
 
 export type { SQLiteAdapter } from './adapter';

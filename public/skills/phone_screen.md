@@ -58,7 +58,8 @@ Also provides event polling for screen change monitoring and notification listen
       "properties": {
         "quality": { "type": "integer", "description": "JPEG quality (1–100)" }
       }
-    }
+    },
+    "returns": "{\"image_data\":\"base64 string\",\"format\":\"bmp\"}"
   },
   {
     "name": "phone_tap",
@@ -72,7 +73,8 @@ Also provides event polling for screen change monitoring and notification listen
         "y": { "type": "integer", "description": "Y coordinate" }
       },
       "required": ["x", "y"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"x\":number,\"y\":number}"
   },
   {
     "name": "phone_tap_element",
@@ -85,7 +87,8 @@ Also provides event polling for screen change monitoring and notification listen
         "selector": { "type": "string", "description": "Accessibility selector or text match" }
       },
       "required": ["selector"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"element\":\"matched element info\"}"
   },
   {
     "name": "phone_swipe",
@@ -100,7 +103,8 @@ Also provides event polling for screen change monitoring and notification listen
         "duration": { "type": "integer", "description": "Swipe duration in ms (default 300)" }
       },
       "required": ["x1", "y1", "x2", "y2"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"from\":{\"x\":number,\"y\":number},\"to\":{\"x\":number,\"y\":number}}"
   },
   {
     "name": "phone_type",
@@ -113,7 +117,8 @@ Also provides event polling for screen change monitoring and notification listen
         "text": { "type": "string", "description": "Text to type" }
       },
       "required": ["text"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"text\":\"the text typed\"}"
   },
   {
     "name": "phone_scroll",
@@ -128,28 +133,32 @@ Also provides event polling for screen change monitoring and notification listen
         "duration": { "type": "integer" }
       },
       "required": ["x", "y", "dx", "dy"]
-    }
+    },
+    "returns": "{\"success\":true/false,\"direction\":\"up/down/left/right\"}"
   },
   {
     "name": "phone_back",
     "description": "Press the Android back button.",
     "name_cn": "返回",
     "description_cn": "按下 Android 返回键。",
-    "parameters": { "type": "object", "properties": {} }
+    "parameters": { "type": "object", "properties": {} },
+    "returns": "{\"success\":true/false}"
   },
   {
     "name": "phone_home",
     "description": "Press the Android home button.",
     "name_cn": "回到主页",
     "description_cn": "按下 Android 主页键。",
-    "parameters": { "type": "object", "properties": {} }
+    "parameters": { "type": "object", "properties": {} },
+    "returns": "{\"success\":true/false}"
   },
   {
     "name": "phone_get_ui",
     "description": "Get the UI tree (accessibility hierarchy) of the current screen with element positions.",
     "name_cn": "获取 UI 树",
     "description_cn": "获取当前屏幕的 UI 树（无障碍层级结构）及元素位置。",
-    "parameters": { "type": "object", "properties": {} }
+    "parameters": { "type": "object", "properties": {} },
+    "returns": "{\"nodes\":[{\"role\":\"...\",\"text\":\"...\",\"bounds\":[x1,y1,x2,y2],\"resource_id\":\"...\"}],\"count\":number}"
   },
   {
     "name": "phone_poll_events",
@@ -161,7 +170,8 @@ Also provides event polling for screen change monitoring and notification listen
       "properties": {
         "since": { "type": "string", "description": "ISO timestamp to filter events from" }
       }
-    }
+    },
+    "returns": "{\"events\":[{\"type\":\"notification/toast\",\"text\":\"...\",\"package\":\"...\"}],\"count\":number}"
   },
   {
     "name": "phone_wait",
@@ -174,7 +184,8 @@ Also provides event polling for screen change monitoring and notification listen
         "durationMs": { "type": "integer", "description": "Wait duration in milliseconds" }
       },
       "required": ["durationMs"]
-    }
+    },
+    "returns": "{\"action\":\"phone_wait\",\"milliseconds\":number}"
   },
   {
     "name": "phone_done",
@@ -187,7 +198,8 @@ Also provides event polling for screen change monitoring and notification listen
         "summary": { "type": "string", "description": "Summary of what was accomplished" }
       },
       "required": ["summary"]
-    }
+    },
+    "returns": "{\"action\":\"phone_done\",\"message\":\"completion message\"}"
   }
 ]
 ```

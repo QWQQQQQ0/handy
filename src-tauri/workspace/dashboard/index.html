@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>个人数据仪表盘</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    background: #f0f2f5;
+    color: #333;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .container {
+    display: flex;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 16px;
+    gap: 16px;
+  }
+  .left-sidebar {
+    width: 280px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .right-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* ===== Profile Card ===== */
+  .profile-card {
+    background: linear-gradient(135deg, #4a90d9 0%, #357abd 50%, #2e6ba8 100%);
+    border-radius: 12px;
+    padding: 20px;
+    color: #fff;
+    position: relative;
+    overflow: hidden;
+  }
+  .profile-card::before {
+    content: '';
+    position: absolute;
+    top: -30px;
+    right: -30px;
+    width: 120px;
+    height: 120px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 50%;
+  }
+  .profile-card::after {
+    content: '';
+    position: absolute;
+    bottom: -40px;
+    left: -20px;
+    width: 100px;
+    height: 100px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 50%;
+  }
+  .profile-top {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    position: relative;
+    z-index: 1;
+  }
+  .avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f5c842, #e8a832);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    font-weight: bold;
+    color: #fff;
+    border: 2px solid rgba(255,255,255,0.4);
+    flex-shrink: 0;
+    overflow: hidden;
+  }
+  .avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .profile-name {
+    display: flex;
+    flex-direction: column;
+  }
+  .profile-name .name {
+    font-size: 16px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .profile-name .name .badge {
+    background: #f5c842;
+    color: #8b6914;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 500;
+  }
+  .profile-name .subtitle {
+    font-size: 11px;
+    opacity: 0.8;
+  }
+  .profile-info {
+    position: relative;
+    z-index: 1;
+  }
+  .profile-info .info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 12px;
+  }
+  .profile-info .info-row .label {
+    opacity: 0.75;
+  }
+  .profile-info .info-row .value {
+    font-weight: 500;
+  }
+  .profile-info .info-row .tag {
+    background: rgba(255,255,255,0.2);
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+  }
+
+  /* ===== Section Cards (Left) ===== */
+  .section-card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    border-left: 3px solid #4a90d9;
+  }
+  .section-card .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .section-card .section-title .icon {
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .section-card .section-title .icon svg {
+    width: 16px;
+    height: 16px;
+  }
+  .info-table {
+    width: 100%;
+  }
+  .info-table .tr {
+    display: flex;
+    padding: 5px 0;
+    font-size: 12px;
+  }
+  .info-table .tr .td-label {
+    width: 75px;
+    color: #888;
+    flex-shrink: 0;
+  }
+  .info-table .tr .td-value {
+    color: #333;
+    font-weight: 500;
+  }
+
+  /* My Sports */
+  .sports-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .sports-header .toggle-group {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+  }
+  .sports-header .toggle-btn {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid #e0e0e0;
+    background: #fff;
+    color: #666;
+    cursor: pointer;
+  }
+  .sports-header .toggle-btn.active {
+    background: #4a90d9;
+    color: #fff;
+    border-color: #4a90d9;
+  }
+  .sports-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #4a90d9, #357abd);
+    color: #fff;
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+  }
+  .sports-badge .year {
+    font-size: 10px;
+    opacity: 0.8;
+  }
+  .activity-item {
+    display: flex;
+    align-items: flex-start;
+    padding: 6px 0;
+    font-size: 12px;
+    border-bottom: 1px dashed #eee;
+  }
+  .activity-item:last-child {
+    border-bottom: none;
+  }
+  .activity-item .act-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4a90d9;
+    margin-top: 5px;
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+  .activity-item .act-content {
+    flex: 1;
+  }
+  .activity-item .act-content .act-title {
+    color: #333;
+    font-size: 12px;
+  }
+  .activity-item .act-content .act-date {
+    color: #999;
+    font-size: 11px;
+  }
+  .activity-item .act-status {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .act-status.done { background: #e8f5e9; color: #4caf50; }
+  .act-status.pending { background: #fff3e0; color: #ff9800; }
+
+  /* Association */
+  .assoc-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 0;
+    font-size: 12px;
+    border-bottom: 1px dashed #eee;
+  }
+  .assoc-item:last-child { border-bottom: none; }
+  .assoc-item .assoc-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4a90d9;
+    margin-right: 8px;
+    flex-shrink: 0;
+  }
+  .assoc-item .assoc-name {
+    flex: 1;
+    color: #333;
+  }
+  .assoc-item .assoc-date {
+    color: #999;
+    font-size: 11px;
+  }
+
+  /* Vehicle */
+  .vehicle-item {
+    display: flex;
+    padding: 5px 0;
+    font-size: 12px;
+  }
+  .vehicle-item .v-label {
+    width: 70px;
+    color: #888;
+    flex-shrink: 0;
+  }
+  .vehicle-item .v-value {
+    color: #333;
+    font-weight: 500;
+  }
+
+  /* ===== Data Cards (Right) ===== */
+  .data-card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 16px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .data-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .data-card-header .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .data-card-header .card-title .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .data-card-header .card-title .dot.blue { background: #4a90d9; }
+  .data-card-header .card-title .dot.green { background: #52c41a; }
+  .data-card-header .card-title .dot.orange { background: #fa8c16; }
+  .data-card-header .card-title .dot.red { background: #f5222d; }
+  .data-card-header .card-title .dot.purple { background: #722ed1; }
+
+  .card-stats {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .card-stats .stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: #666;
+  }
+  .card-stats .stat-item .stat-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: #fff;
+  }
+  .card-stats .stat-item .stat-label {
+    color: #888;
+  }
+  .card-stats .stat-item .stat-value {
+    font-weight: 600;
+    color: #333;
+  }
+  .card-stats .stat-item .stat-value.highlight {
+    color: #4a90d9;
+  }
+
+  .charts-row {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .chart-donut {
+    width: 200px;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .chart-donut .donut-center {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+  }
+  .chart-donut .donut-center .center-label {
+    font-size: 11px;
+    color: #999;
+  }
+  .chart-donut .donut-center .center-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: #333;
+  }
+  .chart-donut .donut-center .center-unit {
+    font-size: 11px;
+    color: #999;
+  }
+  .chart-line {
+    flex: 1;
+    min-width: 0;
+  }
+  .chart-line .line-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: #333;
+    margin-bottom: 8px;
+    text-align: center;
+  }
+
+  /* Bar chart card single */
+  .chart-bar-full {
+    width: 100%;
+  }
+  .chart-bar-full .bar-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: #333;
+    margin-bottom: 8px;
+    text-align: center;
+  }
+
+  /* Legend for donut */
+  .donut-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: 8px;
+    justify-content: center;
+  }
+  .donut-legend .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #666;
+  }
+  .donut-legend .legend-color {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .container { flex-direction: column; }
+    .left-sidebar { width: 100%; }
+    .charts-row { flex-direction: column; }
+    .chart-donut { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- ===== LEFT SIDEBAR ===== -->
+  <div class="left-sidebar">
+    <!-- Profile Card -->
+    <div class="profile-card">
+      <div class="profile-top">
+        <div class="avatar">
+          <svg viewBox="0 0 48 48" fill="none"><circle cx="24" cy="18" r="10" fill="rgba(255,255,255,0.8)"/><ellipse cx="24" cy="42" rx="16" ry="12" fill="rgba(255,255,255,0.8)"/></svg>
+        </div>
+        <div class="profile-name">
+          <div class="name">王福德 <span class="badge">党员</span></div>
+          <div class="subtitle">西南大学柑橘学院研究员</div>
+        </div>
+      </div>
+      <div class="profile-info">
+        <div class="info-row">
+          <span class="label">工号</span>
+          <span class="value">20240003</span>
+        </div>
+        <div class="info-row">
+          <span class="label">手机号码</span>
+          <span class="value">131****2999</span>
+        </div>
+        <div class="info-row">
+          <span class="label">邮箱</span>
+          <span class="value" style="font-size:11px;">liuwending@caibadata.cud.edu.cn</span>
+        </div>
+        <div class="info-row">
+          <span class="label">行政级别</span>
+          <span class="tag">两办</span>
+        </div>
+        <div class="info-row">
+          <span class="label">行政职务</span>
+          <span class="tag">一般</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 政治面貌 -->
+    <div class="section-card">
+      <div class="section-title">
+        <span class="icon"><svg viewBox="0 0 16 16" fill="#4a90d9"><path d="M8 1L2 4v4c0 3.5 2.5 6.5 6 7.5 3.5-1 6-4 6-7.5V4L8 1z"/></svg></span>
+        政治面貌
+      </div>
+      <div class="info-table">
+        <div class="tr"><span class="td-label">政治面貌</span><span class="td-value">中共党员</span></div>
+        <div class="tr"><span class="td-label">入党时间</span><span class="td-value">2021-06-15</span></div>
+        <div class="tr"><span class="td-label">所属党支部</span><span class="td-value" style="font-size:11px;">西南大学柑橘学院实验支部</span></div>
+      </div>
+    </div>
+
+    <!-- 我的行体育 -->
+    <div class="section-card">
+      <div class="section-title">
+        <span class="icon"><svg viewBox="0 0 16 16" fill="#4a90d9"><circle cx="8" cy="8" r="7" fill="none" stroke="#4a90d9" stroke-width="1.5"/><path d="M5 8l2 2 4-4" stroke="#4a90d9" stroke-width="1.5" fill="none"/></svg></span>
+        我的行体育
+      </div>
+      <div class="sports-header">
+        <div class="toggle-group">
+          <button class="toggle-btn active">我的文体</button>
+        </div>
+      </div>
+      <div class="sports-badge">
+        2025年度 · 长跑爱好者
+      </div>
+      <div style="font-size:12px;color:#888;margin-bottom:6px;margin-top:4px;">
+        <span style="color:#4a90d9;cursor:pointer;">查看详情</span>
+        <span style="float:right;font-size:11px;color:#999;">已参与 <b style="color:#4a90d9;">16</b> 次</span>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot"></div>
+        <div class="act-content">
+          <div class="act-title">日常体育锻炼</div>
+          <div class="act-date">2025-03-11 ~ 2025-10-15</div>
+        </div>
+        <span class="act-status done">已完成</span>
+      </div>
+      <div class="activity-item">
+        <div class="act-dot"></div>
+        <div class="act-content">
+          <div class="act-title">周末羽毛球活动</div>
+          <div class="act-date">2025-03-01 ~ 2025-06-30</div>
+        </div>
+        <span class="act-status pending">进行中</span>
+      </div>
+    </div>
+
+    <!-- 我的文体协会 -->
+    <div class="section-card">
+      <div class="section-title">
+        <span class="icon"><svg viewBox="0 0 16 16" fill="#4a90d9"><rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="#4a90d9" stroke-width="1.5"/><path d="M5 8h6M8 5v6" stroke="#4a90d9" stroke-width="1.2"/></svg></span>
+        我的文体协会
+      </div>
+      <div class="assoc-item">
+        <div class="assoc-dot"></div>
+        <span class="assoc-name">羽毛球</span>
+        <span class="assoc-date">2023-09-11</span>
+      </div>
+      <div class="assoc-item">
+        <div class="assoc-dot"></div>
+        <span class="assoc-name">太极拳协会</span>
+        <span class="assoc-date">2023-09-11</span>
+      </div>
+    </div>
+
+    <!-- 我的车辆 -->
+    <div class="section-card">
+      <div class="section-title">
+        <span class="icon"><svg viewBox="0 0 16 16" fill="#4a90d9"><rect x="1" y="6" width="14" height="6" rx="2" fill="none" stroke="#4a90d9" stroke-width="1.5"/><circle cx="4.5" cy="12.5" r="1.5" fill="#4a90d9"/><circle cx="11.5" cy="12.5" r="1.5" fill="#4a90d9"/><path d="M3 6l2-3h6l2 3" stroke="#4a90d9" stroke-width="1.2" fill="none"/></svg></span>
+        我的车辆
+      </div>
+      <div class="vehicle-item"><span class="v-label">车牌号</span><span class="v-value">渝A00000</span></div>
+      <div class="vehicle-item"><span class="v-label">车辆品牌</span><span class="v-value">奔驰S级</span></div>
+      <div class="vehicle-item"><span class="v-label">购买日期</span><span class="v-value">2023-04-10</span></div>
+    </div>
+  </div>
+
+  <!-- ===== RIGHT CONTENT ===== -->
+  <div class="right-content">
+    <!-- 消费数据 -->
+    <div class="data-card">
+      <div class="data-card-header">
+        <div class="card-title">
+          <span class="dot blue"></span>
+          消费数据 · 千人千面
+        </div>
+        <div class="card-stats">
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#fa8c16;">&#128176;</span>
+            <span class="stat-label">消费频次</span>
+            <span class="stat-value highlight">34次</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#52c41a;">&#128200;</span>
+            <span class="stat-label">累计消费</span>
+            <span class="stat-value">¥4,520</span>
+          </div>
+        </div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-donut">
+          <canvas id="consumptionDonut" width="180" height="180"></canvas>
+          <div class="donut-center">
+            <div class="center-label">消费</div>
+            <div class="center-value">34<span class="center-unit">次</span></div>
+          </div>
+        </div>
+        <div class="chart-line">
+          <div class="line-title">星期消费金额趋势</div>
+          <canvas id="consumptionLine" height="160"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 请假数据 -->
+    <div class="data-card">
+      <div class="data-card-header">
+        <div class="card-title">
+          <span class="dot green"></span>
+          请假数据 · 假期余额
+        </div>
+        <div class="card-stats">
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#4a90d9;">&#128197;</span>
+            <span class="stat-label">年休假剩余</span>
+            <span class="stat-value highlight">16 天</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#fa8c16;">&#128197;</span>
+            <span class="stat-label">事假剩余</span>
+            <span class="stat-value highlight">5 天</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#f5222d;">&#128197;</span>
+            <span class="stat-label">病假剩余</span>
+            <span class="stat-value highlight">18 天</span>
+          </div>
+        </div>
+      </div>
+      <div class="chart-bar-full">
+        <div class="bar-title">每月请假统计</div>
+        <canvas id="leaveBar" height="180"></canvas>
+      </div>
+    </div>
+
+    <!-- 预约数据 -->
+    <div class="data-card">
+      <div class="data-card-header">
+        <div class="card-title">
+          <span class="dot orange"></span>
+          预约数据 · 运动达人
+        </div>
+        <div class="card-stats">
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#4a90d9;">&#128197;</span>
+            <span class="stat-label">签到/取消</span>
+            <span class="stat-value">88 <span style="font-size:11px;color:#999">/</span> 8</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#52c41a;">&#9201;</span>
+            <span class="stat-label">总预约</span>
+            <span class="stat-value highlight">412次</span>
+          </div>
+        </div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-donut">
+          <canvas id="appointmentDonut" width="180" height="180"></canvas>
+          <div class="donut-center">
+            <div class="center-label">总预约</div>
+            <div class="center-value">412<span class="center-unit">次</span></div>
+          </div>
+        </div>
+        <div class="chart-line">
+          <div class="line-title">近一年预约趋势</div>
+          <canvas id="appointmentLine" height="160"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 访客数据 -->
+    <div class="data-card">
+      <div class="data-card-header">
+        <div class="card-title">
+          <span class="dot red"></span>
+          访客数据 · 人气指数
+        </div>
+        <div class="card-stats">
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#f5222d;">&#128101;</span>
+            <span class="stat-label">来访人次</span>
+            <span class="stat-value highlight">491次</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#fa8c16;">&#128200;</span>
+            <span class="stat-label">月均访客</span>
+            <span class="stat-value">40.9</span>
+          </div>
+        </div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-donut">
+          <canvas id="visitorDonut" width="180" height="180"></canvas>
+          <div class="donut-center">
+            <div class="center-label">来访人次</div>
+            <div class="center-value">491<span class="center-unit">次</span></div>
+          </div>
+        </div>
+        <div class="chart-line">
+          <div class="line-title">月度访客流量</div>
+          <canvas id="visitorLine" height="160"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 组卷数据 -->
+    <div class="data-card">
+      <div class="data-card-header">
+        <div class="card-title">
+          <span class="dot purple"></span>
+          组卷数据 · 知识海洋
+        </div>
+        <div class="card-stats">
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#722ed1;">&#128218;</span>
+            <span class="stat-label">当月答题</span>
+            <span class="stat-value highlight">186题</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon" style="background:#13c2c2;">&#128200;</span>
+            <span class="stat-label">正确率</span>
+            <span class="stat-value">85%</span>
+          </div>
+        </div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-donut">
+          <canvas id="quizDonut" width="180" height="180"></canvas>
+          <div class="donut-center">
+            <div class="center-label">总答题</div>
+            <div class="center-value">186<span class="center-unit">题</span></div>
+          </div>
+        </div>
+        <div class="chart-line">
+          <div class="line-title">每月借阅量 + 趋势</div>
+          <canvas id="quizBarLine" height="160"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== Chart Defaults =====
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif";
+Chart.defaults.font.size = 11;
+Chart.defaults.color = '#666';
+Chart.defaults.plugins.legend.display = false;
+
+const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+
+// ===== 1. Consumption Donut =====
+new Chart(document.getElementById('consumptionDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['工作餐', '日用品', '交通出行', '健康医疗', '文化娱乐', '其他'],
+    datasets: [{
+      data: [35, 22, 18, 12, 8, 5],
+      backgroundColor: ['#4a90d9', '#52c41a', '#fa8c16', '#f5222d', '#722ed1', '#999'],
+      borderWidth: 0,
+      hoverOffset: 4
+    }]
+  },
+  options: {
+    cutout: '62%',
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: {
+      tooltip: {
+        callbacks: {
+          label: ctx => ctx.label + ': ' + ctx.parsed + '%'
+        }
+      }
+    }
+  }
+});
+
+// ===== 2. Consumption Line =====
+new Chart(document.getElementById('consumptionLine'), {
+  type: 'line',
+  data: {
+    labels: ['周一','周二','周三','周四','周五','周六','周日'],
+    datasets: [{
+      label: '消费金额',
+      data: [120, 85, 200, 60, 150, 320, 90],
+      borderColor: '#fa8c16',
+      backgroundColor: 'rgba(250,140,22,0.08)',
+      fill: true,
+      tension: 0.4,
+      pointRadius: 3,
+      pointBackgroundColor: '#fa8c16',
+      borderWidth: 2
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: { color: '#f0f0f0' },
+        ticks: { callback: v => v + '元' }
+      },
+      x: { grid: { display: false } }
+    },
+    plugins: {
+      tooltip: {
+        callbacks: { label: ctx => ctx.parsed.y + ' 元' }
+      }
+    }
+  }
+});
+
+// ===== 3. Leave Bar =====
+new Chart(document.getElementById('leaveBar'), {
+  type: 'bar',
+  data: {
+    labels: months,
+    datasets: [{
+      label: '请假天数',
+      data: [1, 0, 2, 0.5, 1, 3, 0, 2, 1.5, 0, 1, 0],
+      backgroundColor: '#4a90d9',
+      borderRadius: 4,
+      maxBarThickness: 28
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: { color: '#f0f0f0' },
+        ticks: { stepSize: 1, callback: v => v + '天' }
+      },
+      x: { grid: { display: false } }
+    },
+    plugins: {
+      tooltip: {
+        callbacks: { label: ctx => ctx.parsed.y + ' 天' }
+      }
+    }
+  }
+});
+
+// ===== 4. Appointment Donut =====
+new Chart(document.getElementById('appointmentDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['羽毛球', '篮球', '健身', '游泳', '跑步', '其他'],
+    datasets: [{
+      data: [28, 22, 18, 15, 12, 5],
+      backgroundColor: ['#4a90d9', '#52c41a', '#fa8c16', '#f5222d', '#722ed1', '#13c2c2'],
+      borderWidth: 0,
+      hoverOffset: 4
+    }]
+  },
+  options: {
+    cutout: '62%',
+    responsive: true,
+    maintainAspectRatio: true
+  }
+});
+
+// ===== 5. Appointment Line =====
+new Chart(document.getElementById('appointmentLine'), {
+  type: 'line',
+  data: {
+    labels: months,
+    datasets: [{
+      label: '预约次数',
+      data: [35, 28, 42, 38, 45, 50, 48, 40, 35, 30, 25, 20],
+      borderColor: '#4a90d9',
+      backgroundColor: 'rgba(74,144,217,0.08)',
+      fill: true,
+      tension: 0.4,
+      pointRadius: 3,
+      pointBackgroundColor: '#4a90d9',
+      borderWidth: 2
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: { color: '#f0f0f0' }
+      },
+      x: { grid: { display: false } }
+    }
+  }
+});
+
+// ===== 6. Visitor Donut =====
+new Chart(document.getElementById('visitorDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['家属来访', '业务来访', '面试', '参观', '其他'],
+    datasets: [{
+      data: [30, 25, 20, 15, 10],
+      backgroundColor: ['#f5222d', '#fa8c16', '#4a90d9', '#52c41a', '#999'],
+      borderWidth: 0,
+      hoverOffset: 4
+    }]
+  },
+  options: {
+    cutout: '62%',
+    responsive: true,
+    maintainAspectRatio: true
+  }
+});
+
+// ===== 7. Visitor Line =====
+new Chart(document.getElementById('visitorLine'), {
+  type: 'line',
+  data: {
+    labels: months,
+    datasets: [{
+      label: '访客人数',
+      data: [25, 30, 45, 55, 70, 80, 65, 50, 40, 35, 45, 55],
+      borderColor: '#f5222d',
+      backgroundColor: 'rgba(245,34,45,0.08)',
+      fill: true,
+      tension: 0.4,
+      pointRadius: 3,
+      pointBackgroundColor: '#f5222d',
+      borderWidth: 2
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: { color: '#f0f0f0' }
+      },
+      x: { grid: { display: false } }
+    }
+  }
+});
+
+// ===== 8. Quiz Donut =====
+new Chart(document.getElementById('quizDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: ['时事政治', '专业知识', '安全知识', '历史文化', '科学常识'],
+    datasets: [{
+      data: [30, 25, 18, 15, 12],
+      backgroundColor: ['#722ed1', '#4a90d9', '#52c41a', '#fa8c16', '#13c2c2'],
+      borderWidth: 0,
+      hoverOffset: 4
+    }]
+  },
+  options: {
+    cutout: '62%',
+    responsive: true,
+    maintainAspectRatio: true
+  }
+});
+
+// ===== 9. Quiz Bar+Line =====
+new Chart(document.getElementById('quizBarLine'), {
+  type: 'bar',
+  data: {
+    labels: months,
+    datasets: [{
+      type: 'bar',
+      label: '借阅量',
+      data: [12, 15, 18, 22, 20, 25, 28, 24, 20, 18, 16, 14],
+      backgroundColor: '#4a90d9',
+      borderRadius: 4,
+      maxBarThickness: 24,
+      order: 2
+    }, {
+      type: 'line',
+      label: '趋势',
+      data: [12, 15, 18, 22, 20, 25, 28, 24, 20, 18, 16, 14],
+      borderColor: '#fa8c16',
+      backgroundColor: 'transparent',
+      tension: 0.4,
+      pointRadius: 3,
+      pointBackgroundColor: '#fa8c16',
+      borderWidth: 2,
+      order: 1
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: { color: '#f0f0f0' },
+        ticks: { callback: v => v + '本' }
+      },
+      x: { grid: { display: false } }
+    },
+    plugins: {
+      legend: { display: true, position: 'bottom', labels: { boxWidth: 12, padding: 8, font: { size: 11 } } }
+    }
+  }
+});
+</script>
+</body>
+</html>

@@ -9,7 +9,7 @@ export interface AgentMemory {
   createdAt: string;  // ISO timestamp
 }
 
-const STORAGE_KEY = 'openpaw_agent_memories';
+const STORAGE_KEY = 'handy_agent_memories';
 
 function loadAll(): Record<string, AgentMemory[]> {
   try {
