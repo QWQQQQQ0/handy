@@ -184,6 +184,7 @@ export class OpenAIAdapter implements LLMAdapter {
         // 0. Reasoning content (MiMo thinking models) — 实时流式输出，不缓冲
         const rc = delta['reasoning_content'] as string | undefined;
         if (rc && rc.length > 0) {
+          totalReasoningLen += rc.length;
           yield `__REASONING__:${rc}`;
         }
 

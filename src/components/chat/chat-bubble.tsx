@@ -275,8 +275,16 @@ function UserBubble({
 
 // ── Thinking Block ──
 
-function ThinkingBlock({ content }: { content: string }) {
+function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming: boolean }) {
   const [expanded, setExpanded] = useState(false);
+  // 流式过程中自动展开，用户可手动收起；流式结束后默认折叠
+  const showExpanded = expanded || isStreaming;
+
+  // 折叠时显示前 3 行预览，而非完全隐藏
+  const lines = content.split('\n');
+  const previewLines = lines.slice(0, 3);
+  const preview = previewLines.join('\n');
+  const hasMore = lines.length > 3 || preview.length < content.length;
 
   return (
     <div className="mb-2 border-l-2 border-amber-300 dark:border-amber-600 pl-2">
@@ -285,11 +293,16 @@ function ThinkingBlock({ content }: { content: string }) {
         className="flex items-center gap-1.5 text-[12px] text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 transition-colors"
       >
         <span className="font-medium">💭 思考过程</span>
-        {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        {showExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
       </button>
-      {expanded && (
+      {showExpanded ? (
         <div className="mt-1.5 text-[12px] leading-relaxed text-zinc-500 dark:text-zinc-400 whitespace-pre-wrap font-mono max-h-[400px] overflow-y-auto">
           {content}
+        </div>
+      ) : (
+        <div className="mt-1 text-[12px] leading-relaxed text-zinc-400 dark:text-zinc-500 whitespace-pre-wrap font-mono line-clamp-3">
+          {preview}
+          {hasMore && <span className="text-zinc-300 dark:text-zinc-600">...</span>}
         </div>
       )}
     </div>
@@ -314,7 +327,7 @@ function AssistantBubble({
     <div className="flex justify-start px-3 py-1.5">
       <div className="max-w-[82%] bg-zinc-100 dark:bg-zinc-800 rounded-2xl rounded-bl-md px-3 py-2">
         {message.reasoning_content && (
-          <ThinkingBlock content={message.reasoning_content} />
+          <ThinkingBlock content={message.reasoning_content} isStreaming={isStreaming} />
         )}
         {isStreaming ? (
           <StreamingText text={text} isStreaming={isStreaming} />

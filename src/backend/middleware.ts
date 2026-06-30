@@ -209,7 +209,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
           } else if (chunk.startsWith('__ERROR__:')) {
             sendSSEEvent(res, { type: 'error', content: chunk.substring(10) });
           } else if (chunk.startsWith('__REASONING__:')) {
-            // reasoning 内容 → 作为 reasoning 类型发送，前端可选消费
             sendSSEEvent(res, { type: 'reasoning', content: chunk.substring(14) });
           } else {
             sendSSEEvent(res, { type: 'text', content: chunk });

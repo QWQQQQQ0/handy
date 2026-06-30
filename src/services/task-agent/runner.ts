@@ -203,7 +203,8 @@ export class TaskAgentRunner {
     let currentApiKey = apiKey;
 
     // 工具循环
-    for (let turn = 0; turn < maxTurns; turn++) {
+    let turn = 0;
+    for (turn = 0; turn < maxTurns; turn++) {
       if (signal?.aborted) {
         onProgress?.({ type: 'agent_done', success: false, turn });
         break;
@@ -455,6 +456,7 @@ export class TaskAgentRunner {
     // ── 退出原因判断 ──
     let exitReason: string;
     let success: boolean;
+    const actualTurns = turn;  // 记录实际执行轮数（for 循环退出时的 turn 值）
 
     if (signal?.aborted) {
       exitReason = `任务被取消 (执行了 ${executedTools.length} 个工具后中止)`;
@@ -462,13 +464,22 @@ export class TaskAgentRunner {
     } else if (taskCompleted) {
       exitReason = '';
       success = true;
-    } else {
-      // 轮次耗尽但 LLM 未调用 done 工具
+    } else if (actualTurns >= maxTurns) {
+      // 真的跑满了 maxTurns
       const uniqueTools = [...new Set(executedTools)];
       const toolSummary = uniqueTools.length > 0
         ? `已执行 ${executedTools.length} 次工具调用 (${uniqueTools.join(', ')})`
         : 'LLM 未产生有效的工具调用';
       exitReason = `任务未完成: 已达到最大轮次 ${maxTurns}，${toolSummary}。请考虑拆分任务或增加 maxTurns。`;
+      success = false;
+      console.warn(`[TaskRunner] ✗ agent=${agentId} ${exitReason}`);
+    } else {
+      // 提前退出（无工具调用或 shouldBreak）但未标记完成
+      const uniqueTools = [...new Set(executedTools)];
+      const toolSummary = uniqueTools.length > 0
+        ? `已执行 ${executedTools.length} 次工具调用 (${uniqueTools.join(', ')})`
+        : 'LLM 未产生有效的工具调用';
+      exitReason = `任务未完成: 在第 ${actualTurns + 1} 轮停止，${toolSummary}`;
       success = false;
       console.warn(`[TaskRunner] ✗ agent=${agentId} ${exitReason}`);
     }

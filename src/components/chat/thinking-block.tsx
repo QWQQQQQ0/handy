@@ -42,6 +42,11 @@ export function ThinkingBlock({
   if (!content) return null;
 
   const summaryLabel = streaming ? `${label}中...` : `${label}过程`;
+  // 折叠时显示前 3 行预览
+  const lines = content.split('\n');
+  const previewLines = lines.slice(0, 3);
+  const preview = previewLines.join('\n');
+  const hasMore = lines.length > 3 || preview.length < content.length;
 
   return (
     <div className="mb-1.5 border-l-2 border-amber-300 dark:border-amber-600 pl-2">
@@ -52,9 +57,14 @@ export function ThinkingBlock({
         <span className="font-medium">{summaryLabel}</span>
         <span className="text-[9px]">{expanded ? '▾' : '▸'}</span>
       </button>
-      {expanded && (
+      {expanded ? (
         <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
           {content}
+        </div>
+      ) : (
+        <div className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500 whitespace-pre-wrap break-words leading-relaxed line-clamp-3">
+          {preview}
+          {hasMore && <span className="text-zinc-300 dark:text-zinc-600">...</span>}
         </div>
       )}
     </div>

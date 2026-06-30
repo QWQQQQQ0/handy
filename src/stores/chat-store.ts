@@ -537,6 +537,10 @@ export const useChatStore = create<ChatState>()(
         }
 
         const db = await getDB();
+        // 捕获当前消息作为对话历史（在 loadMessages 覆盖 Zustand 之前）
+        // 这样 FreeAgent 拿到的是当前消息之前的完整历史，不会包含当前消息导致重复
+        const historyBeforeCurrent = get().messages;
+
         // Save user message to DB (编辑重发时跳过，消息已在 state + DB 中)
         if (!skipAddUserMessage) {
           const userMsgId = crypto.randomUUID();
@@ -606,29 +610,27 @@ export const useChatStore = create<ChatState>()(
             const assistantMsgId = crypto.randomUUID();
             let fullText = '';
 
-            // 构建对话历史（排除最后一条 user 消息，它会作为 goal 参数单独传入 runAgent）
-            // 注意：必须在 assistant 占位消息 push 之前构建，否则最后一条消息是 assistant 而非 user
-            const allMsgs = get().messages.filter((m) => m.role !== 'system').filter((m) => !m._agentInternal);
-            const historyWithoutLast = allMsgs.length > 0 && allMsgs[allMsgs.length - 1].role === 'user'
-              ? allMsgs.slice(0, -1)
-              : allMsgs;
-            const chatMessages: LLMMessage[] = historyWithoutLast.map((m): LLMMessage => {
-              const msgContent: string | { type: string; [k: string]: unknown }[] =
-                typeof m.content === 'string' ? m.content
-                : Array.isArray(m.content) ? m.content as { type: string; [k: string]: unknown }[]
-                : '';
-              const base: LLMMessage = {
-                role: m.role,
-                content: msgContent,
-              };
-              if (m.role === 'assistant' && m.toolCalls) {
-                base.toolCalls = m.toolCalls;
-              }
-              if (m.role === 'tool' && m.toolCallId) {
-                base.toolCallId = m.toolCallId;
-              }
-              return base;
-            });
+            // 构建对话历史（使用 loadMessages 前捕获的历史，天然排除当前消息）
+            const chatMessages: LLMMessage[] = historyBeforeCurrent
+              .filter((m) => m.role !== 'system')
+              .filter((m) => !m._agentInternal)
+              .map((m): LLMMessage => {
+                const msgContent: string | { type: string; [k: string]: unknown }[] =
+                  typeof m.content === 'string' ? m.content
+                  : Array.isArray(m.content) ? m.content as { type: string; [k: string]: unknown }[]
+                  : '';
+                const base: LLMMessage = {
+                  role: m.role,
+                  content: msgContent,
+                };
+                if (m.role === 'assistant' && m.toolCalls) {
+                  base.toolCalls = m.toolCalls;
+                }
+                if (m.role === 'tool' && m.toolCallId) {
+                  base.toolCallId = m.toolCallId;
+                }
+                return base;
+              });
             console.log(`[ChatStore] FreeAgent chatMessages: ${chatMessages.length} 条历史消息`);
 
             // 先推占位 assistant 消息，流式过程中实时更新
@@ -686,32 +688,54 @@ export const useChatStore = create<ChatState>()(
                     const msg = s.messages.find((m) => m.id === assistantMsgId);
                     if (msg) {
                       msg.toolCalls = [...(msg.toolCalls || []), toolCall];
-                      // finalize / *_done 工具的 summary 作为显示文本
+                      // 显示工具执行进度（用户可见的 assistant 内容）
+                      // finalize / *_done → 显示 summary；其他工具 → 显示正在调用的工具名
                       if (['finalize', 'desktop_done', 'web_done', 'doc_done', 'code_done'].includes(ev.name)) {
                         const summary = ev.args?.summary || ev.args?.message;
-                        if (summary && typeof summary === 'string' && !msg.content) {
+                        if (summary && typeof summary === 'string') {
                           msg.content = summary;
                         }
+                      } else if (!msg.content || typeof msg.content === 'string' && msg.content.length === 0) {
+                        // LLM 未产出文本时，至少让用户知道在执行什么工具
+                        const toolNames = (msg.toolCalls || []).map((tc: ToolCallEntry) => tc.function.name);
+                        msg.content = `🔧 正在执行：${toolNames.join(' → ')}`;
                       }
                     }
                   });
                 } else if (ev.type === 'tool_end') {
                   const toolMsgId = crypto.randomUUID();
                   const toolCallId = `${ev.name}-${ev.turn}`;
+                  const toolResult = ev.message
+                    ? (typeof ev.message === 'string' ? ev.message : JSON.stringify(ev.message))
+                    : `ok`;
+                  const isDoneTool = ['finalize', 'desktop_done', 'web_done', 'doc_done', 'code_done'].includes(ev.name);
                   set((s) => {
+                    const msg = s.messages.find((m) => m.id === assistantMsgId);
+                    if (msg) {
+                      // 完成类工具：tool_start 已用 args.summary 设了内容，这里用 ev.message 兜底
+                      if (isDoneTool && (!msg.content || typeof msg.content !== 'string' || !msg.content.trim())) {
+                        msg.content = ev.message && typeof ev.message === 'string' ? ev.message : `✓ 完成`;
+                      }
+                      // 非完成工具且无 LLM 文本：显示执行进度
+                      if (!isDoneTool && (!msg.content || typeof msg.content !== 'string' || !msg.content.trim())) {
+                        const toolNames = (msg.toolCalls || []).map((tc: ToolCallEntry) => tc.function.name);
+                        msg.content = `🔧 已执行：${toolNames.join(' → ')}`;
+                      }
+                    }
+                    // 工具结果存入历史（_internal 标记，UI 不渲染）
                     s.messages.push({
                       id: toolMsgId,
                       role: 'tool',
-                      content: ev.message || '',
+                      content: toolResult,
                       timestamp: new Date().toISOString(),
                       toolCallId,
-                    });
+                      _internal: true,
+                    } as ChatMessage);
                   });
-                  // 持久化 tool 消息到 DB（避免下次 loadMessages 时丢失）
-                  const toolContent = typeof ev.message === 'string' ? ev.message : (ev.message ? JSON.stringify(ev.message) : '');
+                  // 持久化到 DB
                   await db.execute(
                     'INSERT INTO messages (id, conversation_id, role, content, timestamp, tool_call_id, agent_internal, agent_type) VALUES (?, ?, ?, ?, ?, ?, 0, \'\')',
-                    [toolMsgId, conversationId, 'tool', toolContent, new Date().toISOString(), toolCallId],
+                    [toolMsgId, conversationId, 'tool', toolResult, new Date().toISOString(), toolCallId],
                   );
                 } else if (ev.type === 'agent_done') {
                   set((s) => {
