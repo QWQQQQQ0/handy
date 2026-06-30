@@ -31,3 +31,30 @@ export function extractText(content: MessageContent): string {
     .map((part) => 'text' in part ? part.text : '')
     .join('\n');
 }
+
+// ── Tool 结果截断 ──
+// 当工具返回内容过大时，LLM 可能直接不回复（尤其 MiMo 等模型）。
+// 解决：超长时截断 tool 消息，完整内容以 user 消息兜底发送。
+
+const DEFAULT_TOOL_RESULT_MAX_LEN = 8000;
+
+export interface TruncatedToolResult {
+  /** 放入 role:'tool' 的内容（截断后） */
+  toolContent: string;
+  /** 如果超长，完整的 user 消息文本；否则 undefined */
+  fullUserMessage?: string;
+}
+
+export function truncateToolResult(
+  toolName: string,
+  rawContent: string,
+  maxLen: number = DEFAULT_TOOL_RESULT_MAX_LEN,
+): TruncatedToolResult {
+  if (rawContent.length <= maxLen) {
+    return { toolContent: rawContent };
+  }
+  const truncated = rawContent.substring(0, maxLen)
+    + `\n\n...[截断] 完整结果共 ${rawContent.length} 字符，见下一条 user 消息`;
+  const fullUserMessage = `[工具 "${toolName}" 的完整返回结果 (${rawContent.length} 字符)]:\n\n${rawContent}`;
+  return { toolContent: truncated, fullUserMessage };
+}

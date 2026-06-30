@@ -68,6 +68,12 @@ export interface SkillRow {
   usage_text: string | null;
   usage_cn: string | null;
   exposed_to_ai: number;
+  /** AgentSkills standard: path to skill directory */
+  skill_dir: string | null;
+  /** AgentSkills standard: SPDX license identifier */
+  license: string | null;
+  /** AgentSkills standard: compatibility requirements */
+  compatibility: string | null;
 }
 
 export interface TaskTreeRow {

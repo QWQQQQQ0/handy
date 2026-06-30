@@ -12,6 +12,8 @@ import type { SkillResult } from '@/types/skill';
 export interface TaskOrchestratorResult {
   success: boolean;
   message: string;
+  /** 子 agent 执行链最后一条助手消息的文本内容 */
+  lastMessage?: string;
 }
 
 export class TaskOrchestrator {
@@ -57,7 +59,7 @@ export class TaskOrchestrator {
     });
 
     if (!decomposeResult.success) {
-      return { success: false, message: decomposeResult.error ?? 'Decomposition failed' };
+      return { success: false, message: decomposeResult.error ?? 'Decomposition failed', lastMessage: decomposeResult.lastResponseText || decomposeResult.error };
     }
 
     // 读取拆分决策
@@ -111,7 +113,7 @@ export class TaskOrchestrator {
       'verifier' as TaskAgentType as never,
       1,
     );
-    await this.runner.runAgent({
+    const verifyResult = await this.runner.runAgent({
       taskId: verifyTaskId,
       agentType: 'verifier',
       goal,
@@ -124,7 +126,7 @@ export class TaskOrchestrator {
     });
 
     await this.taskDB.updateStatus(rootTaskId, 'done');
-    return { success: true, message: `Completed: ${goal}` };
+    return { success: true, message: verifyResult.lastResponseText || verifyResult.summary || `Completed: ${goal}`, lastMessage: verifyResult.lastResponseText || verifyResult.summary };
   }
 
   private async executeLeaf(
@@ -157,8 +159,9 @@ export class TaskOrchestrator {
     });
 
     if (!result.success) {
-      return { success: false, message: result.error ?? 'Execution failed' };
+      const bm = result.lastResponseText || result.lastSuccessfulToolResult || result.summary;
+      return { success: false, message: bm ? `${bm}\n\n(后续出错: ${result.error})` : (result.error ?? 'Execution failed'), lastMessage: bm || result.error };
     }
-    return { success: true, message: subTaskDescription };
+    return { success: true, message: result.lastResponseText || result.summary || subTaskDescription, lastMessage: result.lastResponseText || result.lastSuccessfulToolResult || result.summary || subTaskDescription };
   }
 }

@@ -40,6 +40,18 @@
     "fs:allow-rename",
     "fs:allow-copy-file",
     "dialog:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "C:/**" },
+        { "path": "D:/**" },
+        { "path": "E:/**" }
+      ]
+    }
   ]
 }

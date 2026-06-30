@@ -57,7 +57,7 @@ const MAX_TOKENS_PER_SCENARIO: Record<ModelScenario, number> = {
   [ModelScenario.taskDecomposer]: 4000,
   [ModelScenario.taskVerifier]: 8000,
   [ModelScenario.docAgent]: 32000,
-  [ModelScenario.webAgent]: 16000,
+  [ModelScenario.webAgent]: 96000,
   [ModelScenario.codeAgent]: 96000,
   [ModelScenario.freeAgent]: 96000,
   [ModelScenario.adminAgent]: 16000,
@@ -314,6 +314,7 @@ export class LlmGateway implements IModelService {
     console.log('[LlmGateway] ▶', JSON.parse(JSON.stringify({
       scenario, provider: provider.type + '/' + provider.model,
       messageCount: fullMessages.length, tools: adapterTools?.length, goal,
+      thinkingMode: provider.thinkingMode,
     })));
 
     const check = this.checkLength(scenario, fullMessages);
@@ -324,6 +325,9 @@ export class LlmGateway implements IModelService {
 
     const adapter = this._adapters[provider.type];
     if (!adapter) { yield `__ERROR__:Unknown provider type: ${provider.type}`; return; }
+
+    // 记录完整的请求内容 + 模型信息（含增量 diff）
+    logRequest(provider.type, provider.model, scenario, fullMessages, adapterTools);
 
     const stream = adapter.chat({
       messages: fullMessages,

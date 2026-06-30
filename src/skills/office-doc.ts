@@ -1,36 +1,160 @@
 // Office document skill — generate, detect, read, and edit Word/Excel/PPT.
-// Consolidated into 4 tools: generate_doc, office_detect, com_read, com_edit.
+// Built-in tools are self-defined (not from DB config), same as other built-in skills.
 
 import type { Skill, SkillTool } from './skill';
 import { SkillOk, SkillFail } from './skill';
-import type { SkillResult, ToolDefinition } from '@/types/skill';
+import type { SkillResult } from '@/types/skill';
 
 type OfficeApp = 'word' | 'excel' | 'ppt';
 
 export class OfficeDocSkill implements Skill {
-  id: string;
-  name: string;
-  category: string;
-  description: string;
-  tools: SkillTool[];
-  nameCn?: string;
-  descriptionCn?: string;
-  categoryCn?: string;
-  usage?: string;
-  usageCn?: string;
+  id = 'office_doc';
+  name = 'Office Document';
+  category = 'Document';
+  description = 'Generate, read, and edit Word, Excel, and PowerPoint documents.';
+  nameCn = '办公文档';
+  categoryCn = '文档';
+  descriptionCn = '生成、读取和编辑 Word、Excel、PowerPoint 文档';
 
-  constructor(config?: { id?: string; name?: string; category?: string; description?: string; tools?: ToolDefinition[]; nameCn?: string; descriptionCn?: string; categoryCn?: string; usage?: string; usageCn?: string }) {
-    this.id = config?.id ?? 'office_doc';
-    this.name = config?.name ?? 'Office Document';
-    this.category = config?.category ?? 'Document';
-    this.description = config?.description ?? 'Generate, read, and edit Word, Excel, and PowerPoint documents.';
-    this.tools = config?.tools?.map(t => ({ name: t.name, description: t.description, parameters: t.parameters, nameCn: t.nameCn, descriptionCn: t.descriptionCn })) ?? [];
-    if (config?.nameCn) this.nameCn = config.nameCn;
-    if (config?.descriptionCn) this.descriptionCn = config.descriptionCn;
-    if (config?.categoryCn) this.categoryCn = config.categoryCn;
-    if (config?.usage) this.usage = config.usage;
-    if (config?.usageCn) this.usageCn = config.usageCn;
-  }
+  tools: SkillTool[] = [
+    {
+      name: 'generate_doc',
+      description: 'Generate a new Word (.docx), Excel (.xlsx), or PPT (.pptx) document and save to the workspace directory.',
+      nameCn: '生成文档',
+      descriptionCn: '生成新的 Word (.docx)、Excel (.xlsx) 或 PPT (.pptx) 文档并保存到工作区目录。',
+      parameters: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', description: 'Document type', enum: ['word', 'excel', 'ppt'] },
+          title: { type: 'string', description: 'Document title (used as filename)' },
+          content: { type: 'string', description: 'Markdown content for Word body (type=word only)' },
+          subtitle: { type: 'string', description: 'Optional subtitle (type=word only)' },
+          sheets: {
+            type: 'array',
+            description: 'Sheet definitions (type=excel only). Each: {name, headers: [str], rows: [[values]]}',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                headers: { type: 'array', items: { type: 'string' } },
+                rows: { type: 'array', items: { type: 'array', items: {} } },
+              },
+              required: ['name', 'headers', 'rows'],
+            },
+          },
+          slides: {
+            type: 'array',
+            description: 'Slide definitions (type=ppt only, use this OR markdown)',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string' },
+                content: { type: 'string' },
+                layout: { type: 'string', enum: ['title', 'content', 'two_column'] },
+              },
+              required: ['title'],
+            },
+          },
+          markdown: { type: 'string', description: 'Markdown for PPT (type=ppt only). ## headings become slides.' },
+          author: { type: 'string', description: 'Optional author name' },
+        },
+        required: ['type', 'title'],
+      },
+      returns: '{"path":"saved file path","size":number,"format":"docx/xlsx/pptx"}',
+    },
+    {
+      name: 'office_detect',
+      description: 'Detect Office/WPS COM availability and currently open documents. Call this before com_read/com_edit to see what documents are available.',
+      nameCn: '检测Office文档',
+      descriptionCn: '检测当前打开的 Word、Excel 和 PowerPoint 文档及 COM 可用性。在 com_read/com_edit 前先调用此工具。',
+      parameters: { type: 'object', properties: {}, required: [] },
+      returns: '{"available_apps":["WORD","EXCEL","PPT"],"word":{...},"excel":{...},"ppt":{...}}',
+    },
+    {
+      name: 'com_read',
+      description: 'Read content from an active Word, Excel, or PowerPoint document via COM automation. Word: paragraphs. Excel: cell ranges. PPT: slide texts.',
+      nameCn: '读取文档内容',
+      descriptionCn: '通过 COM 自动化读取活动的 Word/Excel/PPT 文档内容。Word 返回段落，Excel 返回单元格值，PPT 返回幻灯片文本。',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string', description: 'Application: word, excel, or ppt', enum: ['word', 'excel', 'ppt'] },
+          paragraph_start: { type: 'number', description: '[Word] 0-based start paragraph index' },
+          paragraph_end: { type: 'number', description: '[Word] 0-based end paragraph index (exclusive)' },
+          range: { type: 'string', description: '[Excel] Range, e.g. "A1:G10"' },
+          sheet: { type: 'string', description: '[Excel] Sheet name. Default: active sheet' },
+          get_selection: { type: 'boolean', description: '[Excel] Read current selection' },
+          sheet_info: { type: 'boolean', description: '[Excel] Get sheet dimensions' },
+          slide_start: { type: 'number', description: '[PPT] 0-based start slide index' },
+          slide_end: { type: 'number', description: '[PPT] 0-based end slide index (exclusive)' },
+          slide_index: { type: 'number', description: '[PPT] Read single slide with shape details' },
+          slide_info: { type: 'boolean', description: '[PPT] Read shape info for slide_index' },
+          find_text: { type: 'boolean', description: '[PPT] Find all text-containing shapes' },
+        },
+        required: ['app'],
+      },
+    },
+    {
+      name: 'com_edit',
+      description: 'Edit an active Word, Excel, or PowerPoint document via COM automation. Changes are visible immediately. Use operation="open" to open a file, operation="save" to save.',
+      nameCn: '编辑文档',
+      descriptionCn: '通过 COM 自动化编辑活动的 Word/Excel/PPT 文档。修改立即可见。',
+      parameters: {
+        type: 'object',
+        properties: {
+          app: { type: 'string', description: 'Application: word, excel, or ppt', enum: ['word', 'excel', 'ppt'] },
+          operation: { type: 'string', description: 'Operation: open, save, sync, replace, set_paragraph, insert, insert_heading, delete, format, write, formula, auto_fill, set_value, set_text, add_slide, delete_slide, reorder, insert_rows, insert_columns' },
+          file_path: { type: 'string', description: 'Absolute path for open operation' },
+          find: { type: 'string', description: '[Word:replace] Text to find' },
+          replace: { type: 'string', description: '[Word:replace] Replacement text' },
+          text: { type: 'string', description: '[Word/PPT] New text content' },
+          paragraph_index: { type: 'number', description: '[Word] 0-based paragraph index' },
+          after_paragraph: { type: 'number', description: '[Word:insert] Insert after paragraph index' },
+          level: { type: 'number', description: '[Word:insert_heading] Heading level 1-9' },
+          bold: { type: 'boolean', description: '[Word:format]' },
+          italic: { type: 'boolean', description: '[Word:format]' },
+          font_size: { type: 'number', description: '[Word:format]' },
+          range: { type: 'string', description: '[Excel:write] Target range, e.g. "G2:G10"' },
+          values: { type: 'array', description: '[Excel:write] 2D array', items: { type: 'array', items: {} } },
+          cell: { type: 'string', description: '[Excel:formula/set_value] Cell address, e.g. "G2"' },
+          formula: { type: 'string', description: '[Excel:formula] e.g. "=SUM(B2:F2)"' },
+          formula_template: { type: 'string', description: '[Excel:auto_fill] With {row} placeholder' },
+          column: { type: 'string', description: '[Excel:auto_fill/format] Column letter, e.g. "G"' },
+          start_row: { type: 'number', description: '[Excel:auto_fill] First data row (1-based)' },
+          end_row: { type: 'number', description: '[Excel:auto_fill] Last row (1-based, inclusive)' },
+          value: { description: '[Excel:set_value] Value to set' },
+          number_format: { type: 'string', description: '[Excel:format] e.g. "#,##0.00"' },
+          bold_header: { type: 'boolean', description: '[Excel:format] Bold header row' },
+          sheet: { type: 'string', description: '[Excel] Sheet name. Default: active sheet' },
+          after_row: { type: 'number', description: '[Excel:insert_rows] 1-based' },
+          after_col: { type: 'number', description: '[Excel:insert_columns] 1=A' },
+          count: { type: 'number', description: '[Excel] Rows/columns to insert' },
+          slide_index: { type: 'number', description: '[PPT] 0-based slide index' },
+          shape_name: { type: 'string', description: '[PPT:set_text] Shape name' },
+          layout_index: { type: 'number', description: '[PPT:add_slide] Layout index' },
+          title: { type: 'string', description: '[PPT:add_slide] Title text' },
+          content: { type: 'string', description: '[PPT:add_slide] Body text' },
+          after_slide: { type: 'number', description: '[PPT:add_slide] Insert after index' },
+          new_order: { type: 'array', description: '[PPT:reorder] New order as 0-based indices', items: { type: 'number' } },
+        },
+        required: ['app', 'operation'],
+      },
+    },
+    {
+      name: 'doc_code_exec',
+      description: 'Execute Python 3.14 code for complex document operations (loops, conditionals, calculations). For simple read/write, use com_read/com_edit directly. Pre-injected: get_excel_app(), get_word_app(), get_ppt_app(), read_range(), save_workbook(), openpyxl, python-docx, python-pptx.',
+      nameCn: '执行文档代码',
+      descriptionCn: '执行 Python 3.14 代码处理复杂文档操作（循环、条件、计算）。简单读写直接用 com_read/com_edit。预注入：get_excel_app()、get_word_app()、get_ppt_app()、read_range()、save_workbook()、openpyxl、python-docx、python-pptx。',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: 'Python 3.14 code. Set "result" variable to return data. Use print() for debug.' },
+          timeout_sec: { type: 'number', description: 'Timeout in seconds. Default: 60.' },
+        },
+        required: ['code'],
+      },
+    },
+  ];
 
   async execute(toolName: string, params: Record<string, unknown>): Promise<SkillResult> {
     try {
@@ -75,6 +199,21 @@ export class OfficeDocSkill implements Skill {
     }
   }
 
+  /**
+   * 设置工作区根目录路径，更新工具描述（与 CodeToolsSkill 行为一致）。
+   * 在 initBuiltinExecutor 中调用，传入运行时解析的实际路径。
+   */
+  setWorkspacePath(workspacePath: string): void {
+    const wsNote = "\n工作区绝对路径：" + workspacePath;
+    for (const tool of this.tools) {
+      const strip = (s: string) => s.split("\n工作区绝对路径：")[0];
+      if (tool.name === "generate_doc" || tool.name === "com_edit" || tool.name === "doc_code_exec") {
+        tool.description = strip(tool.description) + wsNote;
+        if (tool.descriptionCn) tool.descriptionCn = strip(tool.descriptionCn) + wsNote;
+      }
+    }
+  }
+
   // ════════════════════════════════════════════════════════════
   // generate_doc — unified document generation
   // ════════════════════════════════════════════════════════════
@@ -91,11 +230,14 @@ export class OfficeDocSkill implements Skill {
 
     const ext = type === 'word' ? 'docx' : type === 'excel' ? 'xlsx' : 'pptx';
     const filename = `${title}.${ext}`;
-    const mimeType = type === 'word'
-      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      : type === 'excel'
-        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        : 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+
+    // 解析保存路径到 workspace 目录
+    let savePath: string | undefined;
+    try {
+      const { getWorkspaceDir } = await import('./code-tools/shell-utils');
+      const ws = await getWorkspaceDir();
+      savePath = ws.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + filename;
+    } catch { /* 如果获取 workspace 失败，让 Python 端返回 base64 */ }
 
     let invokeName: string;
     let invokeParams: Record<string, unknown>;
@@ -108,6 +250,7 @@ export class OfficeDocSkill implements Skill {
         title, content,
         subtitle: params['subtitle'] as string | undefined,
         author: params['author'] as string | undefined,
+        savePath,
       };
     } else if (type === 'excel') {
       const sheets = params['sheets'] as Array<Record<string, unknown>>;
@@ -116,18 +259,17 @@ export class OfficeDocSkill implements Skill {
       invokeParams = {
         title, sheets,
         author: params['author'] as string | undefined,
+        savePath,
       };
     } else {
       const slides = params['slides'] as Array<Record<string, unknown>> | undefined;
       const markdown = params['markdown'] as string | undefined;
       if (!slides && !markdown) return SkillFail('slides or markdown is required for PPT');
       invokeName = 'ppt_generate';
-      invokeParams = {
-        title,
-        slides: slides ?? null,
-        markdown: markdown ?? null,
-        author: params['author'] as string | undefined,
-      };
+      invokeParams = { title, savePath };
+      if (slides) (invokeParams as any).slides = slides;
+      if (markdown) (invokeParams as any).markdown = markdown;
+      if (params['author']) (invokeParams as any).author = params['author'];
     }
 
     const result = await invoke<{
@@ -135,11 +277,17 @@ export class OfficeDocSkill implements Skill {
     }>(invokeName, invokeParams);
 
     if (result.saved && result.path) {
-      return SkillOk(`${type.toUpperCase()} generated: ${result.path}`, {
+      return SkillOk(`${type.toUpperCase()} 已保存: ${result.path}`, {
         path: result.path, size: result.size, format: ext,
       });
     }
+    // 回退：Python 端未保存到磁盘时触发下载
     if (result.data) {
+      const mimeType = type === 'word'
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : type === 'excel'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
       await this.downloadFile(result.data, filename, mimeType);
       return SkillOk(`${type.toUpperCase()} downloaded: ${filename}`, {
         filename, size: result.size, format: ext,
@@ -303,6 +451,14 @@ export class OfficeDocSkill implements Skill {
 
     const operation = params['operation'] as string;
     if (!operation) return SkillFail('operation is required');
+
+    // Resolve workspace-relative file_path to absolute path
+    if (params['file_path'] && typeof params['file_path'] === 'string') {
+      try {
+        const { resolveSearchPath } = await import('./code-tools/shell-utils');
+        params['file_path'] = await resolveSearchPath(params['file_path'] as string);
+      } catch { /* keep original path if resolution fails */ }
+    }
 
     const { invoke } = await import('@tauri-apps/api/core');
     const { app: _, operation: __, ...rest } = params as Record<string, unknown> & { app: string; operation: string };

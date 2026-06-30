@@ -8,7 +8,7 @@ import { AgentEndpoint } from '@/api/types';
 import { apiStreamCompat } from '@/api/client';
 
 export class ChatAgent {
-  /** 流式聊天 */
+  /** 流式聊天，endpoint 默认 chat，@agent 时路由到对应后端 API */
   async *chat(params: {
     messages: LLMMessage[];
     provider: ProviderConfig;
@@ -16,12 +16,14 @@ export class ChatAgent {
     tools?: Record<string, unknown>[];
     goal?: string;
     noSystemPrompt?: boolean;
+    systemExtra?: string;
+    endpoint?: AgentEndpoint;
   }): AsyncGenerator<string> {
     for await (const chunk of apiStreamCompat(
-      AgentEndpoint.chat,
+      params.endpoint ?? AgentEndpoint.chat,
       params.provider,
       params.apiKey,
-      { messages: params.messages, tools: params.tools, goal: params.goal, noSystemPrompt: params.noSystemPrompt },
+      { messages: params.messages, tools: params.tools, goal: params.goal, noSystemPrompt: params.noSystemPrompt, systemPromptExtra: params.systemExtra },
     )) {
       yield chunk;
     }

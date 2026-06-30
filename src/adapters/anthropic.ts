@@ -2,6 +2,7 @@
 
 import type { LLMMessage } from '@/types/message';
 import type { LLMAdapter } from './types';
+import { logLLMRequest } from './request-logger';
 
 export class AnthropicAdapter implements LLMAdapter {
   readonly adapterId = 'anthropic';
@@ -16,7 +17,6 @@ export class AnthropicAdapter implements LLMAdapter {
     tools?: Record<string, unknown>[];
     thinkingMode?: boolean;
   }): AsyncGenerator<string> {
-    console.debug('[anthropic] POST msgs=', messages.length, 'tools=', tools?.length ?? 0, 'model=', model);
     const url = `${baseUrl ?? this.defaultBaseUrl}/v1/messages`;
 
     // Separate system messages from conversation
@@ -43,12 +43,31 @@ export class AnthropicAdapter implements LLMAdapter {
     // MiMo thinking models: enable thinking mode
     if (thinkingMode) {
       body['thinking'] = { type: 'enabled' };
+      console.log('[anthropic] 🧠 thinking mode enabled');
     }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120_000);
     let response: Response;
     try {
+      const bodyJson = JSON.stringify(body);
+      // 记录最终发给 LLM 厂商的请求概要
+      const bodyPreview = bodyJson.length > 2000
+        ? bodyJson.substring(0, 2000) + `...[+${bodyJson.length - 2000} chars]`
+        : bodyJson;
+      console.log('[anthropic] 🚀 Final request → LLM provider:', {
+        model,
+        url,
+        bodySize: bodyJson.length,
+        bodySizeKB: Math.round(bodyJson.length / 1024),
+        messageCount: conversationMessages.length,
+        systemPromptLen: systemMessages.join('\n').length,
+        toolsCount: tools?.length ?? 0,
+        thinkingMode: thinkingMode ?? false,
+        bodyPreview,
+      });
+      // 写入完整请求到日志文件
+      await logLLMRequest('anthropic', model, url, bodyJson);
       response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -56,7 +75,7 @@ export class AnthropicAdapter implements LLMAdapter {
           'anthropic-version': '2023-06-01',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(body),
+        body: bodyJson,
         signal: controller.signal,
       });
     } catch (e) {
@@ -103,6 +122,13 @@ export class AnthropicAdapter implements LLMAdapter {
             const block = toolUseBlocks.get(idx);
             if (block) block['_jsonBuf'] = (block['_jsonBuf'] as string) + partial;
           }
+          // 深度思考内容 (thinking_delta)
+          const thinking = delta?.['thinking'] as string | undefined;
+          if (thinking && thinking.length > 0) yield `__REASONING__:${thinking}`;
+          // 签名内容 (signature_delta) — 也是思考过程的一部分
+          const signature = delta?.['signature'] as string | undefined;
+          if (signature && signature.length > 0) yield `__REASONING__:${signature}`;
+          // 普通文本
           const text = delta?.['text'] as string | undefined;
           if (text && text.length > 0) yield text;
         }

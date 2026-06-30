@@ -25,10 +25,7 @@ const MAX_HTML_SIZE = 1_000_000; // 1MB limit
 
 // Patterns to sanitize for security
 const DANGEROUS_PATTERNS = [
-  // Inline event handlers
-  /\bon\w+\s*=\s*["'][^"']*["']/gi,
-  /\bon\w+\s*=\s*\w+/gi,
-  // javascript: URLs
+  // javascript: URLs (XSS vector — keep these)
   /href\s*=\s*["']javascript:[^"']*["']/gi,
   /src\s*=\s*["']javascript:[^"']*["']/gi,
   // data: URLs with script content
@@ -118,34 +115,27 @@ function sanitizeHTML(html: string): string {
  */
 function wrapScriptInSandbox(script: string): string {
   return `
+// ── sandbox console capture ──
+window.__sandboxLogs = [];
+window.__sandboxErrors = [];
 (function() {
-  const __logs = [];
-  const __console = {
-    log: function() { __logs.push(Array.from(arguments).map(String).join(' ')); },
-    info: function() { __logs.push('[INFO] ' + Array.from(arguments).map(String).join(' ')); },
-    warn: function() { __logs.push('[WARN] ' + Array.from(arguments).map(String).join(' ')); },
-    error: function() { __logs.push('[ERROR] ' + Array.from(arguments).map(String).join(' ')); },
-    debug: function() { __logs.push('[DEBUG] ' + Array.from(arguments).map(String).join(' ')); },
-    clear: function() { __logs.length = 0; },
-    table: function(data) { __logs.push(JSON.stringify(data, null, 2)); },
+  var _orig = window.console;
+  window.console = {
+    log: function() { window.__sandboxLogs.push(Array.from(arguments).map(String).join(' ')); _orig.log.apply(_orig, arguments); },
+    info: function() { window.__sandboxLogs.push('[INFO] ' + Array.from(arguments).map(String).join(' ')); _orig.info.apply(_orig, arguments); },
+    warn: function() { window.__sandboxLogs.push('[WARN] ' + Array.from(arguments).map(String).join(' ')); _orig.warn.apply(_orig, arguments); },
+    error: function() { window.__sandboxLogs.push('[ERROR] ' + Array.from(arguments).map(String).join(' ')); _orig.error.apply(_orig, arguments); },
+    debug: function() { window.__sandboxLogs.push('[DEBUG] ' + Array.from(arguments).map(String).join(' ')); _orig.debug?.apply(_orig, arguments); },
+    clear: function() { window.__sandboxLogs.length = 0; _orig.clear?.apply(_orig, arguments); },
+    table: function(data) { window.__sandboxLogs.push(JSON.stringify(data, null, 2)); _orig.table?.apply(_orig, arguments); },
   };
+})();
 
-  // Override console in this scope
-  const console = __console;
-
-  // Capture errors
-  window.__sandboxErrors = [];
-
-  try {
-    ${script}
-  } catch (err) {
-    window.__sandboxErrors.push(err.message || String(err));
-    __console.error(err.message || String(err));
-  }
-
-  // Expose logs for parent to read
-  window.__sandboxLogs = __logs;
-})();`;
+// ── user script (global scope — inline onclick etc. can find declarations) ──
+window.addEventListener('error', function(e) {
+  window.__sandboxErrors.push(e.message || String(e));
+});
+${script}`;
 }
 
 // ---------------------------------------------------------------------------

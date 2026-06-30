@@ -11,6 +11,7 @@ import type { LLMMessage } from '@/types/message';
 import type { SemanticAnnotation } from '@/types/cache';
 import { compressImage, type CompressedImage } from '@/utils/image';
 import { resolveMultimodalProvider } from '@/utils/multimodal-provider';
+import { truncateToolResult } from '@/utils/content';
 import { useModelConfigStore } from '@/stores/model-config-store';
 import { computeWebFingerprint, hashDOMStructure } from '@/services/cache-service';
 import { domNodesToAnnotations } from '@/services/semantic-annotation-service';
@@ -257,7 +258,9 @@ export class WebAutomationAgent {
             }
           }
         } else {
-          ctx.messages.push({ role: 'tool', content, toolCallId: tc.id });
+          const tr = truncateToolResult(tc.name, content);
+          ctx.messages.push({ role: 'tool', content: tr.toolContent, toolCallId: tc.id });
+          if (tr.fullUserMessage) ctx.messages.push({ role: 'user', content: tr.fullUserMessage });
         }
 
         await onStep?.({ type: 'after_tool', data: { name: tc.name, arguments: resolvedArgs, success: result.success, message: result.message, ...(result.data ? { data: result.data } : {}) }, turnIndex: turn });

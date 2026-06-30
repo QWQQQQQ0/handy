@@ -4,6 +4,7 @@
 
 import type { Skill, SkillTool, SkillResult } from './skill';
 import type { TaskActionConfig } from '@/types/scheduler';
+import type { ScreenRegion, DiffStrategyType } from '@/types/watcher';
 import { SkillOk, SkillFail } from './skill';
 
 export class SchedulerToolsSkill implements Skill {
@@ -48,6 +49,15 @@ export class SchedulerToolsSkill implements Skill {
               '- "notify": Send a browser notification (provide notify_template).',
           },
           goal_template: { type: 'string', description: '[Required for action_type=agent_execute] The complete goal. Write as if giving a new instruction — include all context since each execution is a fresh session with no memory.' },
+          custom_tools: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              '[Optional for action_type=agent_execute] List of tool names the agent needs. ' +
+              'ONLY include tools required for this task to reduce token usage and prevent context overflow. ' +
+              'Example: ["desktop_close_app", "desktop_list_windows"] for closing an app. ' +
+              'If omitted, all available tools are sent (NOT recommended for simple tasks).',
+          },
           workflow_from_task_id: { type: 'string', description: '[Required for action_type=workflow] The ID of a recorded workflow template from list_recorded_workflows. NOT a scheduled task ID — it must come from the list_recorded_workflows.' },
           script_language: { type: 'string', enum: ['javascript', 'python'], description: '[Required for action_type=script] The programming language of the script.' },
           script_code: { type: 'string', description: '[Required for action_type=script] The source code to execute in the sandbox.' },
@@ -90,6 +100,15 @@ export class SchedulerToolsSkill implements Skill {
               '- "notify": Send a browser notification (provide notify_template).',
           },
           goal_template: { type: 'string', description: '[Required for action_type=agent_execute] The complete goal. The agent will receive a fresh screenshot of the changed screen. Example: "检查下载进度弹窗，如果下载完成就关闭窗口并打开文件".' },
+          custom_tools: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              '[Optional for action_type=agent_execute] List of tool names the agent needs. ' +
+              'ONLY include tools required for this task to reduce token usage and prevent context overflow. ' +
+              'Example: ["desktop_close_app", "desktop_list_windows"] for closing an app. ' +
+              'If omitted, all available tools are sent (NOT recommended for simple tasks).',
+          },
           workflow_from_task_id: { type: 'string', description: '[Required for action_type=workflow] The ID of a recorded workflow template. Get this from the list_recorded_workflows tool — do NOT use a scheduled task ID from list_scheduled_tasks.' },
           script_language: { type: 'string', enum: ['javascript', 'python'], description: '[Required for action_type=script] The programming language.' },
           script_code: { type: 'string', description: '[Required for action_type=script] The source code to execute. Can access trigger variables like {snapshot}, {diff}.' },
@@ -143,6 +162,61 @@ export class SchedulerToolsSkill implements Skill {
         '使用场景：(1) 创建新任务前检查重复，(2) 用户询问"有哪些任务在运行"，(3) 查找任务 ID 以便取消，(4) 查找 has_workflow=true 的任务，用其 ID 创建 workflow 类型的定时/监控任务。',
       parameters: { type: 'object', properties: {}, required: [] },
     },
+    {
+      name: 'wait_for_screen_change',
+      description:
+        'Block and wait until a screen region visually changes. Returns when a meaningful change is detected or timeout occurs. ' +
+        'IMPORTANT: This tool does NOT auto-detect regions. You MUST provide explicit pixel coordinates (region). ' +
+        'Use other tools (e.g. UIA inspection, OCR, desktop_list_windows) to determine the target region coordinates first, then call this tool. ' +
+        'Use cases: wait for download completion, wait for new message, wait for UI state change.',
+      nameCn: '等待屏幕变更',
+      descriptionCn:
+        '阻塞等待屏幕区域发生视觉变化。检测到有意义的变化或超时后返回。' +
+        '重要：此工具不会自动识别区域，必须提供明确的像素坐标（region）。请先用其他工具（如 UIA 检查、OCR、desktop_list_windows）确定目标区域坐标，再调用此工具。' +
+        '适用场景：等待下载完成、等待新消息、等待 UI 状态变化。',
+      parameters: {
+        type: 'object',
+        properties: {
+          region: {
+            type: 'object',
+            properties: {
+              x: { type: 'number', description: 'Left edge X coordinate (screen absolute pixels)' },
+              y: { type: 'number', description: 'Top edge Y coordinate (screen absolute pixels)' },
+              width: { type: 'number', description: 'Region width in pixels' },
+              height: { type: 'number', description: 'Region height in pixels' },
+            },
+            required: ['x', 'y', 'width', 'height'],
+            description: 'Screen region to monitor (absolute pixel coordinates)',
+          },
+          hwnd: {
+            type: 'number',
+            description: 'Window handle for anti-occlusion capture using PrintWindow. Optional — if omitted, uses GDI screen capture.',
+          },
+          image: {
+            type: 'string',
+            description: 'Baseline image (base64 BMP). If omitted, auto-captures current screen at the specified region.',
+          },
+          diff_strategy: {
+            type: 'string',
+            enum: ['fast_visual', 'semantic_text'],
+            description: 'Detection strategy. fast_visual: block-level comparison (<5ms, default). semantic_text: OCR text diff (~100ms).',
+          },
+          min_confidence: {
+            type: 'number',
+            description: 'Minimum confidence threshold 0-1 (default: 0.9). Changes below this threshold are ignored.',
+          },
+          poll_interval_ms: {
+            type: 'number',
+            description: 'Interval between checks in milliseconds (default: 1000).',
+          },
+          timeout_ms: {
+            type: 'number',
+            description: 'Max wait time in milliseconds (default: 300000 = 5 minutes). Returns changed=false on timeout.',
+          },
+        },
+        required: ['region'],
+      },
+    },
   ];
 
   async execute(toolName: string, params: Record<string, unknown>): Promise<SkillResult> {
@@ -158,6 +232,8 @@ export class SchedulerToolsSkill implements Skill {
           return this.handleCancelTask(params);
         case 'list_scheduled_tasks':
           return this.handleListTasks();
+        case 'wait_for_screen_change':
+          return this.handleWaitForScreenChange(params);
         default:
           return SkillFail(`Unknown tool: ${toolName}`);
       }
@@ -289,6 +365,96 @@ export class SchedulerToolsSkill implements Skill {
       { tasks },
     );
   }
+
+  private async handleWaitForScreenChange(params: Record<string, unknown>): Promise<SkillResult> {
+    const { getDetector } = await import('@/services/watcher/diff-detector');
+    const { captureRegion } = await import('@/services/watcher/region-capture');
+
+    console.log('[wait_for_screen_change] raw params:', JSON.stringify(params));
+
+    // Parse region
+    let regionParam = params['region'] as Record<string, unknown> | undefined;
+
+    // Handle case where region is passed as JSON string
+    if (typeof regionParam === 'string') {
+      try {
+        regionParam = JSON.parse(regionParam) as Record<string, unknown>;
+      } catch {
+        return SkillFail('region is not valid JSON');
+      }
+    }
+
+    if (!regionParam || typeof regionParam !== 'object') {
+      return SkillFail(`region is required (got: ${typeof regionParam})`);
+    }
+
+    console.log('[wait_for_screen_change] regionParam:', JSON.stringify(regionParam));
+
+    const region: ScreenRegion = {
+      x: Number(regionParam['x'] ?? 0),
+      y: Number(regionParam['y'] ?? 0),
+      width: Number(regionParam['width'] ?? 0),
+      height: Number(regionParam['height'] ?? 0),
+    };
+
+    console.log('[wait_for_screen_change] parsed region:', JSON.stringify(region));
+
+    if (region.width <= 0 || region.height <= 0) {
+      return SkillFail(`region width and height must be > 0 (got: ${region.width}x${region.height})`);
+    }
+
+    // Parse optional params
+    const hwnd = Number(params['hwnd'] ?? 0) || undefined;
+    const image = params['image'] as string | undefined;
+    const diffStrategy = (params['diff_strategy'] as DiffStrategyType) ?? 'fast_visual';
+    const minConfidence = Number(params['min_confidence'] ?? 0.9);
+    const pollIntervalMs = Number(params['poll_interval_ms'] ?? 1000);
+    const timeoutMs = Number(params['timeout_ms'] ?? 300000);
+
+    const detector = getDetector(diffStrategy);
+    let baseline = image ?? await captureRegion(region, hwnd);
+
+    const start = Date.now();
+    const deadline = start + timeoutMs;
+    let checks = 0;
+
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, pollIntervalMs));
+      checks++;
+
+      const current = await captureRegion(region, hwnd);
+      const diff = await detector.detect(baseline, current);
+
+      if (diff.changed && diff.confidence >= minConfidence) {
+        return SkillOk(
+          `检测到变化 (${(diff.confidence * 100).toFixed(0)}%): ${diff.diffDetail ?? '视觉变化'}`,
+          {
+            changed: true,
+            diff_detail: diff.diffDetail,
+            diff_bbox: diff.diffBbox,
+            confidence: diff.confidence,
+            snapshot: current,
+            elapsed_ms: Date.now() - start,
+            checks,
+            reason: 'detected',
+          },
+        );
+      }
+
+      baseline = current; // sliding window
+    }
+
+    return SkillOk(
+      `超时 (${(timeoutMs / 1000).toFixed(0)}s)，未检测到变化`,
+      {
+        changed: false,
+        confidence: 0,
+        elapsed_ms: Date.now() - start,
+        checks,
+        reason: 'timeout',
+      },
+    );
+  }
 }
 
 // ── Shared helper: build action from tool params ──
@@ -301,7 +467,12 @@ async function buildAction(
     case 'agent_execute': {
       const goalTemplate = String(params['goal_template'] ?? '');
       if (!goalTemplate) return null;
-      return { type: 'agent_execute', goalTemplate } as TaskActionConfig;
+      const customTools = params['custom_tools'] as string[] | undefined;
+      return {
+        type: 'agent_execute',
+        goalTemplate,
+        ...(customTools && customTools.length > 0 ? { toolMode: 'custom' as const, customTools } : {}),
+      } as TaskActionConfig;
     }
     case 'workflow': {
       const fromTemplateId = String(params['workflow_from_task_id'] ?? '');

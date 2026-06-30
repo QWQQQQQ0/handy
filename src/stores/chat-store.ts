@@ -6,11 +6,12 @@ import type { ChatMessage, MessageContent, LLMMessage } from '@/types/message';
 import type { ConversationRow } from '@/db';
 import { getDB } from '@/db';
 import type { SQLiteAdapter } from '@/db/adapter';
-import { serializeContent, deserializeContent, hasImages } from '@/utils/content';
+import { serializeContent, deserializeContent, hasImages, truncateToolResult } from '@/utils/content';
 import { resolveMultimodalProvider } from '@/utils/multimodal-provider';
 import { isMobile } from '@/utils/platform';
 import { useModelConfigStore } from './model-config-store';
 import { useSettingsStore } from './settings-store';
+import { AgentEndpoint } from '@/api/types';
 
 // Chat 基础工具 —— 只保留系统配置工具，业务工具通过 request_agent 路由到各 agent
 const DESKTOP_CHAT_TOOLS = new Set([
@@ -23,6 +24,7 @@ const DESKTOP_CHAT_TOOLS = new Set([
   'list_models', 'switch_model', 'add_model', 'update_model',
   'get_settings', 'update_settings',
   'list_watchers',
+  'get_agent_log',
 ]);
 
 const MOBILE_CHAT_TOOLS = new Set([
@@ -35,10 +37,68 @@ const MOBILE_CHAT_TOOLS = new Set([
   'list_models', 'switch_model', 'add_model', 'update_model',
   'get_settings', 'update_settings',
   'list_watchers',
+  'get_agent_log',
 ]);
 
 function getChatBasicTools(): Set<string> {
   return isMobile() ? MOBILE_CHAT_TOOLS : DESKTOP_CHAT_TOOLS;
+}
+
+// Agent 专属工具集（@ 选中时绕过用户 toolMode，直接用 agent 自己的工具）
+const AGENT_TOOL_FILTERS: Record<string, Set<string>> = {
+  code: new Set([
+    'read_file', 'write_file', 'glob_files', 'grep_files',
+    'generate_code', 'generate_project', 'execute_code',
+    'save_code', 'list_code', 'save_app', 'save_project',
+    'run_command', 'web_search', 'web_fetch',
+  ]),
+  web: new Set([
+    'web_search', 'web_fetch',
+    'web_launch', 'web_navigate', 'web_get_interactive',
+    'web_click', 'web_fill', 'web_scroll', 'web_close',
+    'run_playwright_script',
+    'think', 'request_user_input', 'web_done', 'finalize',
+  ]),
+  document: new Set([
+    'office_detect', 'com_read', 'com_edit', 'generate_doc', 'doc_code_exec',
+    'generate_word', 'generate_excel', 'generate_ppt',
+    'word_com_read', 'word_com_edit', 'excel_com_read', 'excel_com_edit',
+    'ppt_com_read', 'ppt_com_edit',
+    'read_file', 'glob_files', 'write_file',
+    'think', 'request_user_input', 'doc_done', 'finalize',
+  ]),
+  computeruse: new Set([
+    'desktop_screenshot', 'screenshot_window', 'screenshot_window_region',
+    'desktop_click', 'desktop_double_click', 'desktop_right_click',
+    'desktop_move_cursor', 'desktop_drag', 'desktop_scroll',
+    'desktop_type_text', 'desktop_press_key', 'desktop_key_down', 'desktop_key_up',
+    'desktop_list_windows', 'desktop_focus_window', 'desktop_resize_window',
+    'desktop_maximize_window', 'desktop_minimize_window', 'desktop_close_window',
+    'desktop_open_app', 'desktop_find_app',
+    'desktop_get_clipboard', 'desktop_set_clipboard',
+    'uia_get_interactive', 'uia_click', 'uia_type_text', 'uia_find_element',
+    'uia_fingerprint', 'uia_find_element_at_point', 'uia_get_property',
+    'read_file', 'write_file', 'run_command',
+    'think', 'request_user_input', 'finalize',
+  ]),
+  // app agent: 不限制工具，由页面能力上下文驱动
+  app: DESKTOP_CHAT_TOOLS,
+};
+
+function getAgentToolFilter(agentName: string): Set<string> {
+  return AGENT_TOOL_FILTERS[agentName] ?? getChatBasicTools();
+}
+
+// @agent → 后端 API 路由映射
+const AGENT_ENDPOINTS: Record<string, AgentEndpoint> = {
+  code: AgentEndpoint.codeAgent,
+  web: AgentEndpoint.webAgent,
+  document: AgentEndpoint.docAgent,
+  computeruse: AgentEndpoint.desktopAutomation,
+};
+
+function getAgentEndpoint(agentName: string): AgentEndpoint | undefined {
+  return AGENT_ENDPOINTS[agentName];
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +146,9 @@ interface ChatState {
   error: string | null;
   toolMode: ToolMode;
   customTools: Set<string>;
+  // @ 长效保持（跨窗口持久）
+  stickyAgent: { context: string; label: string } | null;
+  setStickyAgent: (agent: { context: string; label: string } | null) => void;
 
   // Tool confirmation state
   awaitingConfirmation?: {
@@ -120,7 +183,7 @@ interface ChatState {
   editMessage: (messageId: string, newContent: string) => Promise<void>;
 
   // Actions — streaming
-  sendMessage: (content: MessageContent, password?: string, options?: { noSystemPrompt?: boolean; skipAddUserMessage?: boolean }) => Promise<void>;
+  sendMessage: (content: MessageContent, password?: string, options?: { noSystemPrompt?: boolean; skipAddUserMessage?: boolean; systemExtra?: string; useFreeAgent?: boolean; agentName?: string; agentContext?: string }) => Promise<void>;
   stopChat: () => void;
   confirmToolCall: () => Promise<void>;
   rejectToolCall: () => Promise<void>;
@@ -139,6 +202,20 @@ export const useChatStore = create<ChatState>()(
     error: null,
     toolMode: ToolMode.all,
     customTools: new Set(),
+    stickyAgent: null,
+    setStickyAgent: (agent) => {
+      const convId = get().activeConversation?.id;
+      if (convId) {
+        try {
+          if (agent) {
+            localStorage.setItem(`openpaw_sticky_agent:${convId}`, JSON.stringify(agent));
+          } else {
+            localStorage.removeItem(`openpaw_sticky_agent:${convId}`);
+          }
+        } catch { /* localStorage 不可用时忽略 */ }
+      }
+      set({ stickyAgent: agent });
+    },
 
     loadConversations: async () => {
       const db = await getDB();
@@ -200,18 +277,35 @@ export const useChatStore = create<ChatState>()(
       const db = await getDB();
       await db.execute('DELETE FROM messages WHERE conversation_id = ?', [id]);
       await db.execute('DELETE FROM conversations WHERE id = ?', [id]);
-      if (get().activeConversation?.id === id) {
-        set({ activeConversation: null, messages: [], debugMessages: [] });
+      const wasActive = get().activeConversation?.id === id;
+      if (wasActive) {
+        // 清理当前对话全部状态（与 newChat 对齐）
+        set({ activeConversation: null, messages: [], debugMessages: [], error: null, stickyAgent: null });
+        // 清理该对话的 localStorage
+        try { localStorage.removeItem(`openpaw_sticky_agent:${id}`); } catch { /* ignore */ }
       }
       await get().loadConversations();
+      // 删除当前对话后自动切到下一个，避免卡在空状态
+      if (wasActive) {
+        const remaining = get().conversations;
+        if (remaining.length > 0) {
+          await get().switchConversation(remaining[0]);
+        }
+      }
     },
 
     newChat: () => {
-      set({ activeConversation: null, messages: [], debugMessages: [], error: null });
+      set({ activeConversation: null, messages: [], debugMessages: [], error: null, stickyAgent: null });
     },
 
     switchConversation: async (conv) => {
-      set({ activeConversation: conv, error: null });
+      // 切换对话时恢复该对话的 @ 状态
+      let restored: { context: string; label: string } | null = null;
+      try {
+        const r = localStorage.getItem(`openpaw_sticky_agent:${conv.id}`);
+        if (r) restored = JSON.parse(r);
+      } catch { /* ignore */ }
+      set({ activeConversation: conv, error: null, stickyAgent: restored });
       await get().loadMessages(conv.id);
     },
 
@@ -340,8 +434,10 @@ export const useChatStore = create<ChatState>()(
     },
 
     sendMessage: async (content, password, options) => {
+      console.log('[chat-store] sendMessage options:', options);
       const noSystemPrompt = options?.noSystemPrompt ?? false;
       const skipAddUserMessage = options?.skipAddUserMessage ?? false;
+      const systemExtra = options?.systemExtra;
       const state = get();
       // 按会话检查：只有同一个会话在 streaming 时才阻塞
       if (state.isStreaming && state.streamingConversationId === state.activeConversation?.id) return;
@@ -407,6 +503,11 @@ export const useChatStore = create<ChatState>()(
 
         const apiKey = await modelStore.getApiKey(provider.id, password);
 
+        console.log('[ChatStore] 🚀 provider config:', {
+          type: provider.type, model: provider.model, baseUrl: provider.baseUrl,
+          thinkingMode: provider.thinkingMode, supportsTools: provider.supportsTools,
+        });
+
         // Get or create conversation
         let conversationId: string;
         let currentConv = state.activeConversation;
@@ -421,6 +522,19 @@ export const useChatStore = create<ChatState>()(
           set({ activeConversation: currentConv });
         }
         conversationId = currentConv.id;
+
+        // @ 长效保持：对话创建后再持久化（新建对话时 activeConversation 之前为 null）
+        if (options?.agentContext) {
+          const ctx = options.agentContext;
+          const label = ctx.startsWith('knowledge_source:') ? ctx.slice(17)
+            : ctx.startsWith('knowledge_skill:') ? ctx.slice(16)
+            : ctx.startsWith('custom_agent:') ? ctx.slice(13)
+            : ctx.replace(/^Agent\s+"(.+)".*/s, '$1');
+          try {
+            localStorage.setItem(`openpaw_sticky_agent:${conversationId}`, JSON.stringify({ context: ctx, label }));
+          } catch { /* ignore */ }
+          set({ stickyAgent: { context: ctx, label } });
+        }
 
         const db = await getDB();
         // Save user message to DB (编辑重发时跳过，消息已在 state + DB 中)
@@ -439,6 +553,9 @@ export const useChatStore = create<ChatState>()(
           // Load existing messages
           await get().loadMessages(conversationId);
         }
+
+        // 记录 DB 中已有的消息 ID，防止后续持久化时 UNIQUE 冲突
+        const existingMsgIds = new Set(get().messages.map(m => m.id));
 
         // Load skills from DB first (DB is the single source of truth)
         const { useSkillStore } = await import('@/stores/skill-store');
@@ -466,22 +583,213 @@ export const useChatStore = create<ChatState>()(
           ? content
           : content.filter((p) => p.type === 'text').map((p) => p.text).join(' ');
 
+        // ── 判断是否使用 FreeAgent（基础工具模式 或 知识技能 @ 选择时） ──
+        const toolModeForCheck = get().toolMode;
+        const shouldUseFreeAgent = options?.useFreeAgent
+          || (!options?.agentName && toolModeForCheck === ToolMode.basic);
+
+        console.log('[ChatStore] FreeAgent decision:', {
+          toolMode: toolModeForCheck,
+          optionsUseFreeAgent: options?.useFreeAgent,
+          optionsAgentName: options?.agentName,
+          shouldUseFreeAgent,
+        });
+
+        if (shouldUseFreeAgent) {
+          try {
+            // FreeAgent：使用专属系统提示词 + 全工具开放（通过 ToolDisclosure 渐进式披露）
+            const { FreeAgentGateway } = await import('@/services/free-agent');
+
+            const gateway = new FreeAgentGateway(executor);
+            const sysExtra = options?.systemExtra || '';
+
+            const assistantMsgId = crypto.randomUUID();
+            let fullText = '';
+
+            // 构建对话历史（排除最后一条 user 消息，它会作为 goal 参数单独传入 runAgent）
+            // 注意：必须在 assistant 占位消息 push 之前构建，否则最后一条消息是 assistant 而非 user
+            const allMsgs = get().messages.filter((m) => m.role !== 'system').filter((m) => !m._agentInternal);
+            const historyWithoutLast = allMsgs.length > 0 && allMsgs[allMsgs.length - 1].role === 'user'
+              ? allMsgs.slice(0, -1)
+              : allMsgs;
+            const chatMessages: LLMMessage[] = historyWithoutLast.map((m): LLMMessage => {
+              const msgContent: string | { type: string; [k: string]: unknown }[] =
+                typeof m.content === 'string' ? m.content
+                : Array.isArray(m.content) ? m.content as { type: string; [k: string]: unknown }[]
+                : '';
+              const base: LLMMessage = {
+                role: m.role,
+                content: msgContent,
+              };
+              if (m.role === 'assistant' && m.toolCalls) {
+                base.toolCalls = m.toolCalls;
+              }
+              if (m.role === 'tool' && m.toolCallId) {
+                base.toolCallId = m.toolCallId;
+              }
+              return base;
+            });
+            console.log(`[ChatStore] FreeAgent chatMessages: ${chatMessages.length} 条历史消息`);
+
+            // 先推占位 assistant 消息，流式过程中实时更新
+            set((s) => {
+              s.messages.push({
+                id: assistantMsgId,
+                role: 'assistant',
+                content: '',
+                status: 'streaming',
+                timestamp: new Date().toISOString(),
+                toolCalls: [],
+              });
+            });
+
+            const result = await gateway.handleUserGoal({
+              goal: userText,
+              provider,
+              apiKey,
+              password,
+              signal: abortController.signal,
+              maxTurns: 30,
+              customSystemPrompt: sysExtra,
+              chatMessages,
+              onProgress: async (ev) => {
+                // 注意：所有 Handler 必须用 find 定位 assistant 消息，因为 tool_end
+                // 会将 tool 消息 push 到数组末尾，不能用 msgs[msgs.length - 1]
+                if (ev.type === 'stream_chunk') {
+                  fullText += ev.text;
+                  set((s) => {
+                    const msg = s.messages.find((m) => m.id === assistantMsgId);
+                    if (msg) {
+                      msg.content = fullText;
+                      if (ev.reasoning) msg.reasoning_content = ev.reasoning;
+                    }
+                  });
+                } else if (ev.type === 'llm_thinking') {
+                  set((s) => {
+                    const msg = s.messages.find((m) => m.id === assistantMsgId);
+                    if (msg) {
+                      // stream_chunk 已用 fullText 增量更新内容，这里只补 reasoning
+                      if (ev.reasoning) msg.reasoning_content = ev.reasoning;
+                      // 如果流式过程中没有 stream_chunk（纯 reasoning 场景），用 ev.text 兜底
+                      if (!msg.content && ev.text && ev.text.trim()) {
+                        msg.content = ev.text;
+                      }
+                    }
+                  });
+                } else if (ev.type === 'tool_start') {
+                  const toolCall: ToolCallEntry = {
+                    id: `${ev.name}-${ev.turn}`,
+                    type: 'function',
+                    function: { name: ev.name, arguments: JSON.stringify(ev.args) },
+                  };
+                  set((s) => {
+                    const msg = s.messages.find((m) => m.id === assistantMsgId);
+                    if (msg) {
+                      msg.toolCalls = [...(msg.toolCalls || []), toolCall];
+                      // finalize / *_done 工具的 summary 作为显示文本
+                      if (['finalize', 'desktop_done', 'web_done', 'doc_done', 'code_done'].includes(ev.name)) {
+                        const summary = ev.args?.summary || ev.args?.message;
+                        if (summary && typeof summary === 'string' && !msg.content) {
+                          msg.content = summary;
+                        }
+                      }
+                    }
+                  });
+                } else if (ev.type === 'tool_end') {
+                  const toolMsgId = crypto.randomUUID();
+                  const toolCallId = `${ev.name}-${ev.turn}`;
+                  set((s) => {
+                    s.messages.push({
+                      id: toolMsgId,
+                      role: 'tool',
+                      content: ev.message || '',
+                      timestamp: new Date().toISOString(),
+                      toolCallId,
+                    });
+                  });
+                  // 持久化 tool 消息到 DB（避免下次 loadMessages 时丢失）
+                  const toolContent = typeof ev.message === 'string' ? ev.message : (ev.message ? JSON.stringify(ev.message) : '');
+                  await db.execute(
+                    'INSERT INTO messages (id, conversation_id, role, content, timestamp, tool_call_id, agent_internal, agent_type) VALUES (?, ?, ?, ?, ?, ?, 0, \'\')',
+                    [toolMsgId, conversationId, 'tool', toolContent, new Date().toISOString(), toolCallId],
+                  );
+                } else if (ev.type === 'agent_done') {
+                  set((s) => {
+                    const msg = s.messages.find((m) => m.id === assistantMsgId);
+                    if (msg) {
+                      msg.status = ev.success ? 'done' : 'error';
+                    }
+                  });
+                }
+              },
+            });
+
+            // 更新 assistant 消息最终状态（如果 tool calls 还没设）
+            set((s) => {
+              const msg = s.messages.find((m) => m.id === assistantMsgId);
+              if (msg) {
+                if (!msg.content || typeof msg.content === 'string' && msg.content.length === 0) {
+                  msg.content = result.message || '任务完成';
+                }
+                if (msg.status === 'streaming') msg.status = 'done';
+              }
+            });
+
+            // 持久化 assistant 消息到 DB（避免下次 loadMessages 时丢失）
+            try {
+              const finalMsg = get().messages.find((m) => m.id === assistantMsgId);
+              if (finalMsg && !existingMsgIds.has(finalMsg.id)) {
+                const serContent = typeof finalMsg.content === 'string' ? finalMsg.content : '';
+                await db.execute(
+                  'INSERT INTO messages (id, conversation_id, role, content, timestamp, reasoning_content, tool_calls, agent_internal, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, \'\')',
+                  [
+                    finalMsg.id,
+                    conversationId,
+                    'assistant',
+                    serContent,
+                    finalMsg.timestamp,
+                    finalMsg.reasoning_content ?? null,
+                    finalMsg.toolCalls?.length ? JSON.stringify(finalMsg.toolCalls) : null,
+                  ],
+                );
+              }
+            } catch (dbErr) {
+              console.warn('[ChatStore] FreeAgent 持久化 assistant 消息失败:', dbErr);
+            }
+
+          } catch (err) {
+            set({ error: `FreeAgent 执行失败: ${err instanceof Error ? err.message : String(err)}`, isStreaming: false });
+          }
+          set({ isStreaming: false });
+          return;
+        }
+
         // ── 构建工具列表：基础工具 + request_agent ──
         const { ChatAgent } = await import('@/agents/chat-api');
         const chatAgent = new ChatAgent();
 
-        const requestAgentTool = {
+        const requestAgentTool = await (async () => {
+          // 动态加载用户自定义 agent 名称
+          let customAgentNames: string[] = [];
+          try {
+            const { useAgentStore } = await import('@/stores/agent-store');
+            const agentStore = useAgentStore.getState();
+            if (!agentStore.loaded) await agentStore.load();
+            customAgentNames = agentStore.getEnabledAgents().map(a => a.name);
+          } catch { /* agent-store not available */ }
+
+          return {
           type: 'function' as const,
           function: {
             name: 'request_agent',
-            description: '将用户请求委托给专业 agent 处理。各 agent 能力见参数描述。',
+            description: '将用户请求委托给专业 Agent。Agent 会执行完整任务并返回最终结果——该结果即是给用户的答案，你直接据此回复即可。',
             parameters: {
               type: 'object',
               properties: {
                 agent: {
                   type: 'string',
-                  enum: ['computeruse', 'web', 'document', 'code'],
-                  description: '可用 Agent 及其能力：\n- web：浏览器操作，可通过 Chrome 扩展连接用户当前已打开的浏览器（读取标签页 URL/标题/DOM、执行 JS、捕获事件），也可启动 Playwright 进行完整的网页自动化（导航、点击、填表、滚动、脚本执行），支持 web_search/web_fetch 搜索和抓取\n- code：读写文件、搜索文件内容/文件名、生成代码、执行 Shell 命令、沙箱执行 JS/Python/SQL/HTML、创建和保存 Web 应用\n- document：Word/Excel/PPT/WPS 文档操作，检测已打开文档、读取内容、LLM 智能处理（翻译/总结/分类/生成）、写回结果\n- computeruse：桌面自动化，截图→视觉分析→鼠标/键盘操作，支持窗口管理、OCR 文字识别、UIA 语义元素定位',
+                  enum: ['computeruse', 'web', 'document', 'code', ...customAgentNames],
+                  description: '可用 Agent 及其能力：\n- web：浏览器操作，可通过 Chrome 扩展连接用户当前已打开的浏览器（读取标签页 URL/标题/DOM、执行 JS、捕获事件），也可启动 Playwright 进行完整的网页自动化（导航、点击、填表、滚动、脚本执行），支持 web_search/web_fetch 搜索和抓取\n- code：读写文件、搜索文件内容/文件名、生成代码、执行 Shell 命令、沙箱执行 JS/Python/SQL/HTML、创建和保存 Web 应用\n- document：Word/Excel/PPT/WPS 文档操作，检测已打开文档、读取内容、LLM 智能处理（翻译/总结/分类/生成）、写回结果\n- computeruse：桌面自动化，截图→视觉分析→鼠标/键盘操作，支持窗口管理、OCR 文字识别、UIA 语义元素定位' + (customAgentNames.length > 0 ? '\n用户自定义 Agent：' + customAgentNames.map(n => `\n- ${n}：用户创建的专用 Agent`).join('') : ''),
                 },
                 reason: { type: 'string', description: '委托原因，简述任务内容和关键上下文' },
                 args: { type: 'object', description: '额外的业务参数（非必填），按 Agent 类型传递。示例：document → {"path":"D:/report.xlsx"}；code → {"workspace":"D:/project"}；web → {"url":"https://example.com"}；computeruse → {"app":"记事本"}。Agent 将优先使用指定参数而非自动检测。' },
@@ -494,13 +802,52 @@ export const useChatStore = create<ChatState>()(
               required: ['agent'],
             },
           },
+        }; })();
+
+        const getAgentLogTool = {
+          type: 'function' as const,
+          function: {
+            name: 'get_agent_log',
+            description: '查询子 Agent 的详细执行过程。当你委托任务给 Agent 后，可用此工具查看它具体做了什么（调了哪些工具、每步的输入输出、耗时等），帮助分析执行细节或排查问题。',
+            parameters: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: '任务 ID（从 request_agent 返回结果中的 taskId 字段获取）。不传则返回当前对话最近一次 Agent 执行记录。' },
+              },
+            },
+          },
         };
 
-        // 从 executor 获取工具定义，根据 toolMode 决定范围
+        // 从 executor 获取工具定义，根据 toolMode / @agent 决定范围
         const currentToolMode = get().toolMode;
         const currentCustomTools = get().customTools;
+        const agentName = options?.agentName;
+        let agentEndpoint: AgentEndpoint | undefined;
+        let customAgentSystemExtra: string | undefined;
         let toolFilter: Set<string>;
-        if (currentToolMode === ToolMode.none) {
+        if (agentName) {
+          // 先查内置 agent
+          if (AGENT_TOOL_FILTERS[agentName]) {
+            toolFilter = getAgentToolFilter(agentName);
+            agentEndpoint = getAgentEndpoint(agentName);
+          } else {
+            // 自定义 agent：从 agent-store 加载 tool_names + system_prompt
+            try {
+              const { useAgentStore } = await import('@/stores/agent-store');
+              const agents = useAgentStore.getState().getEnabledAgents();
+              const customAgent = agents.find(a => a.name === agentName);
+              if (customAgent) {
+                toolFilter = new Set(customAgent.toolNames ?? []);
+                customAgentSystemExtra = customAgent.systemPrompt ?? '';
+              } else {
+                toolFilter = getChatBasicTools();
+              }
+            } catch {
+              toolFilter = getChatBasicTools();
+            }
+            agentEndpoint = AgentEndpoint.chat;
+          }
+        } else if (currentToolMode === ToolMode.none) {
           toolFilter = new Set();
         } else if (currentToolMode === ToolMode.favorites) {
           toolFilter = settingsStore.favoriteTools ?? new Set();
@@ -517,34 +864,23 @@ export const useChatStore = create<ChatState>()(
         // ToolMode.none = no tools at all (including requestAgentTool)
         const allTools = currentToolMode === ToolMode.none
           ? []
-          : [...basicToolDefs, requestAgentTool];
+          : [...basicToolDefs, requestAgentTool, getAgentLogTool];
 
-        const assistantMsgId = crypto.randomUUID();
-        let responseText = '';
-
-        set((s) => {
-          s.messages = [...s.messages, {
-            id: assistantMsgId,
-            conversationId,
-            role: 'assistant',
-            content: '',
-            timestamp: new Date().toISOString(),
-            status: 'streaming',
-          }];
-        });
-
-        // ── 工具调用循环（最多 10 轮） ──
-        const MAX_TOOL_ROUNDS = 10;
-        const persistedMsgIds = new Set<string>();  // 防止 _agentInternal 消息重复持久化
+        // ── 工具调用循环（每轮独立 assistant 消息，数据层不做删改覆盖） ──
+        const MAX_TOOL_ROUNDS = 50;
+        const persistedMsgIds = new Set(existingMsgIds);
         let prevToolCalls: Array<{ name: string; args: string }> = [];
+
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
           if (abortController.signal.aborted) break;
-          // Build LLM messages preserving full structure: toolCalls, tool role,
-          // toolCallId. Previously this filtered to only user/assistant and
-          // stripped toolCalls, causing the LLM to never see tool results and
-          // loop on the same tool call endlessly.
+
+          // 构建 LLM 历史：保留完整的 assistant/tool 结构（toolCalls + toolCallId）
+          // @ 选中时不过滤 _agentInternal，保留完整上下文给 agent 专用 LLM
+          // 非 @ 时过滤 _agentInternal（子 agent 内部工具调用不进 Chat LLM 上下文）
+          const shouldFilterInternal = !agentName;
           const historyMsgs = get().messages
-            .filter((m) => m.status !== 'streaming' && m.role !== 'system' && !m._agentInternal)
+            .filter((m) => m.role !== 'system')
+            .filter((m) => shouldFilterInternal ? !m._agentInternal : true)
             .map((m): LLMMessage => {
               // Preserve multimodal content (e.g. [text, image_url] arrays)
               const msgContent: string | { type: string; [k: string]: unknown }[] =
@@ -564,8 +900,21 @@ export const useChatStore = create<ChatState>()(
               return base;
             });
 
+          // 每轮创建独立的 assistant 消息
+          const roundAssistantId = crypto.randomUUID();
           let roundText = '';
           let toolCallJson = '';
+
+          set((s) => {
+            s.messages = [...s.messages, {
+              id: roundAssistantId,
+              conversationId,
+              role: 'assistant' as const,
+              content: '',
+              timestamp: new Date().toISOString(),
+              status: 'streaming' as const,
+            }];
+          });
 
           // 系统提示由后端 buildSystemPrompt(chat) 自动注入
           console.log('[chat-store] Sending to LLM:', {
@@ -583,6 +932,7 @@ export const useChatStore = create<ChatState>()(
               hasToolCallId: !!m.toolCallId,
             })),
           });
+          console.log('[chat-store] 🎯 agent routing:', { agentName, agentEndpoint, toolFilterSize: toolFilter.size });
           const stream = chatAgent.chat({
             messages: historyMsgs,
             provider: {
@@ -599,6 +949,10 @@ export const useChatStore = create<ChatState>()(
             },
             apiKey,
             tools: provider.supportsTools === false ? undefined : allTools,
+            systemExtra: customAgentSystemExtra
+              ? (systemExtra ? `${customAgentSystemExtra}\n\n${systemExtra}` : customAgentSystemExtra)
+              : systemExtra,
+            endpoint: agentEndpoint,
           });
 
           for await (const chunk of stream) {
@@ -607,22 +961,37 @@ export const useChatStore = create<ChatState>()(
               roundText = chunk.substring(10);
               break;
             }
-            if (chunk.startsWith('__REASONING__:')) continue;
+            if (chunk.startsWith('__REASONING__:')) {
+              const rc = chunk.substring(14);
+              // 累积推理内容到本轮 assistant 消息
+              set((s) => {
+                s.messages = s.messages.map((m) =>
+                  m.id === roundAssistantId ? { ...m, reasoning_content: (m.reasoning_content || '') + rc } : m,
+                );
+              });
+              continue;
+            }
             if (chunk.startsWith('__TOOLS__:')) {
               toolCallJson = chunk.substring(10);
               continue;
             }
             roundText += chunk;
-            responseText += chunk;
             set((s) => {
               s.messages = s.messages.map((m) =>
-                m.id === assistantMsgId ? { ...m, content: responseText } : m,
+                m.id === roundAssistantId ? { ...m, content: roundText } : m,
               );
             });
           }
 
-          // 无工具调用 → 纯文本回复，结束
-          if (!toolCallJson) break;
+          // 无工具调用 → 纯文本回复，本轮结束
+          if (!toolCallJson) {
+            set((s) => {
+              s.messages = s.messages.map((m) =>
+                m.id === roundAssistantId ? { ...m, content: roundText, status: 'done' as const } : m,
+              );
+            });
+            break;
+          }
 
           // 解析工具调用
           let calls: Array<{ id?: string; function?: { name?: string; arguments?: string } }> = [];
@@ -630,15 +999,24 @@ export const useChatStore = create<ChatState>()(
             calls = JSON.parse(toolCallJson);
           } catch { break; }
 
+          // 标准化本轮的 toolCalls
+          const toolCallsForAssistant = calls.map((c) => ({
+            id: c.id || crypto.randomUUID(),
+            type: 'function' as const,
+            function: {
+              name: c.function!.name!,
+              arguments: c.function!.arguments ?? '{}',
+            },
+          }));
+
           // 检查是否有 request_agent
           const agentCall = calls.find((c) => c.function?.name === 'request_agent');
           if (agentCall) {
             // ── request_agent → 路由到 TaskGateway ──
-            // 保留 assistant 消息在 LLM 上下文中（不删除），但把内容替换为简短摘要
             set((s) => {
               s.messages = s.messages.map((m) =>
-                m.id === assistantMsgId
-                  ? { ...m, content: roundText || '正在分析任务...', status: 'done' as const }
+                m.id === roundAssistantId
+                  ? { ...m, toolCalls: toolCallsForAssistant, content: roundText || '正在分析任务...', status: 'done' as const }
                   : m,
               );
             });
@@ -656,7 +1034,7 @@ export const useChatStore = create<ChatState>()(
               agentArgs = args.args ?? {};
               userMessageIndices = args.user_message_indices ?? [];
             } catch { /* use default */ }
-            const agentLabel = { computeruse: '🖥️ 计算机操作', web: '🌐 浏览器', document: '📄 文档', code: '💻 代码' }[selectedAgent] ?? selectedAgent;
+            let agentLabel = ({ computeruse: '🖥️ 计算机操作', web: '🌐 浏览器', document: '📄 文档', code: '💻 代码' }[selectedAgent] ?? selectedAgent);
 
             set((s) => {
               s.messages = [...s.messages, {
@@ -682,6 +1060,7 @@ export const useChatStore = create<ChatState>()(
             const onProgress = (event: import('@/services/task-agent').AgentProgressEvent) => {
               const msgId = crypto.randomUUID();
               const now = new Date().toISOString();
+              console.log('[chat-store] onProgress event:', event.type, event);
 
               switch (event.type) {
                 case 'turn_start': {
@@ -739,6 +1118,15 @@ export const useChatStore = create<ChatState>()(
                       },
                     }];
                   });
+                  // 先登记再写入，避免兜底持久化时因异步延迟误判为未写入
+                  persistedMsgIds.add(msgId);
+                  db.execute(
+                    `INSERT INTO messages (id, conversation_id, role, content, timestamp, agent_internal, agent_type)
+                     VALUES (?, ?, ?, ?, ?, 1, ?)`,
+                    [msgId, conversationId, 'assistant', '', now, selectedAgent],
+                  ).catch((e) => {
+                    console.warn('[chat-store] tool_start DB write failed:', e);
+                  });
                   break;
                 }
                 case 'tool_end': {
@@ -755,18 +1143,51 @@ export const useChatStore = create<ChatState>()(
                   // 工具调用结束，作为 tool 结果消息
                   const statusIcon = event.success ? '✅' : '❌';
                   const resultText = event.message ? `${statusIcon} ${event.name}: ${event.message.substring(0, 200)}` : `${statusIcon} ${event.name}`;
+                  // 超长截断：agent 内部 tool 结果
+                  const atr = truncateToolResult('agent_internal', resultText);
+                  const toolEndMsgId = msgId;
+                  const fullUserMsgId = atr.fullUserMessage ? crypto.randomUUID() : undefined;
                   set((s) => {
-                    s.messages = [...s.messages, {
-                      id: msgId,
+                    const newMsgs = [...s.messages, {
+                      id: toolEndMsgId,
                       conversationId,
                       role: 'tool' as const,
-                      content: resultText,
+                      content: atr.toolContent,
                       timestamp: now,
                       status: 'done' as const,
                       _agentInternal: true,
                       _agentType: selectedAgent,
                     }];
+                    if (atr.fullUserMessage && fullUserMsgId) {
+                      newMsgs.push({
+                        id: fullUserMsgId, conversationId,
+                        role: 'user' as const,
+                        content: atr.fullUserMessage,
+                        timestamp: now, status: 'done' as const,
+                        _agentInternal: true, _agentType: selectedAgent,
+                      });
+                    }
+                    s.messages = newMsgs;
                   });
+                  // 先登记再写入，避免兜底持久化时因异步延迟误判为未写入
+                  persistedMsgIds.add(toolEndMsgId);
+                  db.execute(
+                    `INSERT INTO messages (id, conversation_id, role, content, timestamp, agent_internal, agent_type)
+                     VALUES (?, ?, ?, ?, ?, 1, ?)`,
+                    [toolEndMsgId, conversationId, 'tool', atr.toolContent, now, selectedAgent],
+                  ).catch((e) => {
+                    console.warn('[chat-store] tool_end DB write failed:', e);
+                  });
+                  if (atr.fullUserMessage && fullUserMsgId) {
+                    persistedMsgIds.add(fullUserMsgId);
+                    db.execute(
+                      `INSERT INTO messages (id, conversation_id, role, content, timestamp, agent_internal, agent_type)
+                       VALUES (?, ?, ?, ?, ?, 1, ?)`,
+                      [fullUserMsgId, conversationId, 'user', atr.fullUserMessage, now, selectedAgent],
+                    ).catch((e) => {
+                      console.warn('[chat-store] tool_end fullUser DB write failed:', e);
+                    });
+                  }
                   break;
                 }
                 case 'agent_done': {
@@ -785,7 +1206,23 @@ export const useChatStore = create<ChatState>()(
 
             // 路由到对应的 gateway
             let gateway: { handleUserMessage(params: Record<string, unknown>): Promise<Record<string, unknown>> };
-            if (selectedAgent === 'document') {
+            // 检查是否为用户自定义 agent
+            let customAgentConfig: import('@/types/agent').UserAgentConfig | null = null;
+            try {
+              const { useAgentStore } = await import('@/stores/agent-store');
+              const agentStore = useAgentStore.getState();
+              if (!agentStore.loaded) await agentStore.load();
+              customAgentConfig = agentStore.agents.find(a => a.name === selectedAgent) ?? null;
+            } catch { /* agent-store not available */ }
+
+            if (customAgentConfig) {
+              agentLabel = `🤖 ${selectedAgent}`;
+              const { CustomAgentGateway } = await import('@/services/custom-agent');
+              gateway = new CustomAgentGateway(
+                executor as unknown as import('@/interfaces/skill-executor').ISkillExecutor,
+                customAgentConfig,
+              ) as unknown as { handleUserMessage(params: Record<string, unknown>): Promise<Record<string, unknown>> };
+            } else if (selectedAgent === 'document') {
               const { DocGateway } = await import('@/services/doc-agent/doc-gateway');
               gateway = new DocGateway(executor as unknown as import('@/interfaces/skill-executor').ISkillExecutor);
             } else if (selectedAgent === 'web') {
@@ -801,7 +1238,7 @@ export const useChatStore = create<ChatState>()(
 
             // 构建消息历史，传递给 agent 实现方案 A（共享上下文）
             const agentMessages: import('@/types/message').LLMMessage[] = get().messages
-              .filter((m) => m.status !== 'streaming' && m.role !== 'system' && !m._agentInternal)
+              .filter((m) => m.role !== 'system' && !m._agentInternal)
               .map((m) => {
                 const msgContent: string | { type: string; [k: string]: unknown }[] =
                   typeof m.content === 'string' ? m.content
@@ -906,7 +1343,17 @@ export const useChatStore = create<ChatState>()(
               const abortActionMem = buildActionMemorySummary(agentStats.tools);
               const errorContent = `❌ 任务中断: ${err instanceof Error ? err.message : String(err)}`;
               set((s) => {
-                s.messages = [...s.messages, {
+                // 清理：移除所有 streaming 状态的空 assistant 消息（中断时可能有多个未完成的轮次）
+                const cleanedMessages = s.messages.filter((m) => {
+                  // 保留已完成的消息
+                  if (m.status !== 'streaming') return true;
+                  // 移除空的 streaming 消息（中断时未完成的轮次）
+                  if (m.role === 'assistant' && (!m.content || m.content === '') && !m.toolCalls) return false;
+                  return true;
+                });
+
+                // 添加错误消息
+                const errorMsg = {
                   id: crypto.randomUUID(),
                   conversationId,
                   role: 'assistant' as const,
@@ -916,11 +1363,14 @@ export const useChatStore = create<ChatState>()(
                   _agentInternal: true,
                   _agentType: selectedAgent,
                   _taskContext: abortActionMem ? { _actionMemory: abortActionMem } : undefined,
-                }];
+                };
+
                 // 更新 Agent 开始消息状态
-                s.messages = s.messages.map((m) =>
+                const updatedMessages = cleanedMessages.map((m) =>
                   m.id === agentStartMsgId ? { ...m, status: 'done' as const, content: `${agentLabel} Agent 执行中断` } : m,
                 );
+
+                s.messages = [...updatedMessages, errorMsg];
                 s.isStreaming = false;
                 s.streamingConversationId = null;
                 s._abortController = null;
@@ -939,9 +1389,14 @@ export const useChatStore = create<ChatState>()(
               : '—';
             const foldedSummary = `${agentLabel} Agent: ${agentStats.turns}/${agentStats.maxTurns} 轮 · ${toolFlow}`;
 
-            // 构建给 Chat LLM 的 tool 结果数据
+            // 构建给 Chat LLM 的 tool 结果数据（含 taskId 供 get_agent_log 查询）
             const agentResultData: Record<string, unknown> = { agent: selectedAgent };
-            if (responseMessage) agentResultData.response = responseMessage;
+            const agentTaskId = tasks.length > 0 ? (tasks[0].taskId as string) : undefined;
+            if (agentTaskId) agentResultData.taskId = agentTaskId;
+            // 子 agent 执行链的最后一条消息（LLM 的自然语言结论），直接作为 tool 结果返回给 Chat LLM
+            const agentFinalMessage = tasks.length > 0 ? ((tasks[0].lastMessage ?? tasks[0].summary ?? tasks[0].message) as string) : '';
+            const toolResultMessage = agentFinalMessage || responseMessage || (success ? 'OK' : 'Failed');
+            if (toolResultMessage) agentResultData.response = toolResultMessage;
             if (agentStats.keyOutputs.length > 0) agentResultData.keyOutputs = agentStats.keyOutputs;
 
             // 构建传递给后续 agent 的任务上下文
@@ -963,23 +1418,8 @@ export const useChatStore = create<ChatState>()(
               );
             });
 
-            // 标记 assistant 消息的 toolCalls，让 Chat LLM 知道它调用了 request_agent
+            // 本轮 assistant 消息的 toolCalls 已在前面设置，这里直接用 agentCall 的 id
             const requestAgentCallId = agentCall.id || crypto.randomUUID();
-            const requestAgentArgs = agentCall.function?.arguments ?? '{}';
-            set((s) => {
-              s.messages = s.messages.map((m) =>
-                m.id === assistantMsgId
-                  ? {
-                      ...m,
-                      status: 'done' as const,
-                      toolCalls: [{
-                        id: requestAgentCallId,
-                        function: { name: 'request_agent', arguments: requestAgentArgs },
-                      }],
-                    }
-                  : m,
-              );
-            });
 
             // 折叠摘要（仅展示）+ tool 结果消息（进入 LLM 上下文）
             const foldedId = crypto.randomUUID();
@@ -990,9 +1430,11 @@ export const useChatStore = create<ChatState>()(
               _agentInternal: true, _isAgentStart: true, _agentType: selectedAgent,
             };
             const toolResultMsgId = crypto.randomUUID();
+            const rawAgentResult = JSON.stringify({ success, message: toolResultMessage, data: agentResultData });
+            const art = truncateToolResult('request_agent', rawAgentResult);
             const toolResultMsg: ChatMessage = {
               id: toolResultMsgId, conversationId,
-              role: 'tool', content: JSON.stringify({ success, message: responseMessage || (success ? 'OK' : 'Failed'), data: agentResultData }),
+              role: 'tool', content: art.toolContent,
               toolCallId: requestAgentCallId,
               timestamp: new Date().toISOString(), status: 'done',
               _agentType: selectedAgent,
@@ -1000,7 +1442,17 @@ export const useChatStore = create<ChatState>()(
             };
 
             set((s) => {
-              s.messages = [...s.messages, foldedMsg, toolResultMsg];
+              const newMsgs = [...s.messages, foldedMsg, toolResultMsg];
+              if (art.fullUserMessage) {
+                newMsgs.push({
+                  id: crypto.randomUUID(), conversationId,
+                  role: 'user' as const, content: art.fullUserMessage,
+                  timestamp: new Date().toISOString(), status: 'done' as const,
+                  _agentType: selectedAgent, _taskContext: taskContext,
+                  _internal: true as any, // 静默发送，不渲染到聊天窗口
+                });
+              }
+              s.messages = newMsgs;
             });
 
             // Persist internal messages to DB（去重：跳过已持久化的 ID）
@@ -1016,9 +1468,18 @@ export const useChatStore = create<ChatState>()(
           }
 
           // ── 执行基础工具调用 ──
-          const allowedTools = toolFilter ?? (useBasicTools ? getChatBasicTools() : new Set(executor.enabledToolNames));
+          const allowedTools = toolFilter ?? new Set(executor.enabledToolNames);
           const basicCalls = calls.filter((c) => c.function?.name && allowedTools.has(c.function.name));
           if (basicCalls.length === 0) break; // 没有可执行的基础工具
+
+          // 本轮 assistant 消息设置 toolCalls + 文本（不累积，每轮独立）
+          set((s) => {
+            s.messages = s.messages.map((m) =>
+              m.id === roundAssistantId
+                ? { ...m, toolCalls: toolCallsForAssistant, content: roundText, status: 'done' as const }
+                : m,
+            );
+          });
 
           // ── 重复工具调用检测（工具名 + 参数都相同才算重复） ──
           const currentToolCalls = basicCalls.map((c) => ({
@@ -1037,7 +1498,7 @@ export const useChatStore = create<ChatState>()(
             // 不执行工具，注入警告 tool result 让 LLM 自我纠正
             set((s) => {
               s.messages = s.messages.map((m) =>
-                m.id === assistantMsgId
+                m.id === roundAssistantId
                   ? { ...m, toolCalls: basicCalls.map((c) => ({
                       id: c.id || crypto.randomUUID(),
                       type: 'function' as const,
@@ -1073,23 +1534,7 @@ export const useChatStore = create<ChatState>()(
             continue; // 不执行工具，回到循环顶部让 LLM 看到警告后重新决策
           }
 
-          // Update the assistant message with toolCalls so the LLM can see
-          // which tools were called in the conversation history.
-          const toolCallsForAssistant = basicCalls.map((c) => ({
-            id: c.id || crypto.randomUUID(),
-            type: 'function' as const,
-            function: {
-              name: c.function!.name!,
-              arguments: c.function!.arguments ?? '{}',
-            },
-          }));
-          set((s) => {
-            s.messages = s.messages.map((m) =>
-              m.id === assistantMsgId
-                ? { ...m, toolCalls: toolCallsForAssistant, content: roundText }
-                : m,
-            );
-          });
+          // assistant 已在前面标记完成+持久化（request_agent 路径在 896 行，非 agent 路径在 879 行）
 
           for (const call of basicCalls) {
             const toolName = call.function!.name!;
@@ -1097,18 +1542,20 @@ export const useChatStore = create<ChatState>()(
             let args: Record<string, unknown> = {};
             try { args = JSON.parse(call.function!.arguments ?? '{}'); } catch { /* empty args */ }
 
-            // run_command 需要确认
-            if (toolName === 'run_command') {
-              const command = args.command as string;
+            // run_command / execute_code / doc_code_exec 需要确认
+            if (toolName === 'run_command' || toolName === 'execute_code' || toolName === 'doc_code_exec') {
+              const displayCmd = toolName === 'run_command'
+                ? (args.command as string)
+                : (toolName === 'doc_code_exec' ? `[Python(doc)] ` : `[${(args as Record<string,unknown>).language ?? 'code'}] `) + String((args as Record<string,unknown>).code ?? '').substring(0, 300);
               const confirmed = await new Promise<boolean>((resolve) => {
                 set((s) => {
-                  s.awaitingConfirmation = { toolName: 'run_command', args: { command }, command };
+                  s.awaitingConfirmation = { toolName, args, command: displayCmd };
                   s._pendingResolve = (v: { confirmed: boolean }) => resolve(v.confirmed);
                 });
               });
               if (!confirmed) {
                 const rejectMsgId = crypto.randomUUID();
-                const rejectContent = JSON.stringify({ success: false, message: `用户拒绝执行: ${command}` });
+                const rejectContent = JSON.stringify({ success: false, message: `用户拒绝执行: ${displayCmd}` });
                 set((s) => {
                   s.messages = [...s.messages, {
                     id: rejectMsgId,
@@ -1128,8 +1575,62 @@ export const useChatStore = create<ChatState>()(
               }
             }
 
-            // 执行工具
-            const result = await executor.executeToolCall(toolName, args);
+            // ── get_agent_log：查询子 Agent 执行历史 ──
+            let result: { success: boolean; message: string; data?: Record<string, unknown> };
+            if (toolName === 'get_agent_log') {
+              const taskId = args['task_id'] as string | undefined;
+              let rows: Array<Record<string, unknown>> = [];
+              try {
+                if (taskId) {
+                  rows = await db.query<Record<string, unknown>>(
+                    `SELECT id, agent_id, step_order, action, input_summary, output_summary, decision_rationale, error_info, duration_ms, created_at
+                     FROM agent_process_log WHERE task_id = ? ORDER BY step_order ASC`, [taskId],
+                  );
+                } else {
+                  // 无 taskId → 查找当前对话最近一次 agent 执行
+                  const recentTask = await db.get<{ task_id: string }>(
+                    `SELECT DISTINCT a.task_id FROM agent_process_log a
+                     INNER JOIN messages m ON m.conversation_id = ? AND m.agent_internal = 1
+                     WHERE a.task_id LIKE 'task-%'
+                     ORDER BY a.id DESC LIMIT 1`,
+                    [conversationId],
+                  );
+                  if (recentTask?.task_id) {
+                    rows = await db.query<Record<string, unknown>>(
+                      `SELECT id, agent_id, step_order, action, input_summary, output_summary, decision_rationale, error_info, duration_ms, created_at
+                       FROM agent_process_log WHERE task_id = ? ORDER BY step_order ASC`, [recentTask.task_id],
+                    );
+                  }
+                }
+              } catch (e) {
+                rows = [];
+                console.warn('[chat-store] get_agent_log query error:', e);
+              }
+
+              if (rows.length === 0) {
+                result = { success: false, message: taskId ? `未找到任务 ${taskId} 的执行记录` : '当前对话没有 Agent 执行记录' };
+              } else {
+                const formatted = rows.map((r) => {
+                  const entry: Record<string, unknown> = {};
+                  if (r.step_order != null) entry.step = r.step_order;
+                  if (r.action) entry.action = r.action;
+                  if (r.input_summary) entry.input = r.input_summary;
+                  if (r.output_summary) entry.output = r.output_summary;
+                  if (r.decision_rationale) entry.reasoning = r.decision_rationale;
+                  if (r.error_info) entry.error = r.error_info;
+                  if (r.duration_ms != null) entry.duration_ms = r.duration_ms;
+                  return entry;
+                });
+                result = {
+                  success: true,
+                  message: `共 ${rows.length} 条执行记录`,
+                  data: { task_id: taskId || rows[0]?.agent_id, steps: formatted },
+                };
+              }
+            } else {
+              // 执行工具
+              result = await executor.executeToolCall(toolName, args);
+            }
 
             // ── Screenshot → compress + inject as multimodal image ──
             if (toolName === 'desktop_screenshot' && result.success && result.data) {
@@ -1190,45 +1691,67 @@ export const useChatStore = create<ChatState>()(
             const filteredResult = toolName === 'desktop_screenshot' && result.success && result.data
               ? { ...result, data: { ...result.data as Record<string, unknown>, image_data: '[image data omitted]' } }
               : result;
-            const toolResultContent = JSON.stringify(filteredResult);
+            const rawContent = JSON.stringify(filteredResult);
+            // 超长截断：tool 消息保留截断版，完整内容以 user 消息兜底
+            const tr = truncateToolResult(toolName, rawContent);
             set((s) => {
-              s.messages = [...s.messages, {
+              const newMsgs = [...s.messages, {
                 id: toolResultMsgId,
                 conversationId,
                 role: 'tool' as const,
                 toolCallId,
-                content: toolResultContent,
+                content: tr.toolContent,
                 timestamp: new Date().toISOString(),
                 status: 'done' as const,
               }];
+              if (tr.fullUserMessage) {
+                newMsgs.push({
+                  id: crypto.randomUUID(),
+                  conversationId,
+                  role: 'user' as const,
+                  content: tr.fullUserMessage,
+                  timestamp: new Date().toISOString(),
+                  status: 'done' as const,
+                  _internal: true as any, // 静默发送，不渲染到聊天窗口
+                });
+              }
+              s.messages = newMsgs;
             });
             await db.execute(
               'INSERT INTO messages (id, conversation_id, role, content, timestamp, tool_call_id, agent_internal, agent_type) VALUES (?, ?, ?, ?, ?, ?, 0, \'\')',
-              [toolResultMsgId, conversationId, 'tool', toolResultContent, new Date().toISOString(), toolCallId],
+              [toolResultMsgId, conversationId, 'tool', tr.toolContent, new Date().toISOString(), toolCallId],
             );
+            if (tr.fullUserMessage) {
+              const userMsgId = crypto.randomUUID();
+              await db.execute(
+                'INSERT INTO messages (id, conversation_id, role, content, timestamp, tool_call_id, agent_internal, agent_type) VALUES (?, ?, ?, ?, ?, NULL, 0, \'\')',
+                [userMsgId, conversationId, 'user', tr.fullUserMessage, new Date().toISOString()],
+              );
+            }
           }
 
           // 继续下一轮 LLM 调用（让 LLM 看到工具结果后决定下一步）
         }
 
-        // ── 完成 ──
-        const finalMessages = get().messages;
-        const assistantMsg = finalMessages.find((m) => m.id === assistantMsgId);
+        // ── 完成：标记所有 streaming 消息为 done，持久化未写入 DB 的消息 ──
         set((s) => {
           s.messages = s.messages.map((m) =>
-            m.id === assistantMsgId ? { ...m, status: 'done' as const } : m,
+            m.status === 'streaming' ? { ...m, status: 'done' as const } : m,
           );
           s.isStreaming = false;
           s.streamingConversationId = null;
           s._abortController = null;
         });
-        const toolCallsJson = assistantMsg?.toolCalls?.length
-          ? JSON.stringify(assistantMsg.toolCalls)
-          : null;
-        await db.execute(
-          'INSERT INTO messages (id, conversation_id, role, content, timestamp, tool_calls, agent_internal, agent_type) VALUES (?, ?, ?, ?, ?, ?, 0, \'\')',
-          [assistantMsgId, conversationId, 'assistant', responseText, new Date().toISOString(), toolCallsJson],
+        // Persist any assistant messages that haven't been written to DB yet
+        const newAssistantMsgs = get().messages.filter(
+          (m) => m.role === 'assistant' && !existingMsgIds.has(m.id) && !persistedMsgIds.has(m.id),
         );
+        for (const am of newAssistantMsgs) {
+          await db.execute(
+            'INSERT INTO messages (id, conversation_id, role, content, timestamp, reasoning_content, tool_calls, agent_internal, agent_type) VALUES (?, ?, ?, ?, ?, ?, ?, 0, \'\')',
+            [am.id, conversationId, 'assistant', typeof am.content === 'string' ? am.content : '', new Date().toISOString(), am.reasoning_content ?? null, am.toolCalls ? JSON.stringify(am.toolCalls) : null],
+          );
+        }
       } catch (e) {
         set({ error: String(e), isStreaming: false, streamingConversationId: null, _abortController: null });
       }

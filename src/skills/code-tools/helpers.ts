@@ -11,11 +11,20 @@ export async function tryWriteFile(filePath: string, content: string): Promise<{
     : `workspace/${filePath.startsWith('/') ? filePath.slice(1) : filePath}`;
   fileCache.set(resolved, content);
 
+  // Resolve to absolute for filesystem operations (respects user's workspace setting)
+  let absPath = resolved;
+  if (!resolved.includes(':') && !resolved.startsWith('/') && !resolved.startsWith('\\')) {
+    try {
+      const { resolveSearchPath } = await import('./shell-utils');
+      absPath = await resolveSearchPath(resolved);
+    } catch { /* keep relative as fallback */ }
+  }
+
   // Attempt 1: @tauri-apps/plugin-fs (optional dependency, not guaranteed to be installed)
   try {
     // @ts-ignore — plugin-fs is optional; failure is caught at runtime
     const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-    await writeTextFile(resolved, content);
+    await writeTextFile(absPath, content);
     return { ok: true, path: resolved, method: 'plugin-fs' };
   } catch {
     // fall through
@@ -24,7 +33,7 @@ export async function tryWriteFile(filePath: string, content: string): Promise<{
   // Attempt 2: @tauri-apps/api/core invoke (Rust command may not exist)
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('write_file', { path: resolved, content });
+    await invoke('write_file', { path: absPath, content });
     return { ok: true, path: resolved, method: 'invoke' };
   } catch {
     // fall through — file is still in memory cache
@@ -34,32 +43,41 @@ export async function tryWriteFile(filePath: string, content: string): Promise<{
 }
 
 /** Try to read a file via Tauri plugin-fs, falling back to memory cache. */
-export async function tryReadFile(filePath: string): Promise<{ ok: boolean; content: string; method: string }> {
-  // Check memory cache first
+export async function tryReadFile(filePath: string): Promise<{ ok: boolean; content: string; method: string; error?: string }> {
+  // Check memory cache first (use original relative path as key)
   const cached = fileCache.get(filePath);
   if (cached !== undefined) {
     return { ok: true, content: cached, method: 'memory-cache' };
+  }
+
+  // Resolve to absolute for filesystem operations (respects user's workspace setting)
+  let absPath = filePath;
+  if (!filePath.includes(':') && !filePath.startsWith('/') && !filePath.startsWith('\\')) {
+    try {
+      const { resolveSearchPath } = await import('./shell-utils');
+      absPath = await resolveSearchPath(filePath);
+    } catch { /* keep relative as fallback */ }
   }
 
   // Attempt 1: @tauri-apps/plugin-fs
   try {
     // @ts-ignore — plugin-fs is optional; failure is caught at runtime
     const { readTextFile } = await import('@tauri-apps/plugin-fs');
-    const content = await readTextFile(filePath);
+    const content = await readTextFile(absPath);
     fileCache.set(filePath, content);
     return { ok: true, content, method: 'plugin-fs' };
-  } catch {
+  } catch (e) {
     // fall through
   }
 
   // Attempt 2: @tauri-apps/api/core invoke
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    const content = await invoke<string>('read_file', { path: filePath });
+    const content = await invoke<string>('read_file', { path: absPath });
     fileCache.set(filePath, content);
     return { ok: true, content, method: 'invoke' };
-  } catch {
-    // fall through
+  } catch (e) {
+    return { ok: false, content: '', method: 'none', error: String(e) };
   }
 
   return { ok: false, content: '', method: 'none' };

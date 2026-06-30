@@ -2,6 +2,7 @@
 
 import type { LLMMessage } from '@/types/message';
 import type { LLMAdapter } from './types';
+import { logLLMRequest } from './request-logger';
 
 export class GoogleAdapter implements LLMAdapter {
   readonly adapterId = 'google';
@@ -15,7 +16,6 @@ export class GoogleAdapter implements LLMAdapter {
     baseUrl?: string;
     tools?: Record<string, unknown>[];
   }): AsyncGenerator<string> {
-    console.debug('[google] POST msgs=', messages.length, 'tools=', tools?.length ?? 0, 'model=', model);
     const url = `${baseUrl ?? this.defaultBaseUrl}/v1beta/models/${model}:streamGenerateContent?key=${apiKey}`;
 
     const [contents, systemInstruction] = convertMessagesForGemini(messages);
@@ -34,10 +34,27 @@ export class GoogleAdapter implements LLMAdapter {
     const timeout = setTimeout(() => controller.abort(), 120_000);
     let response: Response;
     try {
+      const bodyJson = JSON.stringify(body);
+      // 记录最终发给 LLM 厂商的请求概要
+      const bodyPreview = bodyJson.length > 2000
+        ? bodyJson.substring(0, 2000) + `...[+${bodyJson.length - 2000} chars]`
+        : bodyJson;
+      console.log('[google] 🚀 Final request → LLM provider:', {
+        model,
+        url: url.substring(0, url.indexOf('?key=')) + '?key=***',
+        bodySize: bodyJson.length,
+        bodySizeKB: Math.round(bodyJson.length / 1024),
+        messageCount: contents.length,
+        systemInstruction: systemInstruction != null ? `${(systemInstruction as string).substring(0, 100)}...` : null,
+        toolsCount: tools?.length ?? 0,
+        bodyPreview,
+      });
+      // 写入完整请求到日志文件
+      await logLLMRequest('google', model, url, bodyJson);
       response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: bodyJson,
         signal: controller.signal,
       });
     } catch (e) {

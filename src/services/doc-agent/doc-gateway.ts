@@ -79,15 +79,17 @@ export class DocGateway {
 
     console.log(`[DocGateway] ✓ 完成: success=${result.success} error=${result.error ?? 'none'}`);
 
+    const bestMessage = result.lastResponseText || result.lastSuccessfulToolResult || result.summary;
     return {
       message: result.success
-        ? (result.summary || '文档任务完成')
-        : `文档任务失败: ${result.error}`,
+        ? (bestMessage || '文档任务完成')
+        : (bestMessage ? `${bestMessage}\n\n(后续出错: ${result.error})` : `文档任务失败: ${result.error}`),
       tasks: [{
         taskId,
         status: result.success ? 'done' : 'error',
         error: result.error,
         message: result.summary,
+        lastMessage: bestMessage || result.summary || result.error,
       }],
     };
   }

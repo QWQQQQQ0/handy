@@ -10,6 +10,7 @@ import { AgentEndpoint } from '@/api/types';
 import { apiStreamCompat } from '@/api/client';
 import { PageKnowledgeService } from '@/services/page-knowledge';
 import { compressImage } from '@/utils/image';
+import { truncateToolResult } from '@/utils/content';
 
 /**
  * 规划并执行：LLM 一次性生成完整操作计划，本地直接执行
@@ -220,14 +221,16 @@ Example:
             function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
           }],
         });
-        const rawContent = result.data ? JSON.stringify(result.data) : result.message ?? '';
-        // 截图等大数据截断为摘要，避免 BMP base64 撑爆 HTTP 请求体
-        const trimmed = rawContent.length > 2000
-          ? (tc.name === 'desktop_screenshot'
-            ? JSON.stringify({ note: 'Screenshot captured', format: (result.data as Record<string, unknown>)?.format })
-            : rawContent.substring(0, 500) + `... (${rawContent.length} chars)`)
-          : rawContent;
-        ctxMessages.push({ role: 'tool', content: trimmed, toolCallId: tc.id });
+        // 截图 base64 不发给 LLM，替换为摘要；其他工具超长时截断 + user 消息兜底
+        if (tc.name === 'desktop_screenshot') {
+          const summary = JSON.stringify({ note: 'Screenshot captured', format: (result.data as Record<string, unknown>)?.format });
+          ctxMessages.push({ role: 'tool', content: summary, toolCallId: tc.id });
+        } else {
+          const rawContent = result.data ? JSON.stringify(result.data) : result.message ?? '';
+          const tr = truncateToolResult(tc.name, rawContent);
+          ctxMessages.push({ role: 'tool', content: tr.toolContent, toolCallId: tc.id });
+          if (tr.fullUserMessage) ctxMessages.push({ role: 'user', content: tr.fullUserMessage });
+        }
       }
 
       // desktop_done 标记完成

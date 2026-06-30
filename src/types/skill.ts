@@ -39,6 +39,12 @@ export interface UserSkillConfig {
   usageCn?: string;
   /** Whether this skill's tools are exposed to the AI agent. Defaults to true. */
   exposedToAI?: boolean;
+  /** AgentSkills standard: path to skill directory */
+  skillDir?: string;
+  /** AgentSkills standard: SPDX license identifier */
+  license?: string;
+  /** AgentSkills standard: compatibility requirements */
+  compatibility?: string;
 }
 
 export interface AutomationStep {

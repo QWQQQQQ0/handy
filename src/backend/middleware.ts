@@ -65,19 +65,86 @@ const routes: Record<string, RouteEntry> = {
 
 // ── 请求体解析 ──
 
+import { existsSync } from 'node:fs';
+
 async function parseBody(req: IncomingMessage): Promise<AgentRequestBody> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    const timeout = setTimeout(() => {
+      reject(new Error('Request body timeout (30s)'));
+    }, 30000);
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
+      clearTimeout(timeout);
       try {
-        const body = Buffer.concat(chunks).toString('utf-8');
-        resolve(JSON.parse(body) as AgentRequestBody);
+        const buf = Buffer.concat(chunks);
+        console.log(`[parseBody] raw=${buf.length}B`);
+
+        const tryDecode = (encoding: 'utf8' | 'gbk'): string => {
+          if (encoding === 'utf8') return buf.toString('utf-8');
+          return new TextDecoder('gbk').decode(buf);
+        };
+
+        // Decode with both encodings and try JSON.parse
+        const utf8Body = tryDecode('utf8');
+        const gbkBody = tryDecode('gbk');
+
+        let utf8Obj: any = null;
+        let gbkObj: any = null;
+        try { utf8Obj = JSON.parse(utf8Body); } catch { /* ignore */ }
+        try { gbkObj = JSON.parse(gbkBody); } catch { /* ignore */ }
+
+        // Helper: check if a cwd path exists on disk (used as tiebreaker)
+        const cwdExists = (obj: any): boolean => {
+          const cwd = obj?.params?.cwd;
+          if (!cwd || typeof cwd !== 'string' || cwd.length === 0) return true; // no cwd → can't use as tiebreaker, assume ok
+          return existsSync(cwd);
+        };
+
+        // ── Resolution ──
+        // Case 1: only UTF-8 parses → use it (most common: pure ASCII or correct UTF-8)
+        if (utf8Obj && !gbkObj) {
+          console.log(`[parseBody] ✓ UTF-8 only (${utf8Body.length} chars)`);
+          resolve(utf8Obj as AgentRequestBody);
+          return;
+        }
+        // Case 2: only GBK parses → use it (GBK-encoded Chinese)
+        if (gbkObj && !utf8Obj) {
+          console.log(`[parseBody] ✓ GBK only (${gbkBody.length} chars)`);
+          resolve(gbkObj as AgentRequestBody);
+          return;
+        }
+        // Case 3: both parse successfully → use cwd existence as tiebreaker
+        if (utf8Obj && gbkObj) {
+          const utf8Ok = cwdExists(utf8Obj);
+          const gbkOk = cwdExists(gbkObj);
+          if (utf8Ok && !gbkOk) {
+            console.log(`[parseBody] ✓ UTF-8 (cwd tiebreaker, ${utf8Body.length} chars)`);
+            resolve(utf8Obj as AgentRequestBody);
+            return;
+          }
+          if (gbkOk && !utf8Ok) {
+            console.log(`[parseBody] ✓ GBK (cwd tiebreaker, ${gbkBody.length} chars)`);
+            resolve(gbkObj as AgentRequestBody);
+            return;
+          }
+          // Both or neither cwd exists → prefer UTF-8
+          console.log(`[parseBody] ✓ UTF-8 (default, ${utf8Body.length} chars)`);
+          resolve(utf8Obj as AgentRequestBody);
+          return;
+        }
+
+        // Case 4: neither parses → error
+        throw new Error(
+          `Neither encoding produced valid JSON. ` +
+          `UTF-8 preview: "${utf8Body.slice(0, 80)}" | ` +
+          `GBK preview: "${gbkBody.slice(0, 80)}"`
+        );
       } catch (e) {
         reject(new Error(`Invalid JSON body: ${e}`));
       }
     });
-    req.on('error', reject);
+    req.on('error', (err) => { clearTimeout(timeout); reject(err); });
   });
 }
 

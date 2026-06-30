@@ -79,17 +79,18 @@ export class CodeToolsSkill implements Skill {
     },
     {
       name: 'glob_files',
-      description: 'Find files by glob pattern (e.g. "**/*.ts", "src/**/*.test.*"). Returns matching file paths sorted by modification time.',
+      description: 'Find files by glob pattern (e.g. "*.md", "*report*", "**/*.csv"). Matches filenames, returns matching file paths. Default search root is user home directory. ⚠️ To avoid timeout, always specify "path" when you know where to look — searching the entire home directory is slow.',
       nameCn: '文件名搜索',
-      descriptionCn: '按 glob 模式匹配文件名（如 "**/*.ts"），返回匹配的文件路径（按修改时间排序）。',
+      descriptionCn: '按 glob 模式匹配文件名（如 "*.md"、"*报告*"、"**/*.csv"），返回匹配的文件路径。默认搜索用户主目录。⚠️ 为避免超时，建议指定 path 缩小搜索范围——全盘搜索主目录会很慢。',
       parameters: {
         type: 'object',
         properties: {
-          pattern: { type: 'string', description: 'Glob pattern (e.g. "**/*.tsx", "src/**/README*")' },
-          path: { type: 'string', description: 'Directory to search in (default: current directory)' },
+          pattern: { type: 'string', description: 'Glob pattern for filenames (e.g. "*report*" to find files containing "report" in name)' },
+          path: { type: 'string', description: 'Directory to search in. ⚠️ Always specify this when you have a rough idea where the file might be. Defaults to the entire user home directory (~) which is slow and may timeout.' },
         },
         required: ['pattern'],
       },
+      returns: '{"files":["C:/Users/.../sales.csv","..."],"count":2,"method":"rg|dir|find|js-fallback"}',
     },
     {
       name: 'generate_code',
@@ -121,7 +122,7 @@ export class CodeToolsSkill implements Skill {
             description: 'Language (javascript, python, sql, html)',
             enum: ['javascript', 'python', 'sql', 'html'],
           },
-          timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default 30000)' },
+          timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default 30000, minimum 15000)' },
         },
         required: ['code', 'language'],
       },
@@ -190,28 +191,29 @@ export class CodeToolsSkill implements Skill {
         properties: {
           command: { type: 'string', description: 'Shell command to execute (e.g. "npm install", "git status", "python script.py")' },
           cwd: { type: 'string', description: 'Working directory for the command (optional)' },
-          timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 30000)' },
+          timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 60000, minimum 15000). For slow operations like file search, use ≥ 60000.' },
         },
         required: ['command'],
       },
     },
     {
       name: 'grep_files',
-      description: 'Search file contents by regex pattern (like grep). Returns matching file paths, line numbers, and surrounding context. For large codebases, use glob filter to narrow scope.',
+      description: 'Search file contents by regex pattern (like grep). If path is a directory, recursively search with optional glob. If path is a specific file (has extension like .csv/.py), search only that file. Returns matching file paths, line numbers, and surrounding context. ⚠️ To avoid timeout, always specify "path" when you know where to look.',
       nameCn: '内容搜索',
-      descriptionCn: '按正则表达式搜索文件内容（类似 grep），返回匹配的文件路径、行号和上下文。大型代码库建议用 glob 过滤。',
+      descriptionCn: '按正则表达式搜索文件内容（类似 grep）。若 path 是目录则递归搜索（可配合 glob 过滤），若 path 是具体文件（有扩展名如 .csv/.py）则只搜索该文件。返回匹配的文件路径、行号和上下文。⚠️ 为避免超时，建议指定 path 缩小搜索范围。',
       parameters: {
         type: 'object',
         properties: {
           pattern: { type: 'string', description: 'Regex pattern to search for' },
-          path: { type: 'string', description: 'Root directory to search in (default: current directory)' },
-          glob: { type: 'string', description: 'File filter glob (e.g. "*.ts", "*.tsx")' },
+          path: { type: 'string', description: 'Directory to search in, OR a specific file path (auto-detected by extension). ⚠️ Always specify when you have a rough idea where. Default: user home directory (slow, may timeout).' },
+          glob: { type: 'string', description: 'File name filter glob (e.g. "*.md", "*report*"). Use * to match any characters. Ignored when path is a specific file.' },
           case_sensitive: { type: 'boolean', description: 'Case sensitive search (default false)' },
           max_results: { type: 'number', description: 'Maximum number of results (default 100)' },
-          context_lines: { type: 'number', description: 'Number of context lines before/after each match (default 0)' },
+          context_lines: { type: 'number', description: 'Number of context lines before/after each match (default 2)' },
         },
         required: ['pattern'],
       },
+      returns: '{"matches":[{"file":"path","line":42,"text":"matching line","context":{"before":["line 40","line 41"],"after":["line 43","line 44"]},"block":{"start_line":38,"end_line":46}}],"count":5,"method":"file-read"}',
     },
     // --- Web Search ---
     {
@@ -359,6 +361,42 @@ export class CodeToolsSkill implements Skill {
       }
     } catch (e) {
       return SkillFail(`Tool "${toolName}" failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /**
+   * 设置工作区根目录路径，更新 write_file 和 run_command 的工具描述。
+   * 在 initBuiltinExecutor 中调用，传入运行时解析的实际路径。
+   */
+  setWorkspacePath(workspacePath: string): void {
+    // 绝对路径放在描述里。用户修改工作目录后 updateWorkspacePath() 会重新调用此方法更新。
+    const wsNote = `\n工作区绝对路径：${workspacePath}`;
+    const wsRule = ' 路径规则：工作区内传 "workspace"，其他位置传绝对路径，不传则默认用户主目录。';
+
+    for (const tool of this.tools) {
+      // 通用：剥离旧的工作区信息，追加新的
+      const strip = (s: string) => s.split('\n工作区绝对路径：')[0].split(' 路径规则：')[0];
+
+      if (tool.name === 'write_file') {
+        tool.description = strip(tool.description) + wsNote;
+        if (tool.descriptionCn) tool.descriptionCn = strip(tool.descriptionCn) + wsNote;
+      }
+      if (tool.name === 'read_file') {
+        tool.description = strip(tool.description) + wsNote;
+        if (tool.descriptionCn) tool.descriptionCn = strip(tool.descriptionCn) + wsNote;
+      }
+      if (tool.name === 'run_command') {
+        tool.description = strip(tool.description) + wsNote;
+        if (tool.descriptionCn) tool.descriptionCn = strip(tool.descriptionCn) + wsNote;
+      }
+      if (tool.name === 'glob_files') {
+        tool.description = strip(tool.description) + wsNote + wsRule;
+        if (tool.descriptionCn) tool.descriptionCn = strip(tool.descriptionCn) + wsNote + wsRule;
+      }
+      if (tool.name === 'grep_files') {
+        tool.description = strip(tool.description) + wsNote + wsRule;
+        if (tool.descriptionCn) tool.descriptionCn = strip(tool.descriptionCn) + wsNote + wsRule;
+      }
     }
   }
 }

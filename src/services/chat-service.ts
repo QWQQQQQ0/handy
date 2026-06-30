@@ -3,7 +3,7 @@
 import { getModelService } from '@/services/model-service-singleton';
 import { ChatAgent } from '@/agents/chat-api';
 import type { LLMMessage, ChatMessage, MessageContent, ToolCall, ToolCallResult } from '@/types/message';
-import { serializeContent, deserializeContent } from '@/utils/content';
+import { serializeContent, deserializeContent, truncateToolResult } from '@/utils/content';
 import { getDB } from '@/db';
 
 export interface ChatStateUpdate {
@@ -231,16 +231,18 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
 
           console.log(`[chat-service] ▶ executing tool: ${funcName}`, args);
 
-          // ── run_command: inline confirmation before execution ──
+          // ── run_command / execute_code / doc_code_exec: inline confirmation before execution ──
           let result: { success: boolean; message: string; data?: Record<string, unknown> };
-          if (funcName === 'run_command') {
-            const command = args['command'] as string ?? '';
+          if (funcName === 'run_command' || funcName === 'execute_code' || funcName === 'doc_code_exec') {
+            const displayCmd = funcName === 'run_command'
+              ? (args['command'] as string ?? '')
+              : (funcName === 'doc_code_exec' ? `[Python(doc)] ` : `[${args['language'] ?? 'code'}] `) + String(args['code'] ?? '').substring(0, 300);
             // Yield confirmation request — generator pauses here
             const confirmResponse = yield {
               messages: buildVisible(visibleMessages),
               debugMessages: [...debugMessages],
               isStreaming: true,
-              awaitingConfirmation: { toolName: funcName, args, command },
+              awaitingConfirmation: { toolName: funcName, args, command: displayCmd },
             };
             // Resume: user confirmed or rejected
             if (confirmResponse?.confirmed) {
@@ -253,28 +255,33 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
           }
           console.log(`[chat-service] ✓ tool result: ${funcName}`, result.success ? 'success' : 'failed', result.message?.substring(0, 120));
 
-          // Filter out large image data from tool results to avoid sending huge payloads to LLM
+          // Filter out large image data + 超长截断：tool 保留截断版，完整内容 user 兜底
           const filteredResult = funcName === 'desktop_screenshot' && result.success && result.data
             ? { ...result, data: { ...result.data as Record<string, unknown>, image_data: '[image data omitted]' } }
             : result;
+          const rawJson = JSON.stringify(filteredResult);
+          const tr = truncateToolResult(funcName, rawJson);
 
-          debugMessages.push({
+          const toolMsgBase = {
             id: tcId,
             conversationId,
-            role: 'tool',
-            content: JSON.stringify(filteredResult),
+            role: 'tool' as const,
+            content: tr.toolContent,
             timestamp: new Date().toISOString(),
-            status: 'done',
-          });
+            status: 'done' as const,
+          };
+          debugMessages.push(toolMsgBase);
+          internalMessages.push({ ...toolMsgBase });
 
-          internalMessages.push({
-            id: tcId,
-            conversationId,
-            role: 'tool',
-            content: JSON.stringify(filteredResult),
-            timestamp: new Date().toISOString(),
-            status: 'done',
-          });
+          if (tr.fullUserMessage) {
+            const userMsg = {
+              id: crypto.randomUUID(), conversationId,
+              role: 'user' as const, content: tr.fullUserMessage,
+              timestamp: new Date().toISOString(), status: 'done' as const,
+            };
+            debugMessages.push(userMsg);
+            internalMessages.push({ ...userMsg });
+          }
         }
 
         yield { messages: buildVisible(visibleMessages), debugMessages: [...debugMessages], isStreaming: true };

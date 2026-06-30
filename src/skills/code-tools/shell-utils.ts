@@ -2,6 +2,95 @@
 
 import { tryReadFile } from './helpers';
 
+const isWindows = (typeof process !== 'undefined' && process.platform === 'win32') ||
+  (typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || ''));
+
+/**
+ * Resolve the user's home directory as default search root.
+ * Tauri desktop agents should search from ~/ not the project directory.
+ */
+let _homeDir: string | null = null;
+async function getHomeDir(): Promise<string> {
+  if (_homeDir) return _homeDir;
+  try {
+    const { homeDir } = await import('@tauri-apps/api/path');
+    _homeDir = await homeDir();
+    return _homeDir;
+  } catch { /* not in Tauri or path API unavailable */ }
+  // Browser / Node fallback
+  if (typeof process !== 'undefined' && process.env) {
+    _homeDir = process.env.USERPROFILE || process.env.HOME || '';
+    if (_homeDir) return _homeDir;
+  }
+  _homeDir = '.';
+  return _homeDir;
+}
+
+/**
+ * Resolve the workspace directory (where write_file stores relative paths).
+ * Priority: 1) User-configured setting  2) Project root /workspace  3) home/workspace
+ */
+let _workspaceDir: string | null = null;
+export function clearWorkspaceDirCache(): void {
+  _workspaceDir = null;
+}
+export async function getWorkspaceDir(): Promise<string> {
+  if (_workspaceDir) return _workspaceDir;
+
+  // 1. 用户自定义工作目录（最高优先级）
+  try {
+    const { useSettingsStore } = await import('@/stores/settings-store');
+    const userPath = useSettingsStore.getState().workspacePath;
+    if (userPath) {
+      // Normalize: ensure the path ends with the workspace directory name
+      const normalized = userPath.replace(/\\/g, '/').replace(/\/+$/, '');
+      _workspaceDir = normalized;
+      console.log(`[workspace] Using user-configured path: ${_workspaceDir}`);
+      return _workspaceDir;
+    }
+  } catch { /* settings store not available */ }
+
+  // 2. 默认：项目根目录/workspace（后端通过 src-tauri/Cargo.toml 标记文件定位）
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const projectRoot = (await invoke<string>('get_project_dir')).replace(/\\/g, '/');
+    _workspaceDir = projectRoot + '/workspace';
+    console.log(`[workspace] Using project root workspace: ${_workspaceDir}`);
+    return _workspaceDir;
+  } catch { /* not in Tauri or path API unavailable */ }
+
+  // 3. 兜底：用户主目录/workspace
+  _workspaceDir = (await getHomeDir()).replace(/\\/g, '/').replace(/\/+$/, '') + '/workspace';
+  console.log(`[workspace] Fallback to home dir: ${_workspaceDir}`);
+  return _workspaceDir;
+}
+
+/**
+ * Resolve a searchPath for glob/grep to an absolute path.
+ * - No path → user home directory (legacy default)
+ * - Absolute path → use as-is
+ * - workspace/... → resolve to project root workspace/...
+ * - Other relative → resolve relative to workspace
+ */
+export async function resolveSearchPath(searchPath?: string): Promise<string> {
+  if (!searchPath) return getHomeDir();
+  // Already absolute
+  if (searchPath.includes(':') || searchPath.startsWith('/') || searchPath.startsWith('\\')) {
+    return searchPath;
+  }
+  // workspace/ paths → resolve to actual workspace dir
+  const wsDir = await getWorkspaceDir();
+  const normalized = searchPath.replace(/\\/g, '/');
+  if (normalized.startsWith('workspace/')) {
+    return wsDir.replace(/\\/g, '/') + '/' + normalized.slice('workspace/'.length);
+  }
+  if (normalized === 'workspace') {
+    return wsDir;
+  }
+  // Other relative paths → resolve relative to workspace
+  return wsDir.replace(/\\/g, '/') + '/' + normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Command safety
 // ---------------------------------------------------------------------------
@@ -47,22 +136,30 @@ export async function tryRunCommand(
   command: string,
   cwd?: string,
   timeoutMs = 30000,
-): Promise<{ ok: boolean; stdout: string; stderr: string; exitCode: number; method: string }> {
+): Promise<{ ok: boolean; stdout: string; stderr: string; exitCode: number; method: string; cwd?: string }> {
+  // Resolve workspace-relative cwd to absolute path; default to workspace dir
+  const resolvedCwd = cwd ? await resolveSearchPath(cwd) : await getWorkspaceDir();
   try {
+    const t0 = Date.now();
     const { getApiBaseUrl } = await import('@/api/client');
     const url = `${getApiBaseUrl()}/api/agent/run-command`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        params: { command, cwd, timeout_ms: timeoutMs },
+        params: { command, cwd: resolvedCwd, timeout_ms: timeoutMs },
       }),
     });
     const json = await response.json() as { ok: boolean; data?: { ok: boolean; stdout: string; stderr: string; exitCode: number; method: string }; error?: string };
+    const elapsed = Date.now() - t0;
     if (!json.ok || !json.data) {
-      return { ok: false, stdout: '', stderr: json.error ?? 'Backend request failed', exitCode: -1, method: 'error' };
+      console.log(`[tryRunCommand] FAIL ${elapsed}ms cmd="${command}" error="${json.error || 'no data'}"`);
+      return { ok: false, stdout: '', stderr: json.error ?? 'Backend request failed', exitCode: -1, method: 'error', cwd: resolvedCwd };
     }
-    return json.data;
+    const outLen = json.data.stdout?.length ?? 0;
+    const errLen = json.data.stderr?.length ?? 0;
+    console.log(`[tryRunCommand] OK ${elapsed}ms cmd="${command}" exit=${json.data.exitCode} stdout=${outLen}B stderr=${errLen}B cwd=${resolvedCwd || '(default)'}`);
+    return { ...json.data, cwd: resolvedCwd };
   } catch (e) {
     return {
       ok: false,
@@ -70,6 +167,7 @@ export async function tryRunCommand(
       stderr: e instanceof Error ? e.message : String(e),
       exitCode: -1,
       method: 'error',
+      cwd: resolvedCwd,
     };
   }
 }
@@ -212,16 +310,64 @@ function parseGrepOutput(
  * Search file contents — shells out to rg/grep/findstr for speed.
  * Tries rg first (fastest, native context support), then platform fallback.
  */
+/**
+ * Find the surrounding "block" (paragraph / code block) boundaries for a line.
+ * Blocks are delimited by empty lines. Returns 1-based line numbers.
+ */
+function findBlock(lines: string[], matchIdx: number): { start_line: number; end_line: number } {
+  let start = matchIdx;
+  let end = matchIdx;
+  while (start > 0 && lines[start - 1].trim() !== '') start--;
+  while (end < lines.length - 1 && lines[end + 1].trim() !== '') end++;
+  return { start_line: start + 1, end_line: end + 1 };
+}
+
 export async function trySearchFiles(
   pattern: string,
   searchPath?: string,
   glob?: string,
   caseSensitive = false,
   maxResults = 100,
-  contextLines = 0,
-): Promise<{ ok: boolean; matches: Array<{ file: string; line: number; text: string; context?: { before: string[]; after: string[] } }>; method: string }> {
-  const cwd = searchPath ?? '.';
-  const isWindows = typeof process !== 'undefined' && process.platform === 'win32';
+  contextLines = 2,
+): Promise<{ ok: boolean; matches: Array<{ file: string; line: number; text: string; context?: { before: string[]; after: string[] }; block?: { start_line: number; end_line: number } }>; method: string; error?: string }> {
+  const cwd = await resolveSearchPath(searchPath);
+  const errors: string[] = [];
+  console.log(`[grep_files] pattern="${pattern}" searchPath="${searchPath || '(default)'}" glob="${glob || ''}"`);
+
+  // ── Single-file mode: searchPath looks like a file path ──
+  const looksLikeFile = searchPath && /\.[a-zA-Z0-9]{1,10}$/.test(searchPath);
+  if (looksLikeFile && !glob) {
+    console.log(`[grep_files] → file-read: "${searchPath}"`);
+    try {
+      const t0 = Date.now();
+      const result = await tryReadFile(searchPath);
+      if (result.ok) {
+        const flags = caseSensitive ? 'g' : 'gi';
+        const regex = new RegExp(pattern, flags);
+        const matches: Array<{ file: string; line: number; text: string; context?: { before: string[]; after: string[] }; block?: { start_line: number; end_line: number } }> = [];
+        const lines = result.content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (matches.length >= maxResults) break;
+          regex.lastIndex = 0;
+          if (regex.test(lines[i])) {
+            const m: typeof matches[0] = {
+              file: searchPath, line: i + 1, text: lines[i].trim(),
+              block: findBlock(lines, i),
+            };
+            if (contextLines > 0) {
+              m.context = {
+                before: lines.slice(Math.max(0, i - contextLines), i).map(l => l.trimEnd()),
+                after: lines.slice(i + 1, i + 1 + contextLines).map(l => l.trimEnd()),
+              };
+            }
+            matches.push(m);
+          }
+        }
+        console.log(`[grep_files] ✓ file-read: ${matches.length} matches (${Date.now() - t0}ms)`);
+        return { ok: true, matches, method: 'file-read' };
+      }
+    } catch (e) { errors.push(`file-read: ${e instanceof Error ? e.message : String(e)}`); }
+  }
 
   // ── Strategy 1: ripgrep (fastest, works on all platforms) ──
   try {
@@ -231,13 +377,19 @@ export async function trySearchFiles(
     if (glob) rgArgs.push('-g', glob);
     rgArgs.push('-m', String(maxResults));
     rgArgs.push('--', pattern);
+    const rgCmd = `rg ${rgArgs.join(' ')}`;
+    console.log(`[grep_files] → rg: ${rgCmd}`);
 
-    const rgResult = await tryRunCommand(`rg ${rgArgs.join(' ')}`, cwd, 15000);
+    const rgResult = await tryRunCommand(rgCmd, cwd, 60000);
     if (rgResult.ok && rgResult.exitCode === 0 && rgResult.stdout.trim()) {
       const matches = parseRgOutput(rgResult.stdout, contextLines);
+      console.log(`[grep_files] ✓ rg: ${matches.length} matches`);
       return { ok: true, matches, method: 'rg' };
     }
-  } catch { /* rg not available, fall through */ }
+    const rgDetail = `ok=${rgResult.ok} exit=${rgResult.exitCode} stderr=${rgResult.stderr?.slice(0, 100) || '(empty)'}`;
+    if (rgResult.stderr) errors.push(`rg: ${rgResult.stderr.slice(0, 200)}`);
+    console.log(`[grep_files] ✗ rg: ${rgDetail}`);
+  } catch { errors.push('rg: not available'); console.log(`[grep_files] ✗ rg: not installed`); }
 
   // ── Strategy 2: platform fallback ──
   try {
@@ -247,11 +399,16 @@ export async function trySearchFiles(
       if (!caseSensitive) fsArgs.push('/i');
       const fileFilter = glob ? glob.replace(/\*\*/g, '*').replace(/\*/g, '*') : '*';
       const cmd = `findstr ${fsArgs.join(' ')} /c:"${pattern}" ${fileFilter}`;
-      const result = await tryRunCommand(cmd, cwd, 15000);
+      console.log(`[grep_files] → findstr: ${cmd} in ${cwd}`);
+      const result = await tryRunCommand(cmd, cwd, 30000);
       if (result.ok && result.exitCode === 0 && result.stdout.trim()) {
         const matches = parseFindstrOutput(result.stdout, maxResults);
+        console.log(`[grep_files] ✓ findstr: ${matches.length} matches`);
         return { ok: true, matches, method: 'findstr' };
       }
+      const fsDetail = `ok=${result.ok} exit=${result.exitCode} stderr=${result.stderr?.slice(0, 100) || '(empty)'}`;
+      if (result.stderr) errors.push(`findstr: ${result.stderr.slice(0, 200)}`);
+      console.log(`[grep_files] ✗ findstr failed (${fsDetail})`);
     } else {
       // grep -rn = recursive + line numbers
       const grepArgs = ['-rn', '-n'];
@@ -260,57 +417,22 @@ export async function trySearchFiles(
       grepArgs.push('-m', String(maxResults));
       grepArgs.push('--include', glob ?? '*');
       grepArgs.push('--', pattern);
+      const grepCmd = `grep ${grepArgs.join(' ')}`;
+      console.log(`[grep_files] → grep: ${grepCmd}`);
 
-      const result = await tryRunCommand(`grep ${grepArgs.join(' ')}`, cwd, 15000);
+      const result = await tryRunCommand(grepCmd, cwd, 30000);
       if (result.ok && result.exitCode === 0 && result.stdout.trim()) {
         const matches = parseGrepOutput(result.stdout, contextLines);
+        console.log(`[grep_files] ✓ grep: ${matches.length} matches`);
         return { ok: true, matches, method: 'grep' };
       }
+      const grepDetail = `ok=${result.ok} exit=${result.exitCode} stderr=${result.stderr?.slice(0, 100) || '(empty)'}`;
+      if (result.stderr) errors.push(`grep: ${result.stderr.slice(0, 200)}`);
+      console.log(`[grep_files] ✗ grep failed (${grepDetail})`);
     }
-  } catch { /* fall through */ }
+  } catch (e) { errors.push('system command: failed'); console.log(`[grep_files] ✗ system command failed: ${e instanceof Error ? e.message : String(e)}`); }
 
-  // ── Strategy 3: JS fallback (slow but always works) ──
-  try {
-    const dirResult = await tryListDir(cwd, true, glob);
-    if (!dirResult.ok) return { ok: false, matches: [], method: 'error' };
-
-    const flags = caseSensitive ? 'g' : 'gi';
-    const regex = new RegExp(pattern, flags);
-    const matches: Array<{ file: string; line: number; text: string; context?: { before: string[]; after: string[] } }> = [];
-    const MAX_FILE_SIZE = 2 * 1024 * 1024;
-
-    for (const entry of dirResult.entries) {
-      if (!entry.isFile) continue;
-      if (matches.length >= maxResults) break;
-      if (/\.(png|jpg|jpeg|gif|bmp|ico|svg|woff2?|ttf|eot|mp[34]|wav|zip|tar|gz|exe|dll|so|dylib|pdf)$/i.test(entry.path)) continue;
-      if (entry.size !== undefined && entry.size > MAX_FILE_SIZE) continue;
-
-      try {
-        const readResult = await tryReadFile(entry.path);
-        if (!readResult.ok) continue;
-        const lines = readResult.content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (matches.length >= maxResults) break;
-          regex.lastIndex = 0;
-          if (regex.test(lines[i])) {
-            const match: { file: string; line: number; text: string; context?: { before: string[]; after: string[] } } = {
-              file: entry.path, line: i + 1, text: lines[i].trim(),
-            };
-            if (contextLines > 0) {
-              match.context = {
-                before: lines.slice(Math.max(0, i - contextLines), i).map(l => l.trimEnd()),
-                after: lines.slice(i + 1, i + 1 + contextLines).map(l => l.trimEnd()),
-              };
-            }
-            matches.push(match);
-          }
-        }
-      } catch { /* skip */ }
-    }
-    return { ok: true, matches, method: 'js-fallback' };
-  } catch (e) {
-    return { ok: false, matches: [], method: 'error' };
-  }
+  return { ok: false, matches: [], method: 'error', error: errors.join(' | ') };
 }
 
 // ---------------------------------------------------------------------------
@@ -323,37 +445,79 @@ export async function trySearchFiles(
 export async function tryGlob(
   pattern: string,
   searchPath?: string,
-): Promise<{ ok: boolean; files: string[]; method: string }> {
-  const cwd = searchPath ?? '.';
-  const isWindows = typeof process !== 'undefined' && process.platform === 'win32';
+): Promise<{ ok: boolean; files: string[]; method: string; error?: string }> {
+  const cwd = await resolveSearchPath(searchPath);
+  const errors: string[] = [];
+  console.log(`[glob_files] pattern="${pattern}" searchPath="${searchPath || '(default)'}" cwd="${cwd}"`);
+
+  // ── Try Everything Search (es.exe) — sub-second via NTFS MFT ──
+  console.log(`[glob_files] → es: es.exe "${pattern}"`);
+  try {
+    const esResult = await tryRunCommand(`es.exe "${pattern}"`, cwd, 30000);
+    if (esResult.ok && esResult.exitCode === 0 && esResult.stdout.trim()) {
+      const files = esResult.stdout.split('\n').filter(f => f.trim().length > 0);
+      console.log(`[glob_files] ✓ es: ${files.length} files`);
+      return { ok: true, files, method: 'es' };
+    }
+    if (esResult.stderr) console.log(`[glob_files] ✗ es: ${esResult.stderr.slice(0, 100)}`);
+    else console.log(`[glob_files] ✗ es: not installed or no results`);
+  } catch { console.log(`[glob_files] ✗ es: error`); }
 
   // ── Try rg --files (fast) ──
+  const rgCmd = `rg --files -g "${pattern}"`;
+  console.log(`[glob_files] → rg: ${rgCmd}`);
   try {
-    const rgResult = await tryRunCommand(`rg --files -g "${pattern}"`, cwd, 10000);
+    const rgResult = await tryRunCommand(rgCmd, cwd, 60000);
     if (rgResult.ok && rgResult.exitCode === 0 && rgResult.stdout.trim()) {
-      return { ok: true, files: rgResult.stdout.split('\n').filter(f => f.length > 0), method: 'rg' };
+      const files = rgResult.stdout.split('\n').filter(f => f.length > 0);
+      console.log(`[glob_files] ✓ rg: ${files.length} files`);
+      return { ok: true, files, method: 'rg' };
     }
-  } catch { /* rg not available */ }
+    const rgDetail = `ok=${rgResult.ok} exit=${rgResult.exitCode} stderr=${rgResult.stderr?.slice(0, 100) || '(empty)'}`;
+    if (rgResult.stderr) errors.push(`rg: ${rgResult.stderr.slice(0, 200)}`);
+    console.log(`[glob_files] ✗ rg: ${rgDetail}`);
+  } catch { errors.push('rg: not available'); console.log(`[glob_files] ✗ rg: not installed`); }
 
   // ── Platform fallback ──
   try {
     if (isWindows) {
-      // dir /s /b = recursive bare listing
-      const result = await tryRunCommand(`dir /s /b`, cwd, 10000);
-      if (result.ok && result.exitCode === 0) {
-        const globRegex = pattern
-          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-          .replace(/\{([^}]+)\}/g, (_, alts: string) => `(${alts.split(',').join('|')})`)
-          .replace(/\*\*/g, '<<GLOBSTAR>>')
-          .replace(/\*/g, '[^/\\\\]*')
-          .replace(/\?/g, '[^/\\\\]')
-          .replace(/<<GLOBSTAR>>/g, '.*');
-        const regex = new RegExp(`^${globRegex}$`, 'i');
-        const files = result.stdout.split('\n').filter(f => f.trim() && regex.test(f.trim()));
+      // Translate simple glob to dir wildcard to filter at OS level (avoid stdout overflow)
+      // Extract leaf filename filter for dir — dir /s is already recursive,
+      // so **/ and path components are redundant for OS-level filtering.
+      // e.g. "**/*.xlsx" → "*.xlsx",  "src/**/固定*" → "固定*"
+      const leafPattern = pattern.replace(/^.*[\\/]/, '').replace(/^\*\*\//, '');
+      // Always pass a filename filter to dir — exact names work too (e.g. "固定资产.xlsx")
+      const dirFilter = leafPattern || null;
+      const dirCmd = dirFilter
+        ? `dir /s /b ${dirFilter} 2>nul`
+        : `dir /s /b 2>nul`;
+      console.log(`[glob_files] → dir: ${dirCmd} (pattern="${pattern}" → leafFilter="${dirFilter || 'none'}")`);
+      const result = await tryRunCommand(dirCmd, cwd, 60000);
+      if (result.ok && result.exitCode === 0 && result.stdout.trim()) {
+        let files: string[];
+        if (dirFilter && leafPattern === pattern) {
+          // Exact match — no extra post-filter needed
+          files = result.stdout.split('\n').filter(f => f.trim().length > 0);
+        } else {
+          const globRegex = pattern
+            .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+            .replace(/\{([^}]+)\}/g, (_, alts: string) => `(${alts.split(',').join('|')})`)
+            .replace(/\*\*/g, '<<GLOBSTAR>>')
+            .replace(/\*/g, '[^/\\\\]*')
+            .replace(/\?/g, '[^/\\\\]')
+            .replace(/<<GLOBSTAR>>/g, '.*');
+          const regex = new RegExp(`^${globRegex}$`, 'i');
+          files = result.stdout.split('\n').filter(f => f.trim() && regex.test(f.trim()));
+        }
+        console.log(`[glob_files] ✓ dir: ${files.length} files`);
         return { ok: true, files, method: 'dir' };
       }
+      const timedOut = !result.ok && result.exitCode === 0 && !result.stderr;
+      const dirDetail = `ok=${result.ok} exit=${result.exitCode}${timedOut ? ' (likely timeout)' : ''} stderr=${result.stderr?.slice(0, 100) || '(empty)'}`;
+      if (result.stderr) errors.push(`dir: ${result.stderr.slice(0, 200)}`);
+      console.log(`[glob_files] ✗ dir: ${dirDetail}`);
     } else {
-      const result = await tryRunCommand(`find . -type f`, cwd, 10000);
+      const result = await tryRunCommand(`find . -type f`, cwd, 30000);
       if (result.ok && result.exitCode === 0) {
         const globRegex = pattern
           .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -364,26 +528,14 @@ export async function tryGlob(
           .replace(/<<GLOBSTAR>>/g, '.*');
         const regex = new RegExp(`^${globRegex}$`, 'i');
         const files = result.stdout.split('\n').filter(f => f.trim() && regex.test(f.trim()));
+        console.log(`[glob_files] ✓ find: ${files.length} files`);
         return { ok: true, files, method: 'find' };
       }
+      const findDetail = `ok=${result.ok} exit=${result.exitCode} stderr=${result.stderr?.slice(0, 100) || '(empty)'}`;
+      if (result.stderr) errors.push(`find: ${result.stderr.slice(0, 200)}`);
+      console.log(`[glob_files] ✗ find failed (${findDetail})`);
     }
-  } catch { /* fall through */ }
+  } catch { errors.push('system command: failed'); console.log(`[glob_files] ✗ system command failed`); }
 
-  // ── JS fallback ──
-  try {
-    const dirResult = await tryListDir(cwd, true);
-    if (!dirResult.ok) return { ok: false, files: [], method: 'error' };
-    const globRegex = pattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\{([^}]+)\}/g, (_, alts: string) => `(${alts.split(',').join('|')})`)
-      .replace(/\*\*/g, '<<GLOBSTAR>>')
-      .replace(/\*/g, '[^/\\\\]*')
-      .replace(/\?/g, '[^/\\\\]')
-      .replace(/<<GLOBSTAR>>/g, '.*');
-    const regex = new RegExp(`^${globRegex}$`, 'i');
-    const files = dirResult.entries.filter(e => e.isFile && regex.test(e.path)).map(e => e.path);
-    return { ok: true, files, method: 'js-fallback' };
-  } catch {
-    return { ok: false, files: [], method: 'error' };
-  }
+  return { ok: false, files: [], method: 'error', error: errors.join(' | ') };
 }

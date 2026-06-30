@@ -87,6 +87,8 @@ class PptGenerator:
 
     def _parse_markdown_to_slides(self, markdown: str) -> list[dict]:
         """Parse Markdown into slide definitions."""
+        if not markdown:
+            return []
         slides = []
         current_slide = None
 

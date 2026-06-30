@@ -2,6 +2,7 @@
 
 import type { LLMMessage } from '@/types/message';
 import type { LLMAdapter } from './types';
+import { logLLMRequest } from './request-logger';
 
 export class OpenAIAdapter implements LLMAdapter {
   readonly adapterId = 'openai';
@@ -48,6 +49,7 @@ export class OpenAIAdapter implements LLMAdapter {
     // MiMo thinking models: enable thinking mode
     if (thinkingMode) {
       body['thinking'] = { type: 'enabled' };
+      console.log('[openai] 🧠 thinking mode enabled');
     }
 
     const bodyJson = JSON.stringify(body);
@@ -91,13 +93,22 @@ export class OpenAIAdapter implements LLMAdapter {
     const timeout = setTimeout(() => controller.abort(), 120_000);
     let response: Response;
     try {
-      console.log('[openai] Sending request:', {
+      // 记录最终发给 LLM 厂商的请求概要
+      const bodyPreview = bodyJson.length > 2000
+        ? bodyJson.substring(0, 2000) + `...[+${bodyJson.length - 2000} chars]`
+        : bodyJson;
+      console.log('[openai] 🚀 Final request → LLM provider:', {
+        model,
         url,
         bodySize: bodyJson.length,
         bodySizeKB: Math.round(bodyJson.length / 1024),
-        model,
         messageCount: bodyMessages.length,
+        toolsCount: tools?.length ?? 0,
+        thinkingMode: thinkingMode ?? false,
+        bodyPreview,
       });
+      // 写入完整请求到日志文件
+      await logLLMRequest('openai', model, url, bodyJson);
       response = await fetch(url, {
         method: 'POST',
         headers: {

@@ -12,6 +12,7 @@ interface AppSettings {
   favoriteTools: Set<string>;
   locale: string | null; // 'en', 'zh', or null for system
   enableGlobalListener: boolean; // 是否启用全局输入监听
+  workspacePath: string | null; // 用户自定义工作目录（null = 使用默认项目根目录/workspace）
 }
 
 interface SettingsState extends AppSettings {
@@ -27,6 +28,7 @@ interface SettingsState extends AppSettings {
   isFavorite: (toolName: string) => boolean;
   setLocale: (locale: string | null) => void;
   setEnableGlobalListener: (enable: boolean) => void;
+  setWorkspacePath: (path: string | null) => void;
 }
 
 function readSet(key: string): Set<string> {
@@ -49,6 +51,7 @@ export const useSettingsStore = create<SettingsState>()(
     favoriteTools: new Set(),
     locale: null,
     enableGlobalListener: true, // 默认启用
+    workspacePath: null, // null = 使用默认位置
     loaded: false,
 
     load: () => {
@@ -56,6 +59,7 @@ export const useSettingsStore = create<SettingsState>()(
       const defaultProvider = localStorage.getItem('default_model_provider_id');
       const locale = localStorage.getItem('locale');
       const enableGlobalListener = localStorage.getItem('enable_global_listener');
+      const workspacePath = localStorage.getItem('workspace_path') || null;
 
       set({
         themeMode: theme === 'dark' || theme === 'light' ? theme : 'system',
@@ -64,6 +68,7 @@ export const useSettingsStore = create<SettingsState>()(
         favoriteTools: readSet('favorite_tools'),
         locale: locale || null,
         enableGlobalListener: enableGlobalListener !== 'false', // 默认 true
+        workspacePath,
         loaded: true,
       });
     },
@@ -118,6 +123,15 @@ export const useSettingsStore = create<SettingsState>()(
     setEnableGlobalListener: (enable) => {
       localStorage.setItem('enable_global_listener', String(enable));
       set({ enableGlobalListener: enable });
+    },
+
+    setWorkspacePath: (path) => {
+      if (path) {
+        localStorage.setItem('workspace_path', path);
+      } else {
+        localStorage.removeItem('workspace_path');
+      }
+      set({ workspacePath: path });
     },
   }))
 );

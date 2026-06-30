@@ -21,29 +21,85 @@ class WebSearchEngine:
     # ── Search ──
 
     def search(self, query: str, max_results: int = 10) -> dict[str, Any]:
-        """Search DuckDuckGo and return title/url/snippet results."""
+        """Search Bing and return title/url/snippet results."""
         try:
-            from ddgs import DDGS
+            import httpx
         except ImportError:
             return {
                 "success": False,
-                "error": "ddgs not installed. Run: pip install ddgs",
+                "error": "httpx not installed. Run: pip install httpx",
             }
 
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            }
+            # Use Bing search
+            url = f"https://www.bing.com/search?q={query}&count={max_results}"
+            response = httpx.get(url, headers=headers, timeout=15, follow_redirects=True)
+            response.raise_for_status()
+
+            html = response.text
+            results = self._parse_bing_results(html, max_results)
+
             return {
                 "success": True,
                 "query": query,
-                "results": [
-                    {"title": r["title"], "url": r["href"], "snippet": r["body"]}
-                    for r in results
-                ],
+                "results": results,
                 "count": len(results),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _parse_bing_results(html: str, max_results: int) -> list[dict]:
+        """Parse Bing search results from HTML."""
+        import re
+        results = []
+
+        # Pattern for Bing search results
+        # Each result is in <li class="b_algo" ...> with:
+        #   - <h2 class=""><a ... href="URL">TITLE</a></h2>
+        #   - <div class="b_caption"><p class="b_lineclamp2">SNIPPET</p></div>
+        # Note: Bing may add extra attributes like data-id, iid, class="" on h2, double target="_blank" on a
+        pattern = r'<li class="b_algo"[^>]*>.*?<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h2>.*?<div class="b_caption"><p[^>]*>(.*?)</p></div>'
+        matches = re.findall(pattern, html, re.DOTALL)
+
+        for url, title, snippet in matches[:max_results]:
+            # Clean HTML tags from title and snippet
+            title = re.sub(r'<[^>]+>', '', title).strip()
+            snippet = re.sub(r'<[^>]+>', '', snippet).strip()
+            # Decode HTML entities
+            title = unescape(title)
+            snippet = unescape(snippet)
+            if title and url:
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                })
+
+        # Fallback: try simpler pattern if no results
+        if not results:
+            pattern2 = r'<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h2>'
+            matches2 = re.findall(pattern2, html, re.DOTALL)
+            for url, title in matches2[:max_results]:
+                title = re.sub(r'<[^>]+>', '', title).strip()
+                title = unescape(title)
+                if title and url:
+                    results.append({
+                        "title": title,
+                        "url": url,
+                        "snippet": "",
+                    })
+
+        return results
 
     # ── Fetch (Playwright-first, httpx fallback) ──
 

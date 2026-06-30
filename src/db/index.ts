@@ -44,7 +44,10 @@ CREATE TABLE IF NOT EXISTS skills (
   category_cn TEXT DEFAULT '',
   usage_text TEXT DEFAULT '',
   usage_cn TEXT DEFAULT '',
-  exposed_to_ai INTEGER DEFAULT 1
+  exposed_to_ai INTEGER DEFAULT 1,
+  skill_dir TEXT DEFAULT '',
+  license TEXT DEFAULT '',
+  compatibility TEXT DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, timestamp);
@@ -276,6 +279,17 @@ CREATE TABLE IF NOT EXISTS long_term_memory (
 );
 CREATE INDEX IF NOT EXISTS idx_ltm_type ON long_term_memory(type);
 CREATE INDEX IF NOT EXISTS idx_ltm_importance ON long_term_memory(importance);
+
+CREATE TABLE IF NOT EXISTS agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT DEFAULT '',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  tool_names TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
 `;
 
 let _adapter: SQLiteAdapter | null = null;
@@ -353,6 +367,11 @@ async function runMigrations(db: SQLiteAdapter): Promise<void> {
   await addColumnIfMissing(db, 'skills', 'usage_text', "TEXT DEFAULT ''");
   await addColumnIfMissing(db, 'skills', 'usage_cn', "TEXT DEFAULT ''");
   await addColumnIfMissing(db, 'skills', 'exposed_to_ai', 'INTEGER DEFAULT 1');
+
+  // skills — standard AgentSkills format fields
+  await addColumnIfMissing(db, 'skills', 'skill_dir', "TEXT DEFAULT ''");
+  await addColumnIfMissing(db, 'skills', 'license', "TEXT DEFAULT ''");
+  await addColumnIfMissing(db, 'skills', 'compatibility', "TEXT DEFAULT ''");
 
   // scheduled_tasks
   await addColumnIfMissing(db, 'scheduled_tasks', 'monitor_target_json', "TEXT NOT NULL DEFAULT '{\"type\":\"fullscreen\"}'");

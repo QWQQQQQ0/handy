@@ -7,6 +7,9 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 #[cfg(desktop)]
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
+/// Stores the backend Node.js child process so it can be killed on app exit.
+struct BackendProcess(std::sync::Mutex<Option<std::process::Child>>);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   // Force UTF-8 console output on Windows (avoids garbled Chinese text)
@@ -21,6 +24,7 @@ pub fn run() {
     .manage(commands::bridge::BridgeState {
       bridge: std::sync::Arc::new(std::sync::Mutex::new(None)),
     })
+    .manage(BackendProcess(std::sync::Mutex::new(None)))
     .invoke_handler(tauri::generate_handler![
       #[cfg(windows)] commands::screenshot::desktop_screenshot,
       #[cfg(windows)] commands::screenshot::screenshot_window,
@@ -105,9 +109,11 @@ pub fn run() {
       commands::image_process::compress_uia_tree,
       commands::file_util::save_llm_images,
       commands::file_util::get_app_data_dir,
+        commands::file_util::get_project_dir,
       commands::file_util::write_file,
       commands::file_util::read_file,
       commands::file_util::read_file_as_data_url,
+      commands::file_util::write_log_file,
       #[cfg(windows)] commands::global_listener::start_global_listener,
       #[cfg(windows)] commands::global_listener::stop_global_listener,
       #[cfg(windows)] commands::global_listener::is_global_listener_running,
@@ -144,6 +150,43 @@ pub fn run() {
       // Pre-warm Python engine so Chrome extension WebSocket (port 19840) is ready
       let handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
+        // Start Node.js backend server for Agent API
+        // Check if a backend is already listening on :5174 (e.g. manually started for debugging)
+        let backend_port: u16 = 5174;
+        if std::net::TcpStream::connect(("127.0.0.1", backend_port)).is_ok() {
+          log::info!("[tauri] backend already running on :5174, skip spawn");
+        } else {
+          let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_default();
+          let backend_path = exe_dir.join("dist-backend").join("server.cjs");
+          let node = if cfg!(windows) { "node.exe" } else { "node" };
+          let mut cmd = std::process::Command::new(node);
+          #[cfg(windows)]
+          {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+          }
+          match cmd
+            .args([&format!("{}", backend_path.display())])
+            .current_dir(&exe_dir)
+            .env("BACKEND_PORT", backend_port.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+          {
+            Ok(child) => {
+              // Store child handle so we can kill it on app exit
+              if let Some(state) = handle.try_state::<BackendProcess>() {
+                *state.0.lock().unwrap() = Some(child);
+              }
+              log::info!("[tauri] backend server started on :5174");
+            },
+            Err(e) => log::error!("[tauri] backend failed: {} (path={})", e, backend_path.display()),
+          }
+        }
         // Small delay to let the window initialize first
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         match handle.emit("python-engine-status", "starting") {
@@ -166,13 +209,12 @@ pub fn run() {
         }
       });
 
-      if cfg!(debug_assertions) {
-        app.handle().plugin(
-          tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build(),
-        )?;
-      }
+      // 日志插件：debug/release 都启用，写入 %APPDATA%/com.handy.app/
+      app.handle().plugin(
+        tauri_plugin_log::Builder::default()
+          .level(log::LevelFilter::Info)
+          .build(),
+      )?;
 
       // ── 主窗口关闭拦截：X 按钮隐藏到托盘而非真正关闭 ──
       #[cfg(desktop)]
@@ -219,6 +261,14 @@ pub fn run() {
                 }
               }
               "quit" => {
+                // Kill backend Node.js process before exit
+                if let Some(state) = app.try_state::<BackendProcess>() {
+                  if let Some(mut child) = state.0.lock().unwrap().take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    log::info!("[tauri] backend process killed");
+                  }
+                }
                 app.exit(0);
               }
               _ => {}

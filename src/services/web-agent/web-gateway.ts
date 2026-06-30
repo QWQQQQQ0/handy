@@ -161,9 +161,10 @@ export class WebGateway {
     // ── 成功则直接返回 ──
     if (firstResult.success) {
       console.log(`[WebGateway] ✓ 第一次尝试成功`);
+      const bm = firstResult.lastResponseText || firstResult.lastSuccessfulToolResult || firstResult.summary;
       return {
-        message: firstResult.summary || 'Web 任务完成',
-        tasks: [{ taskId, status: 'done', message: firstResult.summary }],
+        message: bm || 'Web 任务完成',
+        tasks: [{ taskId, status: 'done', message: firstResult.summary, lastMessage: bm || firstResult.summary }],
       };
     }
 
@@ -196,16 +197,18 @@ export class WebGateway {
 
           if (secondResult.success) {
             console.log(`[WebGateway] ✓ 第二次尝试成功`);
+            const bm2 = secondResult.lastResponseText || secondResult.lastSuccessfulToolResult || secondResult.summary;
             return {
-              message: secondResult.summary || 'Web 任务完成（自动启动浏览器后）',
-              tasks: [{ taskId: retryTaskId, status: 'done', message: secondResult.summary }],
+              message: bm2 || 'Web 任务完成（自动启动浏览器后）',
+              tasks: [{ taskId: retryTaskId, status: 'done', message: secondResult.summary, lastMessage: bm2 || secondResult.summary }],
             };
           }
 
           // 第二次也失败
+          const bmf = secondResult.lastResponseText || secondResult.lastSuccessfulToolResult || secondResult.summary;
           return {
-            message: `Web 任务失败: ${secondResult.error}`,
-            tasks: [{ taskId: retryTaskId, status: 'error', error: secondResult.error, message: secondResult.summary }],
+            message: bmf ? `${bmf}\n\n(后续出错: ${secondResult.error})` : `Web 任务失败: ${secondResult.error}`,
+            tasks: [{ taskId: retryTaskId, status: 'error', error: secondResult.error, message: secondResult.summary, lastMessage: bmf || secondResult.summary || secondResult.error }],
           };
         }
       }
@@ -214,9 +217,10 @@ export class WebGateway {
     }
 
     // ── 最终失败 ──
+    const bmf2 = firstResult.lastResponseText || firstResult.lastSuccessfulToolResult || firstResult.summary;
     return {
-      message: `Web 任务失败: ${firstResult.error}`,
-      tasks: [{ taskId, status: 'error', error: firstResult.error, message: firstResult.summary }],
+      message: bmf2 ? `${bmf2}\n\n(后续出错: ${firstResult.error})` : `Web 任务失败: ${firstResult.error}`,
+      tasks: [{ taskId, status: 'error', error: firstResult.error, message: firstResult.summary, lastMessage: bmf2 || firstResult.summary || firstResult.error }],
     };
   }
 }

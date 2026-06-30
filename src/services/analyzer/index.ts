@@ -39,6 +39,53 @@ import type { LLMAnalysisResult, CoordinatePattern } from './types';
 // Re-export types for external consumers
 export type { LLMAnalysisResult, CoordinatePattern } from './types';
 
+/**
+ * 校验 llm_call 的 include_screenshots 引用是否有效。
+ * 只检查显式填了 include_screenshots 的步骤（不填 = 不需要截图，正常）。
+ * 发现无效引用时通过 onProgress 回调报告用户，由用户引导 LLM 修改。
+ */
+function validateScreenshotRefs(
+  result: LLMAnalysisResult,
+  onProgress?: (text: string) => void,
+): void {
+  for (let i = 0; i < result.steps.length; i++) {
+    const step = result.steps[i];
+    if (step.action !== 'llm_call') continue;
+
+    const includeRefs = (step.params?.include_screenshots as string[] | undefined);
+    // 没有 include_screenshots 或为空 → 不需要截图，正常跳过
+    if (!includeRefs || includeRefs.length === 0) continue;
+
+    const issues: string[] = [];
+    for (const ref of includeRefs) {
+      // 检查是否为有效 step_N 格式
+      if (!/^step_\d+$/.test(ref)) {
+        issues.push(`"${ref}" 不是有效的步骤 ID（格式应为 step_N，如 step_3）`);
+        continue;
+      }
+      // 检查引用的步骤是否存在
+      const refIndex = parseInt(ref.split('_')[1], 10);
+      const refStep = result.steps[refIndex];
+      if (!refStep) {
+        issues.push(`"${ref}" 步骤不存在（steps 共 ${result.steps.length} 个步骤，索引范围 0-${result.steps.length - 1}）`);
+        continue;
+      }
+      // 检查引用的步骤是否为 desktop_screenshot
+      const isScreenshot = refStep.action === 'tool_call'
+        && (refStep.params?.toolName === 'desktop_screenshot' || refStep.params?.toolName === 'screenshot');
+      if (!isScreenshot) {
+        issues.push(`"${ref}" 引用的不是截图步骤（是 ${refStep.action}${refStep.params?.toolName ? ':' + refStep.params.toolName : ''}），请改为截图步骤的 ID`);
+      }
+    }
+
+    if (issues.length > 0) {
+      const msg = `⚠️ 第 ${i + 1} 步 llm_call（「${step.description || '无描述'}」）的 include_screenshots 引用有问题：\n${issues.map(s => `  • ${s}`).join('\n')}\n请在微调对话中修正（如"把 llm_call 的 include_screenshots 改为 step_X"）。`;
+      console.warn(`[UnifiedAnalyzer] ${msg}`);
+      onProgress?.(msg);
+    }
+  }
+}
+
 class UnifiedAnalyzer {
   constructor(
     private modelService?: IModelService,
@@ -100,6 +147,10 @@ class UnifiedAnalyzer {
 
     // 后处理：删除 desktop_focus_window 后面冗余的窗口切换 click
     removeRedundantClicks(result, screenSize);
+
+    // 后处理：校验 llm_call 的 include_screenshots 引用有效性
+    // 发现无效引用时通过 onProgress 通知用户，引导用户在微调对话中修正
+    validateScreenshotRefs(result, callbacks?.onProgress);
 
     // 构建 pattern
     const pattern: DetectedPattern = {

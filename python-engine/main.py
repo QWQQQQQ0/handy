@@ -599,7 +599,7 @@ def _handle_ppt_generate(params: dict) -> dict[str, Any]:
     gen = _get_ppt_gen()
 
     # Support both structured slides and markdown content
-    if "markdown" in params:
+    if params.get("markdown"):
         pptx_bytes = gen.generate_from_markdown(
             title=params["title"],
             markdown=params["markdown"],

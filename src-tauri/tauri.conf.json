@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:3000",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npx vite build"
+    "beforeBuildCommand": "npx vite build && node scripts/build-backend.cjs"
   },
   "app": {
     "windows": [

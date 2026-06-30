@@ -61,6 +61,7 @@ export interface StreamExecutorParams {
   tools?: Record<string, unknown>[];
   goal?: string;
   skipCache?: boolean;
+  extra?: string;
 }
 
 export function executeStream(params: StreamExecutorParams): AsyncGenerator<string> {
@@ -73,5 +74,6 @@ export function executeStream(params: StreamExecutorParams): AsyncGenerator<stri
     tools: params.tools,
     goal: params.goal,
     skipCache: params.skipCache,
+    extra: params.extra,
   });
 }

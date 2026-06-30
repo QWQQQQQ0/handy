@@ -18,6 +18,10 @@ export interface TaskResult {
   status: 'done' | 'scheduled' | 'error';
   error?: string;
   message?: string;
+  /** Agent finalize/*_done 工具返回的 summary（任务完成时的总结） */
+  summary?: string;
+  /** 子 agent 执行链最后一条助手消息的文本内容（LLM 的自然语言结论） */
+  lastMessage?: string;
 }
 
 export interface TaskGatewayResponse {
@@ -184,6 +188,7 @@ export class TaskGateway {
               status: result.success ? 'done' : 'error',
               message: result.message,
               error: result.success ? undefined : result.message,
+              lastMessage: result.lastMessage || result.message,
             });
           } else {
             console.log(`[TaskGateway] 创建 TaskAgentRunner...`);
@@ -226,6 +231,8 @@ export class TaskGateway {
               taskId,
               status: result.success ? 'done' : 'error',
               error: result.error,
+              summary: result.summary,
+              lastMessage: result.lastResponseText || result.lastSuccessfulToolResult || result.summary || result.error,
             });
           }
         } else {

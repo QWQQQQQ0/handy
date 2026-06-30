@@ -27,7 +27,7 @@ Handy 是一个 **AI 驱动的桌面自动化助手**，通过自然语言指令
 ---
 
 ## 根目录配置
-
+、
 ```
 handy/
 ├── package.json                  -- 项目依赖与脚本
@@ -79,13 +79,13 @@ src/app/
 
 ```
 src/pages/
-├── chat.tsx                      -- 聊天页：LLM 流式对话，支持工具调用
+├── chat.tsx                      -- 聊天页：LLM 流式对话，支持工具调用 + knowledge_skill 路由 ★
 ├── desktop.tsx                   -- 桌面自动化页：截图、目标输入、执行
 ├── float/                        -- 浮窗模块 (Tauri 悬浮窗口，核心交互入口)
 │   ├── index.tsx                 -- 主壳：标题栏、tab 栏、模式路由
 │   ├── utils.ts                  -- localStorage 工具函数
 │   ├── types.ts                  -- 浮窗类型定义 (FloatMode, ActionLog)
-│   ├── chat-mode.tsx             -- Chat 模式：LLM 流式对话，命令确认
+│   ├── chat-mode.tsx             -- Chat 模式：LLM 流式对话，命令确认 + knowledge_skill 路由 ★
 │   ├── task-mode.tsx             -- Task 模式：桌面自动化执行，实时日志
 │   ├── watcher-mode.tsx          -- 后台任务模式：定时/监控管理
 │   └── learn-mode.tsx            -- Learn 模式：UI 能力学习 (半自动/级联/受控浏览)
@@ -192,11 +192,17 @@ src/stores/
 ├── chat-store.ts                 -- 聊天状态：会话、消息、流式、工具模式
 ├── settings-store.ts             -- 设置状态：主题、语言、工具偏好
 ├── model-config-store.ts         -- 模型配置状态：Provider CRUD、API Key 加密
-├── skill-store.ts                -- 技能状态：DB CRUD、Markdown 同步
+├── skill-store.ts                -- 技能状态：DB CRUD、SkillRegistry 集成、知识型技能管理 ★
 ├── project-store.ts              -- 项目状态：当前选中项目 (项目页内部使用)
 ```
 
-### src/skills/ -- 技能系统
+### src/skills/ -- 技能系统 (AgentSkills 标准兼容)
+
+> Skill 定义采用 AgentSkills 开放标准（SKILL.md 格式），含 Handy 扩展（tools 工具定义 + x-i18n 国际化）。
+> 内置 Skill 以目录形式存放于 public/skills/<name>/SKILL.md。
+> 外部知识型 Skill 从 .handy/skills/（项目级）和 ~/.handy/skills/（用户级）运行时扫描加载。
+> 支持 .redirect 文件：指向任意外部 skill 目录。
+
 
 > 技能是 LLM 可调用的工具，每个技能包含多个工具定义
 
@@ -204,8 +210,10 @@ src/stores/
 src/skills/
 ├── skill.ts                      -- Skill 接口 + 工具格式化辅助 (toolToOpenAI)
 ├── executor.ts                   -- SkillExecutor：注册、分发、构建 LLM 工具列表 + LEGACY_MAP 向后兼容
-├── loader.ts                     -- Markdown 技能解析器 (从 public/skills/ 加载)
-├── builtin-executor.ts           -- 内置执行器工厂：按 DB config 按需实例化 Skill
+├── loader.ts                     -- 技能加载器：import.meta.glob 扫描 public/skills/*/SKILL.md → 标准解析
+├── standard-md-parser.ts         -- AgentSkills 标准 SKILL.md 解析/生成 (js-yaml, 含 Handy 扩展 tools + x-i18n)
+├── skill-md-adapter.ts           -- SkillMdAdapter：将标准 SKILL.md 目录适配为 Skill 接口 (三级渐进加载)
+├── builtin-executor.ts           -- 内置执行器工厂 + getKnowledgeSkillBody() 知识型skill查询 + CodeTools workspace 注入 ★
 ├── tool-disclosure.ts            -- ToolDisclosure：渐进式工具披露 (菜单→门卫→按需加载完整定义)
 ├── desktop.ts                    -- 桌面视觉技能：截图、点击、拖拽、键盘、OCR、窗口管理
 ├── desktop_uia.ts                -- 桌面 UIA 技能：语义元素操作
@@ -221,15 +229,22 @@ src/skills/
 ├── plugin-loader.ts              -- 插件加载器 (动态加载第三方技能插件)
 ├── plugins/                      -- 插件目录
 │   └── example-plugin.ts         -- 示例插件
+├── sources/                      -- 多源技能加载 ★
+│   ├── index.ts                  -- Barrel 导出
+│   ├── types.ts                  -- SkillSource 接口 + SkillManifest + KnowledgeSkillInfo
+│   ├── registry.ts               -- SkillRegistry 统一注册表 (多源聚合、优先级仲裁)
+│   ├── builtin-source.ts         -- BuiltinSource 包装 import.meta.glob
+│   └── directory-source.ts       -- DirectorySource 运行时目录扫描 + .redirect
 ```
 
 ### src/skills/code-tools/ -- 代码工具子模块
 
 > code-tools.ts 的实现模块，每个处理器一个文件
+> index.ts 新增 setWorkspacePath() 方法：注入工作区根目录到 write_file/run_command 工具描述
 
 ```
 src/skills/code-tools/
-├── index.ts                   -- CodeToolsSkill 主类 + 工具定义 + 执行分发
+├── index.ts                   -- CodeToolsSkill 主类 + 工具定义 + 执行分发 + setWorkspacePath
 ├── helpers.ts                 -- 共享辅助：文件 I/O、代码块提取、提示构建
 ├── shell-utils.ts             -- Shell 工具：命令安全、执行、目录列表、文件搜索、Glob
 ├── file-ops.ts                -- write_file / read_file 处理器
@@ -558,7 +573,7 @@ src/components/
 ├── chat/                         -- 聊天组件
 │   ├── chat-bubble.tsx           -- 消息气泡
 │   ├── markdown-body.tsx         -- Markdown 渲染
-│   ├── message-input.tsx         -- 消息输入框
+│   ├── message-input.tsx         -- 消息输入框 (@ Agent + 知识型 skill 分组选择) ★
 │   ├── model-switcher.tsx        -- 模型切换
 │   ├── streaming-text.tsx        -- 流式文本
 │   ├── tool-mode-bar.tsx         -- 工具模式栏 (all/favorites/custom/none)
@@ -644,14 +659,17 @@ public/
 ├── icons/                        -- PWA 图标
 │   ├── icon-192.svg              -- 192px 图标
 │   └── icon-512.svg              -- 512px 图标
-├── skills/                       -- 技能定义 (Markdown 格式)
-│   ├── desktop_screen.md         -- 桌面视觉控制
-│   ├── desktop_uia.md            -- 桌面 UIA 控制
-│   ├── web_screen.md             -- Web 屏幕控制 + Playwright 脚本沙箱
-│   ├── phone_screen.md           -- 手机屏幕控制
-│   ├── app_builder.md            -- 应用构建器
-│   ├── office_doc.md             -- Office 文档生成
-│   └── code_tools.md             -- 代码工具：代码生成 + Shell + 代码搜索 + 联网搜索 (web_search/web_fetch 运行时注入)
+├── skills/                       -- 技能定义 (AgentSkills 标准 SKILL.md 格式，每 Skill 一个目录)
+│   ├── code-tools/SKILL.md       -- 代码工具：代码生成 + 文件 I/O + Shell + 搜索 (9 个工具)
+│   ├── desktop-screen/SKILL.md   -- 桌面视觉控制：截图、键鼠、窗口、OCR (21 个工具)
+│   ├── desktop-uia/SKILL.md      -- 桌面 UIA 控制：语义元素操作 (6 个工具)
+│   ├── web-screen/SKILL.md       -- Web 浏览器控制 + Playwright 脚本沙箱 (9 个工具)
+│   ├── phone-screen/SKILL.md     -- 手机屏幕控制 (12 个工具)
+│   ├── app-builder/SKILL.md      -- 应用构建器：保存/列出/更新/删除应用 (5 个工具)
+│   ├── office-doc/SKILL.md       -- Office 文档：生成/COM 读取/COM 编辑/代码执行 (5 个工具)
+│   ├── system-config/SKILL.md    -- 系统配置：技能/模型/设置管理、后台任务 (8 个工具)
+│   ├── chat-tools/SKILL.md       -- 对话工具：记忆/历史搜索/回忆/think/request_user_input (8 个工具)
+│   └── scheduler-tools/SKILL.md  -- 任务调度：定时任务/屏幕监控/工作流/取消/列表 (5 个工具)
 ```
 
 ---
@@ -866,14 +884,17 @@ src/pages/float/
 ### 技能系统
 
 ```
-7 个内置技能：
-  ├── desktop_screen   -- 桌面视觉控制 (截图、点击、拖拽、键盘、OCR)
-  ├── desktop_uia      -- 桌面 UIA 控制 (语义元素操作)
-  ├── web_screen       -- Web 屏幕控制
-  ├── phone_screen     -- 手机屏幕控制
-  ├── app_builder      -- 应用构建器
-  ├── office_doc       -- Office 文档生成 + COM 实时编辑 (生成/读取/编辑已打开的 Word/Excel)
-  └── code_tools       -- 代码工具 (代码生成、沙箱、Shell、代码搜索、**web_search/web_fetch 联网搜索**)
+10 个内置技能 (AgentSkills 标准 SKILL.md 格式，每 Skill 一个目录)：
+  ├── code-tools       -- 代码工具 (代码生成、沙箱、Shell、代码搜索、联网搜索)
+  ├── desktop-screen   -- 桌面视觉控制 (截图、点击、拖拽、键盘、OCR)
+  ├── desktop-uia      -- 桌面 UIA 控制 (语义元素操作)
+  ├── web-screen       -- Web 屏幕控制 + Playwright 脚本沙箱
+  ├── phone-screen     -- 手机屏幕控制
+  ├── app-builder      -- 应用构建器
+  ├── office-doc       -- Office 文档生成 + COM 实时编辑
+  ├── system-config    -- 系统配置 (技能/模型/设置/后台任务管理)
+  ├── chat-tools       -- 对话工具 (记忆/历史/回忆/think/request_user_input)
+  └── scheduler-tools  -- 任务调度 (定时/监控/工作流)
 
 三级缓存：
   ├── L1 (UI 指纹)    -- 页面状态 → 动作映射

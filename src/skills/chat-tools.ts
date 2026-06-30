@@ -71,18 +71,34 @@ export class ChatToolsSkill implements Skill {
         },
       },
     },
+    // ── delete_chat_messages ──
+    {
+      name: 'delete_chat_messages',
+      description: 'Delete specific chat messages or clear an entire conversation. Use message_ids to delete specific messages, or conversation_id + mode="conversation" to clear all messages in a conversation. Use with caution — this is irreversible.',
+      nameCn: '删除聊天记录',
+      descriptionCn: '删除指定的聊天消息或清空整个会话。使用 message_ids 删除特定消息，或使用 conversation_id + mode="conversation" 清空整个会话。操作不可逆，请谨慎使用。',
+      returns: '{"deleted_count":number}',
+      parameters: {
+        type: 'object',
+        properties: {
+          message_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of messages to delete. Use with mode="messages" (default).' },
+          conversation_id: { type: 'string', description: 'Conversation ID to clear. Use with mode="conversation" to delete all messages in that conversation.' },
+          mode: { type: 'string', enum: ['messages', 'conversation'], description: 'Delete mode: "messages" to delete specific message IDs, "conversation" to clear all messages in a conversation. Default: "messages".' },
+        },
+      },
+    },
     // ── recall_memory ──
     {
       name: 'recall_memory',
-      description: '搜索长期记忆。用于查找用户画像信息（偏好、习惯、个人信息）或任务历史（过去的项目、完成的修复、经验教训）。当需要回忆用户之前说过的话、做过的项目、或任何被记录到长期记忆中的内容时使用。',
+      description: '搜索长期记忆。用于查找用户画像信息（偏好、习惯、个人信息）、任务历史（过去的项目、完成的修复）、行为准则（跨任务的通用做事规则）、工作流经验（某类任务的具体操作流程、注意事项）、或任务经验（FreeAgent 试错总结、教训、可用模式）。当需要回忆用户之前说过的话、做过的项目、之前的经验教训时使用。',
       nameCn: '回忆长期记忆',
-      descriptionCn: '搜索长期记忆中的用户画像和任务历史。用于查找用户的偏好、习惯、个人信息，或过去的项目、修复记录、经验教训等。',
-      returns: '{"memories":[{"type":"user_profile/task_history","content":"...","importance":number,"source_date":"..."}],"total":number}',
+      descriptionCn: '搜索长期记忆中的用户画像、任务历史、行为准则、工作流经验和任务经验。用于查找用户的偏好、习惯、个人信息，或过去的项目、修复记录、经验教训等。',
+      returns: '{"memories":[{"type":"user_profile/task_history/agent_heuristic/task_workflow/task_experience","content":"...","importance":number,"source_date":"..."}],"total":number}',
       parameters: {
         type: 'object',
         properties: {
           keyword: { type: 'string', description: '搜索关键词，匹配记忆内容（模糊匹配）' },
-          type: { type: 'string', enum: ['user_profile', 'task_history', 'all'], description: '记忆类型：user_profile=用户画像, task_history=任务历史, all=全部（默认）' },
+          type: { type: 'string', enum: ['user_profile', 'task_history', 'agent_heuristic', 'task_workflow', 'task_experience', 'all'], description: '记忆类型：user_profile=用户画像, task_history=任务历史, agent_heuristic=行为准则, task_workflow=工作流经验, task_experience=任务经验(旧版), all=全部（默认）' },
           days: { type: 'number', description: '只搜索最近 N 天的记忆' },
           limit: { type: 'number', description: '返回条数（默认 10，最大 30）' },
         },
@@ -143,6 +159,43 @@ export class ChatToolsSkill implements Skill {
         required: ['summary'],
       },
     },
+    // ── store_experience（仅 FreeAgent 可用，由 FREE_AGENT_TOOLS 白名单控制） ──
+    {
+      name: 'store_experience',
+      description: 'Store lessons learned from this task. Two categories — choose ONE:\n'
+        + '1. "agent_heuristic" (行为风格): A GENERAL rule about HOW to work effectively. Applies across ALL tasks. Examples: "修改代码前先用 read_file 确认当前内容", "遇到报错先看错误日志不要盲目重试". Only for rules that would help in ANY future task. importance >= 8 required. Max 8 rules total — rare, high-quality only.\n'
+        + '2. "task_workflow" (行为方法): A specific workflow for a TYPE of task. Examples: "抓取 SPA 网页时先用 web_fetch 试，失败则用 Playwright", "处理 Excel 文件应先 office_detect→sync→com_read→处理后→com_edit→save". Fill workflow steps, toolSignature, triggerPatterns, tags carefully — these determine whether the workflow can be FOUND later.\n'
+        + 'If unsure which category or whether to store at all — skip. Most tasks should just finalize.',
+      nameCn: '存储经验',
+      descriptionCn: '存储任务中学到的经验。两种类型选一：\n'
+        + '1. agent_heuristic（行为风格）：通用的做事准则，跨所有任务适用。如"修改代码前先 read_file"、"遇到报错先看日志不盲目重试"。只存最重要的，importance 需 ≥ 8，总共最多 8 条。\n'
+        + '2. task_workflow（行为方法）：某类任务的具体操作流程。如"抓取 SPA 网页：先 web_fetch 试 → 失败则 Playwright"。务必认真填写 triggerPatterns（用户会怎么描述这类任务）、toolSignature（涉及哪些工具）、workflow steps —— 这些字段决定了以后能否检索到。\n'
+        + '不确定该不该存或该选哪个类型 → 直接跳过，大多数任务只需 finalize。',
+      parameters: {
+        type: 'object',
+        properties: {
+          category: { type: 'string', enum: ['agent_heuristic', 'task_workflow'], description: 'Experience category. agent_heuristic=general behavior rule (cross-task), task_workflow=specific task workflow.' },
+          // ── 通用字段 ──
+          goal: { type: 'string', description: 'One-line summary of what this task accomplished (used as the experience title for retrieval)' },
+          importance: { type: 'number', description: '1-10. agent_heuristic requires >= 8. task_workflow >= 5.', minimum: 1, maximum: 10 },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Keywords for retrieval. Be specific: use domain terms like "网页抓取", "Excel处理", "文件批量". At least 2 tags for task_workflow.' },
+          // ── agent_heuristic 字段 ──
+          heuristic: { type: 'string', description: '[agent_heuristic only] A concise behavioral rule, e.g. "修改任何文件前先 read_file 确认当前内容，避免基于猜测编辑"' },
+          // ── task_workflow 字段 ──
+          summary: { type: 'string', description: '[task_workflow only] Brief summary of the workflow (1 sentence)' },
+          toolSignature: { type: 'array', items: { type: 'string' }, description: '[task_workflow only] List of tools used in this workflow, e.g. ["web_fetch", "execute_code:python", "write_file"]. THIS IS CRITICAL for retrieval — the system matches by tool overlap.' },
+          triggerPatterns: { type: 'array', items: { type: 'string' }, description: '[task_workflow only] User query patterns that should trigger this workflow (supports regex). CRITICAL for retrieval. Cover multiple phrasings, e.g. ["抓取.*网页.*数据", "爬.*网站", "网页.*采集", "scrape.*web"]. At least 2 patterns.' },
+          domain: { type: 'string', description: '[task_workflow only] Domain: "web", "file", "data", "document", "system", "code".' },
+          preconditions: { type: 'array', items: { type: 'string' }, description: '[task_workflow only] Prerequisites for this workflow, e.g. ["需要 JS 渲染", "需要登录态"]' },
+          workflowSteps: { type: 'array', items: { type: 'object', properties: { order: { type: 'number' }, action: { type: 'string' }, tool: { type: 'string' }, onFailure: { type: 'string' } } }, description: '[task_workflow only] Ordered steps. Each step: {order, action, tool, onFailure?}' },
+          pitfalls: { type: 'array', items: { type: 'string' }, description: 'Pitfalls or issues to watch out for. For task_workflow, be specific about what can go wrong at which step.' },
+          // ── 旧版兼容字段 ──
+          approach: { type: 'string', description: '[legacy] One-sentence summary of the method used' },
+          lessons: { type: 'string', description: '[legacy] Key lessons and suggestions' },
+          patterns: { type: 'array', items: { type: 'string' }, description: '[legacy] Reusable patterns or techniques' },
+        },
+      },
+    },
   ];
 
   async execute(toolName: string, params: Record<string, unknown>): Promise<SkillResult> {
@@ -152,6 +205,8 @@ export class ChatToolsSkill implements Skill {
           return this.handleAgentMemoryUpdate(params);
         case 'search_chat_history':
           return this.handleSearchChatHistory(params);
+        case 'delete_chat_messages':
+          return this.handleDeleteChatMessages(params);
         case 'recall_memory':
           return this.handleRecallMemory(params);
         case 'think':
@@ -164,6 +219,55 @@ export class ChatToolsSkill implements Skill {
           });
         case 'finalize':
           return SkillOk((params['summary'] as string) ?? 'Task completed.', { finalized: true });
+        case 'store_experience': {
+          const { storeAgentExperience } = await import('@/services/task-memory');
+          const category = (params['category'] as string) ?? 'agent_heuristic';
+          const importance = (params['importance'] as number) ?? 6;
+
+          // agent_heuristic 门槛：importance >= 8
+          if (category === 'agent_heuristic' && importance < 8) {
+            return SkillOk('行为准则 importance 需 >= 8，当前 importance 过低，跳过存储。');
+          }
+          if (importance < 5) return SkillOk('经验重要性过低，跳过存储。');
+
+          // 提取 workflow steps
+          const steps = params['workflowSteps'] as Array<{ order: number; action: string; tool: string; onFailure?: string }> | undefined;
+
+          storeAgentExperience({
+            category: category as 'agent_heuristic' | 'task_workflow',
+            goal: (params['goal'] as string) ?? (params['approach'] as string)?.substring(0, 200) ?? 'task experience',
+            success: true,
+            heuristic: params['heuristic'] as string | undefined,
+            workflow: {
+              summary: params['summary'] as string | undefined,
+              toolSignature: params['toolSignature'] as string[] | undefined,
+              triggerPatterns: params['triggerPatterns'] as string[] | undefined,
+              domain: params['domain'] as string | undefined,
+              tags: params['tags'] as string[] | undefined,
+              preconditions: params['preconditions'] as string[] | undefined,
+              steps: steps?.map((s) => ({
+                order: s.order,
+                action: s.action,
+                tool: s.tool,
+                onFailure: s.onFailure,
+              })),
+              pitfalls: params['pitfalls'] as string[] | undefined,
+            },
+            // 旧版兼容
+            experience: {
+              approach: params['approach'] as string | undefined,
+              pitfalls: params['pitfalls'] as string[] | undefined,
+              lessons: params['lessons'] as string | undefined,
+              patterns: params['patterns'] as string[] | undefined,
+              tags: params['tags'] as string[] | undefined,
+              importance,
+            },
+            importance,
+          }).catch(() => { /* 非致命 */ });
+
+          const catLabel = category === 'agent_heuristic' ? '行为准则' : '工作流';
+          return SkillOk(`${catLabel}经验已存储。`);
+        }
         default:
           return SkillFail(`Unknown tool: ${toolName}`);
       }
@@ -183,11 +287,13 @@ export class ChatToolsSkill implements Skill {
       if (action === 'delete') {
         const memoryId = params['memory_id'] as string;
         if (!memoryId) return SkillFail('memory_id is required for delete action');
-        await compressor.deleteUserProfile(memoryId);
+        // 尝试删除用户画像，失败则尝试通用删除（task_experience 等）
+        const deleted = await compressor.deleteMemory(memoryId);
+        if (!deleted) return SkillFail(`未找到 ID 为 ${memoryId} 的记忆`);
         const remaining = await compressor.getUserProfileEntries();
         const formatted = remaining.map((m) => `- [${m.source_date ?? '?'}] ${m.content}`).join('\n');
         return SkillOk(
-          `Memory ${memoryId} deleted.\n\n当前用户画像记忆：\n${formatted || '（无）'}`,
+          `记忆 ${memoryId} 已删除。\n\n当前用户画像：\n${formatted || '（无）'}`,
         );
       }
 
@@ -285,6 +391,8 @@ export class ChatToolsSkill implements Skill {
       }
 
       const formatted = rows.map((r) => ({
+        id: r.id,
+        conversation_id: r.conversation_id,
         conversation_title: r.conversation_title,
         role: r.role,
         content: r.content.length > 500 ? r.content.substring(0, 500) + '...' : r.content,
@@ -293,12 +401,41 @@ export class ChatToolsSkill implements Skill {
 
       const summary = `Found ${rows.length} message(s):\n` +
         formatted.map((r) =>
-          `[${r.timestamp}] (${r.role}) [${r.conversation_title}]\n${r.content}`
+          `[${r.id}] [${r.timestamp}] (${r.role}) [${r.conversation_title}]\n${r.content}`
         ).join('\n---\n');
 
       return SkillOk(summary, { messages: formatted, total: rows.length });
     } catch (e) {
       return SkillFail(`search_chat_history failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // ── delete_chat_messages handler ──
+
+  private async handleDeleteChatMessages(params: Record<string, unknown>): Promise<SkillResult> {
+    try {
+      const mode = (params['mode'] as string) || 'messages';
+      const db = await getDB();
+
+      if (mode === 'conversation') {
+        const conversationId = params['conversation_id'] as string;
+        if (!conversationId) return SkillFail('conversation_id is required for conversation mode');
+        await db.execute('DELETE FROM messages WHERE conversation_id = ?', [conversationId]);
+        return SkillOk(`Cleared all messages in conversation ${conversationId}`);
+      }
+
+      // mode === 'messages' (default)
+      const messageIds = params['message_ids'] as string[] | undefined;
+      if (!messageIds || messageIds.length === 0) return SkillFail('message_ids is required (non-empty array)');
+
+      let deletedCount = 0;
+      for (const id of messageIds) {
+        await db.execute('DELETE FROM messages WHERE id = ?', [id]);
+        deletedCount++;
+      }
+      return SkillOk(`Deleted ${deletedCount} message(s)`, { deleted_count: deletedCount });
+    } catch (e) {
+      return SkillFail(`delete_chat_messages failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -315,25 +452,35 @@ export class ChatToolsSkill implements Skill {
 
       let results;
       if (!keyword && !days) {
-        const [profiles, tasks] = await Promise.all([
+        const [profiles, tasks, experiences, heuristics, workflows] = await Promise.all([
           compressor.getUserProfileEntries(),
           compressor.getTaskHistory(),
+          compressor.getTaskExperiences(),
+          compressor.getHeuristics?.(),
+          compressor.getWorkflows?.(),
         ]);
 
-        const filtered = type === 'user_profile'
-          ? profiles
-          : type === 'task_history'
-            ? tasks
-            : [...profiles, ...tasks.map((t) => ({ ...t, type: 'task_history' as const }))];
+        const allEntries = [
+          ...profiles.map((r) => ({ ...r, type: 'user_profile' as const })),
+          ...tasks.map((t) => ({ ...t, type: 'task_history' as const })),
+          ...experiences.map((e) => ({ ...e, type: 'task_experience' as const })),
+          ...(heuristics ?? []).map((h: { id?: string; content: string; importance: number; source_date?: string }) => ({ id: h.id ?? '', type: 'agent_heuristic' as const, content: h.content, importance: h.importance, source_date: h.source_date ?? null })),
+          ...(workflows ?? []).map((w: { id?: string; content: string; importance: number; source_date?: string }) => ({ id: w.id ?? '', type: 'task_workflow' as const, content: w.content, importance: w.importance, source_date: w.source_date ?? null })),
+        ];
+
+        const filtered = type === 'all'
+          ? allEntries
+          : allEntries.filter((r) => r.type === type);
 
         results = filtered.slice(0, limit).map((r) => ({
-          id: 'id' in r ? r.id : undefined,
-          type: 'type' in r ? r.type : 'user_profile',
+          id: r.id,
+          type: r.type,
           content: r.content,
           importance: r.importance,
-          source_date: 'source_date' in r ? r.source_date : (r.date ?? null),
+          source_date: r.source_date ?? null,
         }));
       } else {
+        // searchMemories 已经是 LIKE 查询，type 直接传给 DB
         const rows = await compressor.searchMemories(keyword, type, limit);
 
         results = rows
@@ -358,10 +505,19 @@ export class ChatToolsSkill implements Skill {
         return SkillOk('未找到匹配的长期记忆。');
       }
 
-      const typeLabel = (t: string) => t === 'user_profile' ? '用户画像' : '任务历史';
+      const typeLabel = (t: string) => {
+        switch (t) {
+          case 'user_profile': return '用户画像';
+          case 'agent_heuristic': return '行为准则';
+          case 'task_workflow': return '工作流经验';
+          case 'task_experience': return '任务经验';
+          case 'task_history': return '任务历史';
+          default: return t;
+        }
+      };
       const summary = `找到 ${results.length} 条记忆：\n` +
         results.map((r: Record<string, unknown>) =>
-          `[${typeLabel(r.type as string)}] [importance=${r.importance}] ${r.source_date ? `(${r.source_date}) ` : ''}${r.content}`
+          `[${typeLabel(r.type as string)}] [importance=${r.importance}] ${r.source_date ? `(${r.source_date}) ` : ''}${typeof r.content === 'string' && r.content.length > 500 ? (r.content as string).substring(0, 500) + '...' : r.content}`
         ).join('\n');
 
       return SkillOk(summary, { memories: results, total: results.length });

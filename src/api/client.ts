@@ -26,7 +26,12 @@ const ENDPOINT_PROMPT_KEY: Record<string, keyof typeof systemPrompts> = {
   [AgentEndpoint.freeAgent]: 'freeAgent',
 };
 
-async function injectSystemPrompt(endpoint: string, messages: LLMMessage[], goal?: string): Promise<LLMMessage[]> {
+async function injectSystemPrompt(
+  endpoint: string,
+  messages: LLMMessage[],
+  goal?: string,
+  systemExtra?: string,
+): Promise<LLMMessage[]> {
   const key = ENDPOINT_PROMPT_KEY[endpoint];
   if (!key) return messages;
   let prompt = systemPrompts[key] as string;
@@ -50,11 +55,18 @@ async function injectSystemPrompt(endpoint: string, messages: LLMMessage[], goal
     }
   }
 
-  // 注入长期记忆（从 long_term_memory 表读取）
-  try {
-    const longTermMem = await getMemoryCompressor().buildSystemPromptMemory();
-    if (longTermMem) prompt += longTermMem;
-  } catch { /* 非致命 — 记忆加载失败不影响对话 */ }
+  // 注入长期记忆（只给 Chat 和 Free agent，doc/code/web 等专职 agent 不需要）
+  if (endpoint === AgentEndpoint.chat || endpoint === AgentEndpoint.freeAgent) {
+    try {
+      const longTermMem = await getMemoryCompressor().buildSystemPromptMemory();
+      if (longTermMem) prompt += longTermMem;
+    } catch { /* 非致命 — 记忆加载失败不影响对话 */ }
+  }
+
+  // 注入知识技能上下文
+  if (systemExtra) {
+    prompt += systemExtra;
+  }
 
   return [{ role: 'system', content: prompt }, ...messages];
 }
@@ -185,9 +197,10 @@ export async function* apiStreamCompat(
   // 前端注入系统提示词（noSystemPrompt 时跳过）
   const rawMessages = (params['messages'] as LLMMessage[]) ?? [];
   const goal = params['goal'] as string | undefined;
+  const systemExtra = params['systemPromptExtra'] as string | undefined;
   const skipPrompt = params['noSystemPrompt'] === true;
   if (rawMessages.length > 0 && !skipPrompt) {
-    params = { ...params, messages: await injectSystemPrompt(endpoint, rawMessages, goal) };
+    params = { ...params, messages: await injectSystemPrompt(endpoint, rawMessages, goal, systemExtra) };
   }
   const messages = (params['messages'] as LLMMessage[]) ?? [];
   // 集中压缩所有截图 — 确保任何代码路径注入的图片都不会跳过压缩
@@ -233,12 +246,38 @@ export async function* apiStreamCompat(
   }
 
   const chunks: string[] = [];
+  // 缓冲连续 text 事件，避免极小块（单字/单词）导致频繁渲染和 markdown 解析异常
+  let textBuffer = '';
+  let lastFlushTime = Date.now();
+  const MIN_FLUSH_SIZE = 24;   // 积累 24+ 字符时刷新
+  const MAX_FLUSH_MS = 100;    // 或距上次刷新超过 100ms 时刷新（保证低延迟）
+
+  function flushTextBuffer(): string | null {
+    if (!textBuffer) return null;
+    const chunk = textBuffer;
+    textBuffer = '';
+    lastFlushTime = Date.now();
+    chunks.push(chunk);
+    return chunk;
+  }
+
   for await (const event of apiStream(endpoint, provider, apiKey, params)) {
+    // 连续 text 事件：先积累缓冲
+    if (event.type === 'text') {
+      textBuffer += event.content;
+      const elapsed = Date.now() - lastFlushTime;
+      if (textBuffer.length >= MIN_FLUSH_SIZE || elapsed >= MAX_FLUSH_MS) {
+        yield flushTextBuffer()!;
+      }
+      continue;
+    }
+
+    // 非 text 事件：先 flush 已缓冲的 text
+    const pending = flushTextBuffer();
+    if (pending) yield pending;
+
     let chunk: string;
     switch (event.type) {
-      case 'text':
-        chunk = event.content;
-        break;
       case 'tools':
         chunk = `__TOOLS__:${JSON.stringify(event.content)}`;
         break;
@@ -263,6 +302,10 @@ export async function* apiStreamCompat(
     chunks.push(chunk);
     yield chunk;
   }
+
+  // 流异常结束时 flush 剩余 buffer
+  const trailing = flushTextBuffer();
+  if (trailing) yield trailing;
 }
 
 // ── SSE 流式请求（原始事件） ──

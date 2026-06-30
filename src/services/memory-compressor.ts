@@ -242,6 +242,41 @@ export class MemoryCompressor {
     }));
   }
 
+  /** 获取任务经验（FreeAgent 试错总结） */
+  async getTaskExperiences(): Promise<LongTermMemoryRow[]> {
+    const db = await getDB();
+    return db.query<LongTermMemoryRow>(
+      "SELECT * FROM long_term_memory WHERE type = 'task_experience' ORDER BY importance DESC, hit_count DESC",
+    );
+  }
+
+  /** 获取行为准则（agent_heuristic） */
+  async getHeuristics(): Promise<LongTermMemoryRow[]> {
+    const db = await getDB();
+    return db.query<LongTermMemoryRow>(
+      "SELECT * FROM long_term_memory WHERE type = 'agent_heuristic' ORDER BY importance DESC",
+    );
+  }
+
+  /** 获取工作流经验（task_workflow） */
+  async getWorkflows(): Promise<LongTermMemoryRow[]> {
+    const db = await getDB();
+    return db.query<LongTermMemoryRow>(
+      "SELECT * FROM long_term_memory WHERE type = 'task_workflow' ORDER BY importance DESC, hit_count DESC",
+    );
+  }
+
+  /** 删除 long_term_memory 条目（通用） */
+  async deleteMemory(id: string): Promise<boolean> {
+    try {
+      const db = await getDB();
+      await db.execute('DELETE FROM long_term_memory WHERE id = ?', [id]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // ── LLM 压缩 ──
 
   /** 执行每日压缩 */
@@ -354,6 +389,19 @@ export class MemoryCompressor {
     if (cleaned.startsWith('```')) {
       cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
     }
+    // LLM 输出的 JSON 可能包含 Windows 路径（如 D:\software），其中 \s \o 等
+    // 在 JSON 中是非法转义符。用占位符保护已有合法转义，然后把剩余 \ 全转义。
+    const P = '';
+    cleaned = cleaned
+      .replace(/\\\\/g, `${P}0`) .replace(/\\"/g, `${P}1`) .replace(/\\\//g, `${P}2`)
+      .replace(/\\b/g, `${P}3`)  .replace(/\\f/g, `${P}4`) .replace(/\\n/g, `${P}5`)
+      .replace(/\\r/g, `${P}6`)  .replace(/\\t/g, `${P}7`) .replace(/\\u/g, `${P}8`)
+      .replace(/\\/g, '\\\\')
+      .replace(new RegExp(`${P}0`, 'g'), '\\\\') .replace(new RegExp(`${P}1`, 'g'), '\\"')
+      .replace(new RegExp(`${P}2`, 'g'), '\\/')  .replace(new RegExp(`${P}3`, 'g'), '\\b')
+      .replace(new RegExp(`${P}4`, 'g'), '\\f')  .replace(new RegExp(`${P}5`, 'g'), '\\n')
+      .replace(new RegExp(`${P}6`, 'g'), '\\r')  .replace(new RegExp(`${P}7`, 'g'), '\\t')
+      .replace(new RegExp(`${P}8`, 'g'), '\\u');
     const obj = JSON.parse(cleaned);
 
     return {
@@ -370,6 +418,8 @@ export class MemoryCompressor {
    * 格式：
    *   ## 用户画像
    *   - [偏好] ...
+   *   ## 行为准则
+   *   - [准则] ...
    *   ## 近期活动
    *   - [2026-06-21] ...
    */
@@ -388,10 +438,11 @@ export class MemoryCompressor {
     ]);
 
     const profiles = rows.filter((r) => r.type === 'user_profile');
+    const heuristics = rows.filter((r) => r.type === 'agent_heuristic');
     const tasks = rows.filter((r) => r.type === 'task_history');
 
     // 无数据则跳过
-    if (!runDayInfo && profiles.length === 0 && tasks.length === 0) {
+    if (!runDayInfo && profiles.length === 0 && heuristics.length === 0 && tasks.length === 0) {
       this._promptCache = { text: '', ts: Date.now() };
       return '';
     }
@@ -407,6 +458,7 @@ export class MemoryCompressor {
     // ── 用户画像 ──
     if (profiles.length > 0) {
       let charCount = 0;
+      lines.push('\n### 用户画像');
       for (const p of profiles) {
         const line = `- ${p.content}`;
         if (charCount + line.length > USER_PROFILE_CHAR_LIMIT) break;
@@ -415,9 +467,18 @@ export class MemoryCompressor {
       }
     }
 
+    // ── 行为准则（agent_heuristic） ──
+    if (heuristics.length > 0) {
+      lines.push('\n### 行为准则（从历史任务中学习，适用于所有任务）');
+      for (const h of heuristics) {
+        lines.push(`- ${h.content}`);
+      }
+    }
+
     // ── 近期活动 ──
     if (tasks.length > 0) {
       let charCount = 0;
+      lines.push('\n### 近期活动');
       for (const t of tasks) {
         const datePrefix = t.source_date ? `[${t.source_date}] ` : '';
         const line = `- ${datePrefix}${t.content}`;

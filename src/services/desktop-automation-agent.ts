@@ -9,6 +9,7 @@ import type { ToolContext } from '@/skills/skill';
 import type { WindowInfo } from './desktop-service';
 import { compressImage, type CompressedImage } from '@/utils/image';
 import { getScreenshotScale } from '@/utils/coordinate-scale';
+import { truncateToolResult } from '@/utils/content';
 import type { InteractiveNode, SemanticAction, SemanticAnnotation, UIFingerprint } from '@/types/cache';
 import { matchGoal } from '@/core/skill-resolver';
 import { StateMachine } from './state-machine';
@@ -361,7 +362,9 @@ export class DesktopAutomationAgent {
           const markResult: SkillResult = { success: true, message: `Marked ${done?.length ?? 0} step(s) as done` };
           turnResults.push(markResult);
           ctx.allResults.push(markResult);
-          ctx.messages.push({ role: 'tool', content: JSON.stringify(markResult), toolCallId: tc.id });
+          const mr = truncateToolResult(tc.name, JSON.stringify(markResult));
+          ctx.messages.push({ role: 'tool', content: mr.toolContent, toolCallId: tc.id });
+          if (mr.fullUserMessage) ctx.messages.push({ role: 'user', content: mr.fullUserMessage });
           continue;
         }
 
@@ -514,7 +517,9 @@ export class DesktopAutomationAgent {
             }
           }
         } else {
-          ctx.messages.push({ role: 'tool', content, toolCallId: tc.id });
+          const tr = truncateToolResult(tc.name, content);
+          ctx.messages.push({ role: 'tool', content: tr.toolContent, toolCallId: tc.id });
+          if (tr.fullUserMessage) ctx.messages.push({ role: 'user', content: tr.fullUserMessage });
         }
 
         // 区域验证截图 → 多模态 user 消息

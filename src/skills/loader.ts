@@ -1,111 +1,101 @@
-// 来源: lib/skills/skill_config.dart
+/**
+ * Skill Loader — scans skill directories and parses standard SKILL.md files.
+ *
+ * Skills live in directory-per-skill format under src/skills/definitions/
+ * conforming to the AgentSkills open standard (with Handy extensions).
+ */
 
-import type { ToolDefinition } from '@/types/skill';
+import { parseStandardSkillMd } from './standard-md-parser';
+import type { StandardSkillConfig } from './standard-md-parser';
 
-interface SkillConfig {
-  id: string;
-  name: string;
-  category: string;
-  description: string;
-  tools: ToolDefinition[];
-  nameCn?: string;
-  descriptionCn?: string;
-  categoryCn?: string;
-  usage?: string;
-  usageCn?: string;
+// ── Build-time glob: discover all SKILL.md files ─────────────────────────
+//
+// import.meta.glob is a Vite build-time feature. At build time, Vite scans
+// the definitions/ directory tree and imports each SKILL.md as a raw string.
+// Content is loaded eagerly so no fetch() is needed at runtime.
+
+const SKILL_MD_MODULES = import.meta.glob<string>(
+  './definitions/*/SKILL.md',
+  { eager: true, query: '?raw', import: 'default' },
+);
+
+/**
+ * Extract skill directory names from the glob keys.
+ * e.g. "./definitions/code-tools/SKILL.md" → "code-tools"
+ */
+function extractSkillDirs(): string[] {
+  const dirs: string[] = [];
+  for (const path of Object.keys(SKILL_MD_MODULES)) {
+    const match = /(?:^|\/)definitions\/([^/]+)\/SKILL\.md$/.exec(path);
+    if (match) {
+      dirs.push(match[1]);
+    }
+  }
+  return dirs.sort();
 }
 
-function parseYaml(yaml: string): Record<string, string> {
-  const map: Record<string, string> = {};
-  const lines = yaml.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const colon = line.indexOf(':');
-    if (colon === -1) continue;
-    const key = line.substring(0, colon).trim();
-    const rest = line.substring(colon + 1).trim();
+// ── Public API ────────────────────────────────────────────────────────────
 
-    if (rest === '|' || rest === '|-' || rest === '>-') {
-      // Block scalar — collect subsequent indented lines
-      const valueLines: string[] = [];
-      while (i + 1 < lines.length && (lines[i + 1].startsWith('  ') || lines[i + 1].startsWith('\t'))) {
-        i++;
-        valueLines.push(lines[i].replace(/^ {2}/, ''));
+/**
+ * Load all built-in skill configs from src/skills/definitions/ subdirectories.
+ *
+ * Uses import.meta.glob (eager) so content is bundled at build time —
+ * no fetch() needed at runtime.
+ */
+export function loadSkillConfigs(): StandardSkillConfig[] {
+  const configs: StandardSkillConfig[] = [];
+  const loaded = new Set<string>();
+
+  for (const [path, content] of Object.entries(SKILL_MD_MODULES)) {
+    try {
+      const config = parseStandardSkillMd(content);
+      if (loaded.has(config.name)) {
+        console.warn(`[loader] Duplicate skill name "${config.name}" — skipping ${path}`);
+        continue;
       }
-      map[key] = valueLines.join('\n');
-    } else {
-      let value = rest;
-      if (value.startsWith('"') && value.endsWith('"')) {
-        value = value.substring(1, value.length - 1);
-      }
-      if (key) map[key] = value;
+      loaded.add(config.name);
+      configs.push(config);
+    } catch (err) {
+      console.warn(`[loader] Failed to parse ${path}: ${(err as Error).message}`);
+    }
+  }
+
+  return configs;
+}
+
+/**
+ * Load a single skill config by directory name.
+ */
+export function loadSkillConfig(dirName: string): StandardSkillConfig | null {
+  const key = `./definitions/${dirName}/SKILL.md`;
+  const content = SKILL_MD_MODULES[key];
+  if (!content) return null;
+
+  try {
+    return parseStandardSkillMd(content);
+  } catch (err) {
+    console.warn(`[loader] Failed to parse skill "${dirName}": ${(err as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * Get the list of available skill directory names.
+ */
+export function listSkillDirs(): string[] {
+  return extractSkillDirs();
+}
+
+/**
+ * Map of directory name → SKILL.md raw content.
+ */
+export function getRawSkillMdMap(): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const [path, content] of Object.entries(SKILL_MD_MODULES)) {
+    const match = /(?:^|\/)definitions\/([^/]+)\/SKILL\.md$/.exec(path);
+    if (match) {
+      map[match[1]] = content;
     }
   }
   return map;
-}
-
-export function parseSkillMarkdown(md: string): SkillConfig {
-  const fmMatch = /^---\s*\n([\s\S]*?)\n---/.exec(md);
-  if (!fmMatch) throw new Error('Missing YAML frontmatter');
-
-  const fm = parseYaml(fmMatch[1]);
-  const id = fm['id'] ?? '';
-  const name = fm['name'] ?? '';
-  const category = fm['category'] ?? '';
-
-  const afterFM = md.substring(fmMatch.index! + fmMatch[0].length);
-  const jsonMatch = /```json\s*\n([\s\S]*?)\n```/.exec(afterFM);
-  const description = jsonMatch
-    ? afterFM.substring(0, jsonMatch.index).trim()
-    : afterFM.trim();
-
-  let tools: ToolDefinition[] = [];
-  if (jsonMatch) {
-    const list = JSON.parse(jsonMatch[1]);
-    tools = list.map((t: Record<string, unknown>) => ({
-      name: t['name'] as string,
-      description: t['description'] as string,
-      parameters: (t['parameters'] as Record<string, unknown>) ?? {},
-      returns: (t['returns'] as string) || undefined,
-      nameCn: (t['name_cn'] as string) || undefined,
-      descriptionCn: (t['description_cn'] as string) || undefined,
-    }));
-  }
-
-  return {
-    id, name, category, description, tools,
-    nameCn: fm['name_cn'] || undefined,
-    descriptionCn: fm['description_cn'] || undefined,
-    categoryCn: fm['category_cn'] || undefined,
-    usage: fm['usage'] || undefined,
-    usageCn: fm['usage_cn'] || undefined,
-  };
-}
-
-const skillFiles = ['desktop_screen', 'desktop_uia', 'web_screen', 'phone_screen', 'app_builder', 'office_doc', 'code_tools'];
-
-export async function loadSkills(): Promise<SkillConfig[]> {
-  const skills: SkillConfig[] = [];
-  for (const name of skillFiles) {
-    try {
-      const res = await fetch(`/skills/${name}.md`);
-      if (!res.ok) continue;
-      const text = await res.text();
-      skills.push(parseSkillMarkdown(text));
-    } catch (err) {
-      console.warn(`Failed to load skill: ${name}`, err);
-    }
-  }
-  return skills;
-}
-
-export async function loadSkill(name: string): Promise<SkillConfig | null> {
-  try {
-    const res = await fetch(`/skills/${name}.md`);
-    if (!res.ok) return null;
-    const text = await res.text();
-    return parseSkillMarkdown(text);
-  } catch {
-    return null;
-  }
 }

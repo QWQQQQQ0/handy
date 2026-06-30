@@ -44,24 +44,21 @@ ${lines.join('\n')}
 
 function buildAvailableToolsSummary(): string {
   try {
-    const { useSkillStore } = require('@/stores/skill-store');
-    const skills = useSkillStore.getState?.()?.skills;
-    if (!skills || skills.length === 0) return '';
+    const { getBuiltinExecutor } = require('@/skills/builtin-executor');
+    const { ToolDisclosure } = require('@/skills/tool-disclosure');
+    const executor = getBuiltinExecutor();
+    if (!executor || executor.allTools.length === 0) return '';
 
-    const lines: string[] = [];
-    for (const s of skills) {
-      for (const t of s.tools) {
-        lines.push(`- **${t.name}** (${s.name}): ${t.description}`);
-      }
-    }
-    if (lines.length === 0) return '';
+    const disclosure = new ToolDisclosure({ executor });
+    const menuText = disclosure.buildMenuText();
+    if (!menuText) return '';
 
     return `
-### 可用 Skill Tools
+### 可用工具
 
-以下 tools 可在步骤中使用（action="tool_call", params.toolName="工具名"）：
+以下 tools 可在步骤中使用（action="tool_call", params.toolName="工具名"）。每个工具后附一句话描述，需要完整参数时可在执行时动态加载。
 
-${lines.join('\n')}
+${menuText}
 `;
   } catch {
     return '';
@@ -173,7 +170,10 @@ ${buildAvailableToolsSummary()}
 
 ### 任务要求
 
-1. **分析模式**：识别操作模式（循环/线性/数据流）。手动插入的步骤和录制事件同等对待，按顺序排列。
+1. **分析模式**：根据录制内容判断操作类型：
+    - 步骤无重复、每步各不相同 → 线性模式，pattern.type 设为 "linear"
+    - 相同步骤序列重复出现 ≥2 次，或坐标差值规律一致 → 循环模式，pattern.type 设为 "loop"
+    - 含复制粘贴、跨窗口搬运数据 → 附加 dataFlow
 
 2. **可用动作类型（action 字段必须使用以下值之一）**：
 
@@ -202,21 +202,18 @@ ${buildAvailableToolsSummary()}
    - \`goto\` — 跳转到指定步骤（params.stepId=目标步骤ID）
    - \`break\` / \`continue\` — 循环控制
 
-   外部调用（手动插入的步骤使用）：
-   - \`tool_call\` — 调用已注册的 skill tool。params.toolName=工具名, params.arguments={参数对象}。可用的 tools 见上方 "可用 Skill Tools" 列表
-   - \`llm_call\` — 调用 LLM 执行任务。params.prompt=提示词文本, params.systemPrompt=系统提示词(可选), params.model=模型名(可选)
+   外部调用（调用已注册的 skill tool 或 LLM）：
+   - \`tool_call\` — 调用已注册的 skill tool。params.toolName=工具名, params.arguments={参数对象}。可用的 tools 见上方"可用工具"列表
+   - \`llm_call\` — 调用 LLM 执行智能判断任务。params.prompt=提示词文本, params.systemPrompt=系统提示词(可选), params.model=模型名(可选), params.multimodal=是否启用多模态(布尔值), params.include_screenshots=引用前序截图步骤ID的数组。执行时可将截图传给 LLM 做视觉分析
 
    **重要**：事件摘要中的 action 类型已对齐上表，直接引用即可。
 
 3. **窗口标题、元素名称、按键**等固定值直接硬编码到 steps 中，不要抽象成参数
 
-4. **坐标参数化（关键）**：
-   - 如果"坐标规律检测"发现了线性规律，**必须**使用循环 + 坐标公式，不要硬编码每次迭代的具体坐标
-   - 坐标公式格式：\`{{base + loop_index * step}}\`，其中 base 是录制到的第一个坐标，step 是步长
-   - 示例：录制到 (320,270), (316,330), (322,390) → 检测到 x≈320 固定, y=270+loop_index*60 → 生成 \`{"x": 320, "y": "{{270 + loop_index * 60}}"}\`
-   - **固定轴直接用数字**（如 x: 320），**不要用 \`{{}}\` 包裹固定值**
-   - 只有随循环变化的值才用 \`{{}}\` 模板语法（如 y: "{{270 + loop_index * 60}}"）
-   - **base 必须是录制到的第一个坐标值**，不要从 0 开始推算
+4. **坐标参数化**（循环模式下适用）：
+   - 坐标规律检测到等差变化时，用 \`{{base + loop_index * step}}\` 表达式代替逐个硬编码坐标
+   - base 取录制到的第一个坐标值，step 取差值，固定轴直接用数字
+   - 线性模式下直接用录制坐标，不需要参数化
 5. **循环参数化（关键）**：
    - 循环次数必须作为参数 \`loop_count\`，不要硬编码。loop_start 的 over 设为 \`{{loop_count}}\`
    - 起始轮次必须作为参数 \`start_index\`，默认值为 0
@@ -282,6 +279,16 @@ ${buildAvailableToolsSummary()}
     - 翻页：\`{"action": "hotkey", "description": "向下翻页", "params": {"key": "PageDown"}}\`
     - 滚动：\`{"action": "scroll", "description": "向下滚动", "params": {"direction": "down", "amount": 500}}\`
 
+14. **llm_call 智能判断（可选）**：当录制操作中存在以下场景时，应自动插入 \`llm_call\` 步骤：
+    - 需要 OCR 识别屏幕上的文字内容（如读取验证码、识别表格数据、提取列表项）
+    - 需要视觉判断（如检测弹窗是否出现、确认页面加载完成、判断某个元素是否可见）
+    - 需要基于运行时信息做智能决策（下一步做什么取决于当前看到的内容，硬编码规则无法覆盖）
+    - 需要理解/总结/翻译/分类屏幕上的非结构化内容
+    使用方式：先用 \`tool_call\` + \`desktop_screenshot\` 截图，再用 \`llm_call\` 分析截图。
+    - params.multimodal 设为 true
+    - **params.include_screenshots 必须填写截图步骤的 ID**。步骤 ID 格式为 \`"step_N"\`，其中 N 是该步骤在 steps 数组中的 0-based 索引位置（即第 1 个步骤的 id 是 step_0，第 2 个是 step_1，以此类推）。你必须根据截图步骤在 steps 数组中的实际位置来填写正确的 ID，不要使用占位文字。
+    - 如果想引用当前步骤之前最近的一个 desktop_screenshot 步骤，先把它的索引找出来再填入。
+
 ### 输出格式
 
 返回纯 JSON，不要添加任何说明文字。JSON 中所有字符串值必须正确转义：
@@ -289,12 +296,57 @@ ${buildAvailableToolsSummary()}
 - 字符串内部的反斜杠必须写成 \\\\
 - 字符串内部不能出现未转义的双引号，否则 JSON 解析会失败
 
+**示例 1：单次线性操作（无循环）**
+
+录制：打开记事本，输入一行文字，保存。3 步，无重复。
+
+\`\`\`json
+{
+  "pattern": {
+    "type": "linear",
+    "confidence": 0.95,
+    "description": "打开记事本→输入文字→保存"
+  },
+  "parameters": [],
+  "steps": [
+    {
+      "action": "hotkey",
+      "description": "打开运行窗口",
+      "waitBefore": 0,
+      "params": { "key": "Win+r" }
+    },
+    {
+      "action": "type",
+      "description": "输入 notepad 并回车启动记事本",
+      "waitBefore": 300,
+      "params": { "text": "notepad\\n" }
+    },
+    {
+      "action": "type",
+      "description": "输入内容",
+      "waitBefore": 500,
+      "params": { "text": "测试文本" }
+    },
+    {
+      "action": "hotkey",
+      "description": "保存文件",
+      "waitBefore": 200,
+      "params": { "key": "Ctrl+s" }
+    }
+  ]
+}
+\`\`\`
+
+**示例 2：循环操作（含坐标规律）**
+
+录制：重复点击列表中的 5 行数据并复制。坐标 y 每次 +60。
+
 \`\`\`json
 {
   "pattern": {
     "type": "loop",
     "confidence": 0.95,
-    "description": "模式描述",
+    "description": "循环点击列表中每行并复制",
     "loopVariable": "loop_index",
     "loopSource": "count",
     "count": "{{loop_count}}"
@@ -343,6 +395,20 @@ ${buildAvailableToolsSummary()}
       "params": { "start_x": 9, "start_y": 613, "end_x": 421, "end_y": 698 }
     },
     {
+      "action": "tool_call",
+      "description": "截取当前屏幕",
+      "params": { "toolName": "desktop_screenshot", "arguments": {} }
+    },
+    {
+      "action": "llm_call",
+      "description": "用 LLM 识别截图中的表格数据",
+      "params": {
+        "prompt": "识别图片中的表格数据，提取第一列的所有行文本内容，以 JSON 数组格式返回。每行的格式为 {\"text\": \"...\", \"row_index\": N}",
+        "multimodal": true,
+        "include_screenshots": ["step_6"]
+      }
+    },
+    {
       "action": "code",
       "description": "转换数据格式",
       "params": {
@@ -357,11 +423,11 @@ ${buildAvailableToolsSummary()}
 }
 \`\`\`
 
-注意：当检测到坐标规律时，coordinate 必须使用模板表达式（如 "{{150 + index * 60}}"），不要硬编码具体坐标。loop_start 的 over 字段使用数字表示循环次数。
+注意：循环模式下 coordinate 使用模板表达式（如 "{{150 + loop_index * 60}}"），线性模式下直接用具体坐标值。
 
-注意：parameters 数组在大多数情况下应该为空，除非有真正需要用户每次执行时指定的变量。
+注意：parameters 数组在循环模式下包含 loop_count 和 start_index；线性模式下 parameters 通常为空。
 
-注意：code 步骤仅在需要数据加工时使用，简单的复制粘贴不需要插入 code 步骤。code 必须是单行或多行合法 JS 代码字符串。
+注意：code 步骤仅在需要数据加工时使用。code 是单行或多行合法 JS 代码字符串。
 `;
 }
 
@@ -413,10 +479,10 @@ ${screenSize.width}x${screenSize.height}
 3. **坐标参数化**：如涉及坐标调整，优先使用语义定位（role+name），其次用坐标模板表达式 \`{{base + loop_index * step}}\`
 4. **可用 action 类型**：click, double_click, right_click, long_press, drag, scroll, key, hotkey, type, copy, paste, wait, code, loop_start, loop_end, if, else, endif, goto, break, continue, tool_call, llm_call
 5. **循环参数**：loop_start 的 over 字段用 \`{{loop_count}}\`，variable 设为 \`loop_index\`
-6. **tool_call**：params.toolName 为工具名，params.arguments 为参数对象
-7. **waitBefore**：保留步骤间的等待时间（ms）
-8. **不要编造录制中没有的操作**：只调整用户明确要求的部分
-
+6. **tool_call**：params.toolName 为工具名，params.arguments 为参数对象。可配合 llm_call 实现截图+分析等智能判断链
+7. **llm_call**：调用 LLM 做智能判断，params.prompt 为提示词，params.multimodal 开启多模态，params.include_screenshots 引用截图步骤 id 数组
+8. **waitBefore**：保留步骤间的等待时间（ms）
+9. **不要编造录制中没有的操作**：只调整用户明确要求的部分
 ### 输出格式
 
 返回纯 JSON，不要添加任何说明文字：

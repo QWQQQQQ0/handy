@@ -6,8 +6,13 @@ import { getDB } from '@/db';
 import type { SkillRow } from '@/db/types';
 import type { UserSkillConfig, ToolDefinition } from '@/types/skill';
 import { UserDefinedSkill } from '@/skills/user-defined';
-import { loadSkills } from '@/skills/loader';
+import { loadSkillConfigs } from '@/skills/loader';
+import { standardNameToLegacyId } from '@/skills/standard-md-parser';
 import type { SkillExecutor } from '@/skills/executor';
+import { getSkillRegistry } from '@/skills/sources/registry';
+import { BuiltinSource } from '@/skills/sources/builtin-source';
+import { DirectorySource } from '@/skills/sources/directory-source';
+import type { KnowledgeSkillInfo } from '@/skills/sources/types';
 
 function rowToConfig(row: SkillRow): UserSkillConfig {
   return {
@@ -25,6 +30,9 @@ function rowToConfig(row: SkillRow): UserSkillConfig {
     usage: row.usage_text ?? undefined,
     usageCn: row.usage_cn ?? undefined,
     exposedToAI: row.exposed_to_ai === 1,
+    skillDir: row.skill_dir ?? undefined,
+    license: row.license ?? undefined,
+    compatibility: row.compatibility ?? undefined,
   };
 }
 
@@ -47,6 +55,9 @@ function configToRow(config: UserSkillConfig): SkillRow {
     usage_text: config.usage ?? null,
     usage_cn: config.usageCn ?? null,
     exposed_to_ai: config.exposedToAI !== false ? 1 : 0,
+    skill_dir: config.skillDir ?? null,
+    license: config.license ?? null,
+    compatibility: config.compatibility ?? null,
   };
 }
 
@@ -54,6 +65,8 @@ interface SkillState {
   loaded: boolean;
   userSkills: Map<string, UserDefinedSkill>;
   allConfigs: UserSkillConfig[];
+  /** 知识型技能列表（供 @ 列表用） */
+  knowledgeSkills: Array<{ name: string; description: string; sourceLabel: string; location: string }>;
 
   initializeSkills: () => Promise<void>;
   createSkill: (config: UserSkillConfig) => Promise<void>;
@@ -62,6 +75,8 @@ interface SkillState {
   toggleSkill: (id: string, enabled: boolean) => Promise<void>;
   refreshUserSkills: (executor: SkillExecutor) => Promise<void>;
   getUserSkillInstances: () => UserDefinedSkill[];
+  /** 获取知识型技能完整信息（@ 选中时调用） */
+  getKnowledgeSkill: (name: string) => Promise<KnowledgeSkillInfo | null>;
 }
 
 export const useSkillStore = create<SkillState>()(
@@ -69,35 +84,106 @@ export const useSkillStore = create<SkillState>()(
     loaded: false,
     userSkills: new Map(),
     allConfigs: [],
+    knowledgeSkills: [],
 
     initializeSkills: async () => {
       const db = await getDB();
 
-      // Always sync built-in skills from markdown → DB.
-      // Markdown is the definition source; DB is the runtime source of truth.
-      // INSERT OR REPLACE ensures new/updated tools are reflected after app updates.
-      const mdConfigs = await loadSkills();
-      for (const cfg of mdConfigs) {
+      // ── 设置 SkillRegistry ──
+      const registry = getSkillRegistry();
+
+      // 注册内置源
+      if (!registry.getSource('builtin')) {
+        registry.registerSource(new BuiltinSource());
+      }
+
+      // 注册工作区源 (./.handy/skills/)
+      if (!registry.getSource('workspace')) {
+        const workspaceSource = new DirectorySource(
+          'workspace',
+          './.handy/skills',
+          10,
+          '工作区',
+        );
+        registry.registerSource(workspaceSource);
+      }
+
+      // 注册用户源 (~/.handy/skills/)
+      if (!registry.getSource('user')) {
+        let userSkillsPath = './.handy/user-skills'; // fallback
+        try {
+          const { homeDir } = await import('@tauri-apps/api/path');
+          userSkillsPath = (await homeDir()) + '.handy/skills';
+        } catch { /* not Tauri */ }
+        const userSource = new DirectorySource(
+          'user',
+          userSkillsPath,
+          5,
+          '用户',
+        );
+        registry.registerSource(userSource);
+      }
+
+      // 恢复上次导入的外部目录源
+      await registry.restorePersistedSources();
+
+      // 扫描所有源
+      await registry.refresh();
+
+      // 加载工具型技能配置
+      const toolConfigs = await registry.loadAllToolConfigs();
+
+      // Sync tool configs to DB (builtin + external tool skills)
+      for (const sc of toolConfigs) {
+        const legacyId = standardNameToLegacyId(sc.name);
+        // 如果已经是内置 ID，用 builtin 标记；否则为外部工具型技能
+        const isBuiltin = sc.name === legacyId || [
+          'code_tools','desktop_screen','desktop_uia','web_screen',
+          'phone_screen','app_builder','office_doc','system_config',
+          'chat_tools','scheduler_tools'
+        ].includes(legacyId);
         const row = configToRow({
-          id: cfg.id,
-          name: cfg.name,
-          description: cfg.description,
-          category: cfg.category,
-          tools: cfg.tools,
-          builtin: true,
-          nameCn: cfg.nameCn,
-          descriptionCn: cfg.descriptionCn,
-          categoryCn: cfg.categoryCn,
-          usage: cfg.usage,
-          usageCn: cfg.usageCn,
+          id: legacyId,
+          name: sc.name,
+          description: sc.description,
+          category: sc['x-i18n']?.category_cn ?? '',
+          tools: sc.tools ?? [],
+          builtin: isBuiltin,
+          nameCn: sc['x-i18n']?.name_cn,
+          descriptionCn: sc['x-i18n']?.description_cn,
+          categoryCn: sc['x-i18n']?.category_cn,
+          usage: sc.usage,
+          usageCn: sc['x-i18n']?.usage_cn,
+          skillDir: `src/skills/definitions/${sc.name}`,
+          license: sc.license,
+          compatibility: sc.compatibility,
         });
         await db.execute(
-          'INSERT OR REPLACE INTO skills (id, name, description, category, schema_json, enabled, builtin, steps_json, implementation, created_at, updated_at, name_cn, description_cn, category_cn, usage_text, usage_cn, exposed_to_ai) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [row.id, row.name, row.description, row.category, row.schema_json, row.enabled, row.builtin, row.steps_json, row.implementation, row.created_at, row.updated_at, row.name_cn, row.description_cn, row.category_cn, row.usage_text, row.usage_cn, row.exposed_to_ai],
+          `INSERT OR REPLACE INTO skills
+           (id, name, description, category, schema_json, enabled, builtin,
+            steps_json, implementation, created_at, updated_at,
+            name_cn, description_cn, category_cn, usage_text, usage_cn,
+            exposed_to_ai, skill_dir, license, compatibility)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [row.id, row.name, row.description, row.category, row.schema_json,
+           row.enabled, row.builtin, row.steps_json, row.implementation,
+           row.created_at, row.updated_at, row.name_cn, row.description_cn,
+           row.category_cn, row.usage_text, row.usage_cn, row.exposed_to_ai,
+           row.skill_dir, row.license, row.compatibility],
         );
       }
 
-      // Load all enabled skills (builtin + user) — always refresh after sync
+      // Clean up built-in skills that no longer exist
+      const toolIds = toolConfigs.map(sc => standardNameToLegacyId(sc.name));
+      if (toolIds.length > 0) {
+        const placeholders = toolIds.map(() => '?').join(',');
+        await db.execute(
+          `DELETE FROM skills WHERE builtin = 1 AND id NOT IN (${placeholders})`,
+          toolIds,
+        );
+      }
+
+      // Load all enabled skills from DB (builtin + user)
       const rows = await db.query<SkillRow>(
         'SELECT * FROM skills WHERE enabled = 1 ORDER BY builtin DESC, name ASC',
       );
@@ -110,15 +196,18 @@ export const useSkillStore = create<SkillState>()(
         }
       }
 
-      set({ loaded: true, allConfigs: configs, userSkills });
+      // 收集知识型技能列表
+      const knowledgeList = registry.getKnowledgeSkillList();
+
+      set({ loaded: true, allConfigs: configs, userSkills, knowledgeSkills: knowledgeList });
     },
 
     createSkill: async (config) => {
       const db = await getDB();
       const row = configToRow({ ...config, builtin: false });
       await db.execute(
-        'INSERT INTO skills (id, name, description, category, schema_json, enabled, builtin, steps_json, implementation, created_at, updated_at, exposed_to_ai) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-        [row.id, row.name, row.description, row.category, row.schema_json, row.enabled, row.builtin, row.steps_json, row.implementation, row.created_at, row.updated_at, row.exposed_to_ai],
+        'INSERT INTO skills (id, name, description, category, schema_json, enabled, builtin, steps_json, implementation, created_at, updated_at, exposed_to_ai, skill_dir, license, compatibility) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [row.id, row.name, row.description, row.category, row.schema_json, row.enabled, row.builtin, row.steps_json, row.implementation, row.created_at, row.updated_at, row.exposed_to_ai, row.skill_dir, row.license, row.compatibility],
       );
       const skill = new UserDefinedSkill({ ...config, builtin: false });
       set((s) => {
@@ -131,8 +220,8 @@ export const useSkillStore = create<SkillState>()(
       const db = await getDB();
       const row = configToRow({ ...config, builtin: config.builtin });
       await db.execute(
-        "UPDATE skills SET name=?, description=?, schema_json=?, steps_json=?, implementation=?, exposed_to_ai=?, updated_at=datetime('now') WHERE id=?",
-        [row.name, row.description, row.schema_json, row.steps_json, row.implementation, row.exposed_to_ai, row.id],
+        "UPDATE skills SET name=?, description=?, schema_json=?, steps_json=?, implementation=?, exposed_to_ai=?, skill_dir=?, license=?, compatibility=?, updated_at=datetime('now') WHERE id=?",
+        [row.name, row.description, row.schema_json, row.steps_json, row.implementation, row.exposed_to_ai, row.skill_dir, row.license, row.compatibility, row.id],
       );
       const skill = new UserDefinedSkill(config);
       set((s) => {
@@ -197,6 +286,11 @@ export const useSkillStore = create<SkillState>()(
 
     getUserSkillInstances: () => {
       return [...get().userSkills.values()];
+    },
+
+    getKnowledgeSkill: async (name: string) => {
+      const registry = getSkillRegistry();
+      return registry.loadKnowledgeSkill(name);
     },
   }))
 );

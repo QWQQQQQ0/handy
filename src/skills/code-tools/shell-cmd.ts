@@ -19,13 +19,17 @@ export async function handleRunCommand(params: Record<string, unknown>): Promise
 
   const result = await tryRunCommand(command, cwd, timeoutMs);
 
+  // 构造带执行路径的摘要信息，方便 LLM 确认命令在正确的位置执行
+  const cwdInfo = result.cwd ? `\n执行路径：${result.cwd}` : '';
+
   return SkillOk(
-    result.ok ? `Command exited with code ${result.exitCode}` : `Command failed with code ${result.exitCode}`,
+    (result.ok ? `Command exited with code ${result.exitCode}` : `Command failed with code ${result.exitCode}`) + cwdInfo,
     {
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: result.exitCode,
       method: result.method,
+      cwd: result.cwd,
     },
   );
 }

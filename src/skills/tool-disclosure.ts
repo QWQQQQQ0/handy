@@ -77,7 +77,7 @@ export const FREE_AGENT_TOOLS = new Set([
   // 文档
   'generate_doc', 'doc_code_exec',
   // 记忆
-  'agent_memory_update', 'recall_memory', 'search_chat_history',
+  'agent_memory_update', 'recall_memory', 'search_chat_history', 'delete_chat_messages', 'store_experience',
   // 控制
   'think', 'request_user_input', 'finalize',
 ]);
@@ -148,7 +148,7 @@ export class ToolDisclosure {
       groups.get(cat)!.push(item);
     }
 
-    const lines: string[] = ['## 可用工具菜单'];
+    const lines: string[] = [];
     lines.push('每个工具后附一句话描述。如需使用某个工具但不清楚参数格式，请调用 `tool_detail` 加载完整参数定义。');
     lines.push('');
 
@@ -302,7 +302,7 @@ export class ToolDisclosure {
     if (['save_app', 'list_apps', 'get_app', 'update_app', 'delete_app'].includes(name)) return 'app';
     if (['generate_doc', 'office_detect', 'com_read', 'com_edit', 'doc_code_exec'].includes(name)) return 'office';
     if (['think', 'request_user_input', 'finalize',
-      'agent_memory_update', 'search_chat_history', 'recall_memory'].includes(name)) return 'control';
+      'agent_memory_update', 'search_chat_history', 'recall_memory', 'store_experience'].includes(name)) return 'control';
     return 'system';
   }
 

@@ -12,6 +12,8 @@ import { formatRelativeTime } from '@/i18n/strings';
 import type { SkillTool } from '@/skills/skill';
 import type { MessageContent, ChatMessage } from '@/types/message';
 import type { ToolGroup } from './types';
+import { ThinkingBlock } from '@/components/chat/thinking-block';
+import { AgentLogGroup } from '@/components/chat/agent-log-group';
 import { writeLocal } from './utils';
 
 export interface ChatModeHandle {
@@ -33,138 +35,7 @@ interface Props {
   onGroupSelect: (groupId: string) => void;
 }
 
-function ThinkingBlock({ content, streaming }: { content: string; streaming?: boolean }) {
-  const [expanded, setExpanded] = useState(true);
-  const [wasStreaming, setWasStreaming] = useState(false);
-  if (streaming && !wasStreaming) setWasStreaming(true);
-  if (!streaming && wasStreaming && expanded) {
-    setTimeout(() => setExpanded(false), 1000);
-    setWasStreaming(false);
-  }
-  return (
-    <div className="mb-1.5 border-l-2 border-amber-300 dark:border-amber-600 pl-1.5">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300"
-      >
-        <span className="font-medium">💭 思考</span>
-        {expanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
-      </button>
-      {expanded && (
-        <div className="mt-1 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400 whitespace-pre-wrap font-mono max-h-[300px] overflow-y-auto">
-          {content}
-        </div>
-      )}
-    </div>
-  );
-}
 
-/** Agent 内部日志折叠组 */
-function AgentLogGroup({ messages: agentMessages }: { messages: ChatMessage[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const startMsg = agentMessages.find((m) => m._isAgentStart);
-  const isRunning = startMsg?.status === 'streaming';
-  const agentType = startMsg?._agentType ?? 'computeruse';
-  const label = { computeruse: '🖥️ 计算机操作', web: '🌐 浏览器', document: '📄 文档', code: '💻 代码' }[agentType] ?? agentType;
-
-  // 统计工具调用
-  const toolCalls = agentMessages.filter((m) => m._toolCallInfo);
-  const toolResults = agentMessages.filter((m) => m.role === 'tool' && m._agentInternal);
-  const successCount = toolResults.filter((m) => typeof m.content === 'string' && m.content.startsWith('✅')).length;
-  const failCount = toolResults.filter((m) => typeof m.content === 'string' && m.content.startsWith('❌')).length;
-
-  return (
-    <div className="mx-1 my-1.5">
-      {/* 折叠标题 */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium transition-colors ${
-          isRunning
-            ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
-            : failCount > 0
-            ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
-            : 'bg-zinc-50 dark:bg-zinc-900/50 text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700'
-        }`}
-      >
-        {isRunning ? (
-          <Loader2 size={14} className="animate-spin" />
-        ) : failCount > 0 ? (
-          <XCircle size={14} />
-        ) : (
-          <CheckCircle size={14} />
-        )}
-        <span className="flex-1 text-left truncate">
-          {(typeof startMsg?.content === 'string' ? startMsg.content : null) ?? `${label} Agent 执行中...`}
-        </span>
-        {toolCalls.length > 0 && (
-          <span className="text-[10px] opacity-70">
-            {successCount}✅ {failCount > 0 && `${failCount}❌`}
-          </span>
-        )}
-        <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
-      </button>
-
-      {/* 折叠内容 */}
-      {expanded && (
-        <div className="mt-1 ml-2 pl-2 border-l-2 border-zinc-200 dark:border-zinc-700 space-y-1">
-          {agentMessages.filter((m) => !m._isAgentStart).map((msg) => {
-            const text = typeof msg.content === 'string' ? msg.content : '';
-
-            // 工具调用信息
-            if (msg._toolCallInfo) {
-              const info = msg._toolCallInfo;
-              return (
-                <div key={msg.id} className="flex items-start gap-2 py-0.5">
-                  <Terminal size={11} className="mt-0.5 text-zinc-400 shrink-0" />
-                  <div className="min-w-0">
-                    <span className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400">
-                      {info.name}
-                    </span>
-                    {info.status === 'running' && (
-                      <span className="ml-1 text-[10px] text-blue-500">运行中...</span>
-                    )}
-                  </div>
-                </div>
-              );
-            }
-
-            // 工具结果
-            if (msg.role === 'tool') {
-              return (
-                <div key={msg.id} className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 truncate">
-                  {text}
-                </div>
-              );
-            }
-
-            // LLM 思考
-            if (msg.role === 'assistant') {
-              return (
-                <div key={msg.id} className="text-[11px] text-zinc-600 dark:text-zinc-400">
-                  {msg.reasoning_content && (
-                    <div className="mb-1 text-[10px] text-amber-600 dark:text-amber-400 italic">
-                      💭 {msg.reasoning_content.substring(0, 100)}{msg.reasoning_content.length > 100 && '...'}
-                    </div>
-                  )}
-                  {text && <div className="whitespace-pre-wrap">{text.substring(0, 200)}{text.length > 200 && '...'}</div>}
-                </div>
-              );
-            }
-
-            // 其他（轮次信息等）
-            return (
-              <div key={msg.id} className="text-[11px] text-zinc-400 dark:text-zinc-500">
-                {text}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Conversation list dropdown for the float window */
 function ConversationDropdown({
   onClose,
   onSelect,
@@ -197,7 +68,7 @@ function ConversationDropdown({
   return (
     <div
       ref={dropdownRef}
-      className="absolute right-0 top-full mt-1 z-50 w-64 max-h-[320px] overflow-y-auto rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-lg"
+      className="absolute right-0 top-full mt-1 z-50 w-64 max-h-[320px] overflow-y-auto scrollbar-hide rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-lg"
     >
       {/* New Chat */}
       <button
@@ -274,8 +145,6 @@ function ConversationDropdown({
     </div>
   );
 }
-
-// ── Float message bubble with hover delete/edit ──
 
 function FloatMessageBubble({
   message,
@@ -423,6 +292,17 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
   const [manualMode, setManualMode] = useState(false);
   const [allTools, setAllTools] = useState<SkillTool[]>([]);
   const [showSelectorPanel, setShowSelectorPanel] = useState(false);
+  // @ 长效保持：一次选择后持续生效，存 Zustand（同 session 跨窗口持久）
+  const stickyAgent = useChatStore((s) => s.stickyAgent);
+  const setStickyAgent = useChatStore((s) => s.setStickyAgent);
+  const stickyAgentRef = useRef(stickyAgent);
+  stickyAgentRef.current = stickyAgent;
+  const [selectedNow, setSelectedNow] = useState(false);
+  // 追踪最新 toolMode/customTools，避免闭包读到旧值
+  const toolModeRef = useRef(toolMode);
+  toolModeRef.current = toolMode;
+  const customToolsRef = useRef(customTools);
+  customToolsRef.current = customTools;
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -448,12 +328,32 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
     clearMessages: () => newChat(),
   }));
 
+  // 跨 WebView 同步 @ 长效状态
+  useEffect(() => {
+    const syncSticky = (e: StorageEvent) => {
+      const convId = useChatStore.getState().activeConversation?.id;
+      if (convId && e.key === `openpaw_sticky_agent:${convId}`) {
+        try {
+          const raw = localStorage.getItem(e.key);
+          setStickyAgent(raw ? JSON.parse(raw) : null);
+        } catch { setStickyAgent(null); }
+      }
+    };
+    window.addEventListener('storage', syncSticky);
+    return () => window.removeEventListener('storage', syncSticky);
+  }, []);
+
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { setManualMode(false); setFormValues({}); }, [awaitingUserInput]);
 
-  const handleSend = useCallback(async (content: MessageContent) => {
+  // 同步浮窗 toolMode 到 store，确保 sendMessage / editMessage 使用正确的工具筛选
+  const syncToolMode = useCallback(() => {
+    useChatStore.getState().setToolMode(toolModeRef.current);
+    useChatStore.getState().setCustomTools(customToolsRef.current);
+  }, []);
+
+  const handleSend = useCallback(async (content: MessageContent, agentContext?: string) => {
     if (!sendToModel) {
-      // 本地模式：消息直接渲染，不联网发给 LLM
       const newMsg = {
         id: crypto.randomUUID(),
         conversationId: activeConversation?.id ?? '',
@@ -466,11 +366,47 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
       return;
     }
     if (!ready) return;
-    // 同步浮窗的 toolMode 到 store，让 sendMessage 使用正确的工具筛选
-    useChatStore.getState().setToolMode(toolMode);
-    useChatStore.getState().setCustomTools(customTools);
-    await sendMessage(content, '', { noSystemPrompt });
-  }, [sendToModel, sendMessage, ready, noSystemPrompt, toolMode, customTools, activeConversation?.id]);
+    syncToolMode();
+    // 长效上下文：优先当即 @ 选择 → Zustand store（sendMessage 内会持久化到 localStorage）
+    const storedContext = stickyAgentRef.current?.context;
+    const effectiveContext = agentContext || storedContext;
+    // ── 集中 @ 解析 ──
+    const { resolveAgentMention } = await import('@/services/agent-mention-resolver');
+    const resolved = effectiveContext ? await resolveAgentMention(effectiveContext) : null;
+    const text = typeof content === 'string' ? content : '';
+
+    if (resolved) {
+      // @ 选中 → 绕过用户工具选择，按 agent 类型走各自工具集
+      if (resolved.useFreeAgent) {
+        // 知识型 skill → FreeAgent
+        await sendMessage(text, '', { systemExtra: resolved.systemExtra, useFreeAgent: true, agentContext: effectiveContext });
+      } else if (resolved.textPrefix) {
+        // custom_agent (@code, @web, @document, @computeruse) → 传 agentName 给后端路由
+        const agentName = effectiveContext!.startsWith('custom_agent:') ? effectiveContext!.slice(13) : '';
+        await sendMessage(text, '', { agentName, noSystemPrompt, agentContext: effectiveContext });
+      } else if (resolved.systemExtra) {
+        // App agent 页面能力上下文
+        await sendMessage(text, '', { systemExtra: resolved.systemExtra, agentName: 'app', agentContext: effectiveContext });
+      } else {
+        await sendMessage(text, '', { noSystemPrompt, agentContext: effectiveContext });
+      }
+      return;
+    }
+
+    // 无 @ agent → basic 模式显式走 FreeAgent，其余走普通 Chat LLM
+    const currentToolMode = toolModeRef.current;
+    if (currentToolMode === ToolMode.basic) {
+      await sendMessage(text, '', { useFreeAgent: true, noSystemPrompt });
+    } else {
+      await sendMessage(content, '', { noSystemPrompt });
+    }
+  }, [sendToModel, sendMessage, ready, noSystemPrompt, syncToolMode, activeConversation?.id]);
+
+  // 包装 editMessage：编辑后自动重发，需先同步 toolMode
+  const handleEditMessage = useCallback((messageId: string, newContent: string) => {
+    syncToolMode();
+    editMessage(messageId, newContent);
+  }, [syncToolMode, editMessage]);
 
   // Use deferred value to avoid DOM race conditions during streaming
   const deferredMessages = useDeferredValue(messages);
@@ -572,7 +508,7 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
                   bbox={bbox}
                   userImage={userImage}
                   onDelete={deleteMessage}
-                  onEdit={editMessage}
+                  onEdit={handleEditMessage}
                 />
               );
             });
@@ -677,8 +613,8 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
         />
       )}
 
-      {/* Tool mode bar (compact) */}
-      <ToolModeBar
+      {/* Tool mode bar (compact) — @ 选中或长保持时隐藏 */}
+      {!stickyAgent && !selectedNow && <ToolModeBar
         mode={toolMode}
         selectedCount={customTools.size}
         onModeChanged={(m) => {
@@ -707,13 +643,18 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
           }
         }}
         onDeleteGroup={onDeleteGroup}
-      />
+      />}
 
       <MessageInput
         onSend={handleSend}
         enabled={!isStreaming}
         hintText={sendToModel ? 'Send message...' : 'Type to save locally...'}
         allowImagePaste={allowImagePaste}
+        allowFileUpload
+        compact
+        onAgentSelect={(name) => setSelectedNow(name !== null)}
+        stickyAgent={stickyAgent}
+        onClearStickyAgent={() => { setStickyAgent(null); setSelectedNow(false); }}
         onStop={() => useChatStore.getState().stopChat()}
       />
     </>

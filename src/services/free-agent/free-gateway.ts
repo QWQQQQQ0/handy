@@ -34,11 +34,14 @@ export class FreeAgentGateway {
     password?: string;
     signal?: AbortSignal;
     maxTurns?: number;
+    chatMessages?: import('@/types/message').LLMMessage[];
     onConfirm?: (command: string) => Promise<boolean>;
     onUserInput?: (message: string, fields: Array<{ label: string; key: string; type?: string }>) => Promise<Record<string, string>>;
     onProgress?: (event: AgentProgressEvent) => void;
+    /** 自定义 system prompt，注入 skill 上下文 */
+    customSystemPrompt?: string;
   }): Promise<FreeAgentResponse> {
-    const { goal, provider, apiKey, password, signal, maxTurns, onConfirm, onUserInput, onProgress } = params;
+    const { goal, provider, apiKey, password, signal, maxTurns, chatMessages, onConfirm, onUserInput, onProgress, customSystemPrompt } = params;
 
     console.log(`[FreeAgent] ▶ "${goal.substring(0, 80)}"`);
 
@@ -65,22 +68,27 @@ export class FreeAgentGateway {
         maxTurns: maxTurns ?? 30,
         signal,
         toolFilter: FREE_AGENT_TOOLS,
+        chatMessages,
+        injectHistory: true,
         onConfirm,
         onUserInput,
         onProgress,
+        customSystemPrompt,
       });
 
       console.log(`[FreeAgent] ✓ success=${result.success} error=${result.error ?? 'none'}`);
 
+      const bestMessage = result.lastResponseText || result.lastSuccessfulToolResult || result.summary;
       return {
         message: result.success
-          ? (result.summary || '任务完成')
-          : `任务失败: ${result.error}`,
+          ? (bestMessage || '任务完成')
+          : (bestMessage ? `${bestMessage}\n\n(后续出错: ${result.error})` : `任务失败: ${result.error}`),
         tasks: [{
           taskId,
           status: result.success ? 'done' : 'error',
           error: result.error,
           message: result.summary,
+          lastMessage: bestMessage || result.summary || result.error,
         }],
       };
     } finally {

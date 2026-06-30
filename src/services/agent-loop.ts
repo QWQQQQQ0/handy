@@ -6,6 +6,7 @@ import type { ProviderConfig } from '@/types/provider';
 import { AgentEndpoint } from '@/api/types';
 import type { ISkillExecutor } from '@/interfaces/skill-executor';
 import { apiStreamCompat } from '@/api/client';
+import { truncateToolResult } from '@/utils/content';
 
 export interface AgentLoopOptions {
   endpoint: AgentEndpoint;
@@ -23,6 +24,8 @@ export interface AgentLoopOptions {
   onToolResult?: (name: string, success: boolean, message: string) => void;
   abortSignal?: AbortSignal;
   noSystemPrompt?: boolean;
+  /** 命令确认：run_command / execute_code / doc_code_exec 执行前回调。返回 false 则拒绝执行。 */
+  onConfirm?: (command: string) => Promise<boolean>;
 }
 
 export interface AgentLoopResult {
@@ -44,7 +47,7 @@ export async function runAgentLoop(
     provider,
     apiKey,
     executor,
-    maxRounds = 10,
+    maxRounds = 50,
     onText,
     onToolCall,
     onToolResult,
@@ -68,6 +71,7 @@ export async function runAgentLoop(
     });
 
     let roundText = '';
+    let roundReasoning = '';
     let toolCallJson = '';
 
     for await (const chunk of stream) {
@@ -76,7 +80,10 @@ export async function runAgentLoop(
         roundText = `❌ ${chunk.substring(10)}`;
         break;
       }
-      if (chunk.startsWith('__REASONING__:')) continue;
+      if (chunk.startsWith('__REASONING__:')) {
+        roundReasoning += chunk.substring(14);
+        continue;
+      }
       if (chunk.startsWith('__TOOLS__:')) {
         toolCallJson = chunk.substring(10);
         continue;
@@ -115,6 +122,7 @@ export async function runAgentLoop(
     messages.push({
       role: 'assistant',
       content: roundText || null,
+      reasoning_content: roundReasoning || undefined,
       toolCalls: calls.map(
         (c): ToolCall => ({
           id: c.id || `call_${crypto.randomUUID().substring(0, 8)}`,
@@ -137,6 +145,27 @@ export async function runAgentLoop(
       onToolCall?.(fnName, args);
 
       let result: { success: boolean; message: string; data?: Record<string, unknown> };
+
+      // ── 安全确认：run_command / execute_code / doc_code_exec 需要用户同意 ──
+      if (fnName === 'run_command' || fnName === 'execute_code' || fnName === 'doc_code_exec') {
+        const displayCmd = fnName === 'run_command'
+          ? String(args['command'] ?? '')
+          : String(args['code'] ?? '').substring(0, 300);
+        if (options.onConfirm) {
+          const confirmed = await options.onConfirm(displayCmd);
+          if (!confirmed) {
+            result = { success: false, message: `用户拒绝执行: ${displayCmd}` };
+            messages.push({
+              role: 'tool',
+              toolCallId: call.id || `call_${crypto.randomUUID().substring(0, 8)}`,
+              content: JSON.stringify(result),
+            });
+            onToolResult?.(fnName, false, result.message);
+            continue;
+          }
+        }
+      }
+
       try {
         result = await executor.executeToolCall(fnName, args);
       } catch (e) {
@@ -145,11 +174,17 @@ export async function runAgentLoop(
 
       onToolResult?.(fnName, result.success, result.message);
 
+      // 工具结果超长截断：tool 消息保留截断版，完整内容以 user 消息兜底
+      const rawToolContent = JSON.stringify(result);
+      const { toolContent, fullUserMessage } = truncateToolResult(fnName, rawToolContent);
       messages.push({
         role: 'tool',
         toolCallId: call.id || `call_${crypto.randomUUID().substring(0, 8)}`,
-        content: JSON.stringify(result),
+        content: toolContent,
       });
+      if (fullUserMessage) {
+        messages.push({ role: 'user', content: fullUserMessage });
+      }
     }
 
     completedRounds = round + 1;

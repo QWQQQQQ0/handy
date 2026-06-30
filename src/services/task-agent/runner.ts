@@ -11,6 +11,7 @@ import type { ToolContext } from '@/skills/skill';
 import type { ProviderConfig } from '@/types/provider';
 import { getScreenshotScale } from '@/utils/coordinate-scale';
 import { compressImage } from '@/utils/image';
+import { truncateToolResult } from '@/utils/content';
 import { getTaskTools, getTaskToolDef, getTaskToolDefs } from './tools';
 import { buildTaskContext } from './context-builder';
 import { AgentEndpoint } from '@/api/types';
@@ -22,11 +23,18 @@ export interface TaskAgentResult {
   taskId: string;
   agentId: string;
   error?: string;
+  /** finalize / *_done 工具的 summary 参数（任务完成时的总结） */
+  summary?: string;
+  /** 子 agent 执行链最后一条助手消息的文本内容（LLM 的自然语言结论） */
+  lastResponseText?: string;
+  /** 最后一个成功执行工具的返回消息（用于出错时保留部分成功结果） */
+  lastSuccessfulToolResult?: string;
 }
 
 /** Agent 执行过程中的进度事件 */
 export type AgentProgressEvent =
   | { type: 'llm_thinking'; text: string; reasoning?: string; turn: number }
+  | { type: 'stream_chunk'; text: string; reasoning?: string; turn: number }
   | { type: 'tool_start'; name: string; args: Record<string, unknown>; turn: number }
   | { type: 'tool_end'; name: string; success: boolean; message?: string; turn: number }
   | { type: 'turn_start'; turn: number; maxTurns: number }
@@ -60,17 +68,23 @@ export class TaskAgentRunner {
     toolFilter?: Set<string>;
     /** Chat 透传的消息历史（含图片），Agent 从中提取上下文 */
     chatMessages?: import('@/types/message').LLMMessage[];
+    /** 将 chatMessages 作为对话历史注入（默认 false，仅提取图片）。FreeAgent 设为 true */
+    injectHistory?: boolean;
     onConfirm?: (command: string) => Promise<boolean>;
     onUserInput?: (message: string, fields: Array<{ label: string; key: string; type?: string }>) => Promise<Record<string, string>>;
     onProgress?: (event: AgentProgressEvent) => void;
+    /** 自定义 system prompt（替代默认的 endpoint prompt） */
+    customSystemPrompt?: string;
   }): Promise<TaskAgentResult> {
-    const { taskId, agentType, goal, provider, apiKey, password, signal, subTaskDescription, toolFilter, chatMessages, onConfirm, onUserInput, onProgress } = params;
+    const { taskId, agentType, goal, provider, apiKey, password, signal, subTaskDescription, toolFilter, chatMessages, injectHistory, onConfirm, onUserInput, onProgress, customSystemPrompt } = params;
     this.onConfirm = onConfirm;
     this.onUserInput = onUserInput;
     const maxTurns = params.maxTurns ?? 20;
     const agentId = this.generateAgentId(agentType);
     let taskCompleted = false;
     let finalSummary: string | undefined;  // 捕获 finalize/*_done 的 summary
+    let lastResponseText: string | undefined;  // 捕获最后一条助手消息的文本内容
+    let lastSuccessfulToolResult: string | undefined;  // 捕获最后一个成功工具的返回消息（用于错误时保留部分结果）
     const executedTools: string[] = [];  // 收集已执行的工具名（用于超时时的摘要）
 
     await this.taskDB.assignAgent(taskId, agentId, agentType as never);
@@ -127,11 +141,42 @@ export class TaskAgentRunner {
       tools = getTaskTools(agentType);
       console.log(`[TaskRunner] ▶ agent=${agentId} type=${agentType} tools=${tools.length}`);
     }
-    // 从 Chat 透传的消息中提取图片（Chat LLM 通过 request_agent.user_message_indices 指定了含图消息）
+    // 构建初始消息
+    const messages: unknown[] = [];
+
+    if (chatMessages && injectHistory) {
+      // FreeAgent：chatMessages 作为完整对话历史注入
+      const seenUrls = new Set<string>();
+      for (const msg of chatMessages) {
+        if (msg.role === 'user' && Array.isArray(msg.content)) {
+          const parts = msg.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+          const textParts = parts.filter(p => p.type === 'text').map(p => p.text ?? '').join('\n');
+          const imageParts = parts.filter(p => p.type === 'image_url' && p.image_url?.url && !seenUrls.has(p.image_url.url));
+          for (const p of imageParts) seenUrls.add(p.image_url!.url);
+          if (textParts || imageParts.length > 0) {
+            messages.push({
+              role: 'user',
+              content: imageParts.length > 0
+                ? [...imageParts.map(p => ({ type: 'image_url' as const, image_url: { url: p.image_url!.url } })), { type: 'text' as const, text: textParts }]
+                : textParts,
+            });
+          }
+        } else if (msg.content) {
+          messages.push({ role: msg.role, content: msg.content });
+        }
+      }
+      console.log(`[TaskRunner] 📜 FreeAgent 注入对话历史: ${chatMessages.length} 条 → ${messages.length} 条有效消息`);
+    }
+
+    // customSystemPrompt 不替换默认 prompt，而是通过 systemPromptExtra 追加到末尾
+    // 这样 FreeAgent 原始系统提示词（ToolDisclosure 菜单、记忆等）完整保留
+
+    // 当前任务目标
     const initialContent: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
       { type: 'text', text: userPrompt },
     ];
-    if (chatMessages) {
+    // 其他 agent：chatMessages 仅提取图片（原有行为不变）
+    if (chatMessages && !injectHistory) {
       const seenUrls = new Set<string>();
       for (const msg of chatMessages) {
         if (msg.role === 'user' && Array.isArray(msg.content)) {
@@ -145,9 +190,7 @@ export class TaskAgentRunner {
         }
       }
     }
-    const messages: unknown[] = [
-      { role: 'user', content: initialContent.length === 1 ? initialContent[0].text : initialContent },
-    ];
+    messages.push({ role: 'user', content: initialContent.length === 1 ? initialContent[0].text : initialContent });
 
     // 任务级坐标上下文
     let toolCtx: ToolContext = {
@@ -205,7 +248,7 @@ export class TaskAgentRunner {
           endpoint,
           currentProvider,
           currentApiKey,
-          { messages, tools, goal },
+          { messages, tools, goal, systemPromptExtra: customSystemPrompt || undefined },
         );
 
         for await (const chunk of stream) {
@@ -214,19 +257,28 @@ export class TaskAgentRunner {
           } else if (chunk.startsWith('__ERROR__:')) {
             throw new Error(chunk.substring(10));
           } else if (chunk.startsWith('__REASONING__:')) {
-            reasoningText += chunk.substring(14);
+            const rc = chunk.substring(14);
+            reasoningText += rc;
+            // 实时流式推理 — stream_chunk 事件仅 FreeAgent 等需要实时过程的消费者使用
+            onProgress?.({ type: 'stream_chunk', text: '', reasoning: rc, turn });
           } else {
             responseText += chunk;
+            // 实时流式文本 — 触发 stream_chunk 事件让 UI 更新
+            onProgress?.({ type: 'stream_chunk', text: chunk, turn });
           }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await this.taskDB.updateStatus(taskId, 'failed', msg);
         onProgress?.({ type: 'agent_done', success: false, turn });
-        return { success: false, taskId, agentId, error: msg };
+        return { success: false, taskId, agentId, error: msg, summary: finalSummary, lastResponseText, lastSuccessfulToolResult };
       }
 
-      // 发射 LLM 思考事件
+      // 发射 LLM 思考事件（文本 + 推理汇总，推理已在 streaming 中实时推送）
+      // 在成功收到 LLM 回复后，保留非空的 responseText（用于后续错误时保留部分结果）
+      if (responseText && responseText.trim()) {
+        lastResponseText = responseText;
+      }
       if (responseText || reasoningText) {
         onProgress?.({
           type: 'llm_thinking',
@@ -247,16 +299,18 @@ export class TaskAgentRunner {
         // 如果 LLM 明确表达了任务完成（含完成语义文本），视为正常结束
         if (/done|完成|成功|finished|complete/i.test(responseText)) {
           taskCompleted = true;
+          lastResponseText = responseText || undefined;
         }
         break;
       }
 
       console.log(`[TaskRunner] turn=${turn} 工具调用: ${toolCalls.map(tc => tc.name).join(', ')}`);
 
-      // 助手消息
+      // 助手消息（MiMo 等思考模型多轮调用必须回传 reasoning_content）
       messages.push({
         role: 'assistant',
         content: responseText || null,
+        reasoning_content: reasoningText || undefined,
         toolCalls: toolCalls.map((tc) => ({
           id: tc.id,
           type: 'function',
@@ -283,11 +337,10 @@ export class TaskAgentRunner {
             ? `已加载 ${loaded.length} 个工具的完整定义：${loaded.map((t: any) => t.function.name).join(', ')}。现在可以直接调用这些工具了。`
             : `未找到工具：${requestedTools.join(', ')}。请检查工具名称是否正确，可从菜单中确认。`;
           onProgress?.({ type: 'tool_start', name: tc.name, args: tc.args, turn });
-          messages.push({
-            role: 'tool',
-            toolCallId: tc.id,
-            content: JSON.stringify({ success: true, message: summary }),
-          });
+          const rawGatekeeper = JSON.stringify({ success: true, message: summary });
+          const gk = truncateToolResult(tc.name, rawGatekeeper);
+          messages.push({ role: 'tool', toolCallId: tc.id, content: gk.toolContent });
+          if (gk.fullUserMessage) messages.push({ role: 'user', content: gk.fullUserMessage });
           onProgress?.({ type: 'tool_end', name: tc.name, success: true, message: summary, turn });
           console.log(`[TaskRunner] 🔍 tool_detail: requested=${requestedTools.length} loaded=${loaded.length} totalActive=${tools.length}`);
           continue;
@@ -297,11 +350,17 @@ export class TaskAgentRunner {
         const result = await this.executeTool(tc.name, tc.args, taskId, agentId, turn, toolCtx);
         onProgress?.({ type: 'tool_end', name: tc.name, success: result.success, message: result.message, turn });
 
+        // 捕获最后一个成功工具的返回消息（出错时可用于保留部分结果）
+        if (result.success && result.message) {
+          lastSuccessfulToolResult = result.message;
+        }
+
         executedTools.push(tc.name);
 
         // desktop_done / web_done / doc_done / code_done / finalize → 任务完成
         if (tc.name === 'desktop_done' || tc.name === 'web_done' || tc.name === 'doc_done' || tc.name === 'code_done' || tc.name === 'finalize') {
           finalSummary = result.message;
+          lastResponseText = responseText || undefined;
           await this.taskDB.updateStatus(taskId, 'done');
           taskCompleted = true;
           shouldBreak = true;
@@ -328,15 +387,16 @@ export class TaskAgentRunner {
             toolCtx = { scale: null, targetWindowHwnd: toolCtx.targetWindowHwnd };
           }
         } else {
-          // 非截图工具：过滤大图片数据后推入消息
+          // 非截图工具：过滤大图片数据后推入消息，超长时截断 + user 消息兜底
           const filteredResult = tc.name === 'desktop_screenshot' && result.data
             ? { ...result, data: { ...result.data as Record<string, unknown>, image_data: '[image data omitted]' } }
             : result;
-          messages.push({
-            role: 'tool',
-            toolCallId: tc.id,
-            content: JSON.stringify(filteredResult),
-          });
+          const rawContent = JSON.stringify(filteredResult);
+          const tr = truncateToolResult(tc.name, rawContent);
+          messages.push({ role: 'tool', toolCallId: tc.id, content: tr.toolContent });
+          if (tr.fullUserMessage) {
+            messages.push({ role: 'user', content: tr.fullUserMessage });
+          }
         }
 
         // request_user_input 后：用户操作可能导致界面变化（可能只填了信息，也可能进入了下一步）
@@ -414,7 +474,7 @@ export class TaskAgentRunner {
     }
 
     onProgress?.({ type: 'agent_done', success, turn: maxTurns });
-    return { success, taskId, agentId, summary: finalSummary, error: exitReason || undefined };
+    return { success, taskId, agentId, summary: finalSummary, lastResponseText, lastSuccessfulToolResult, error: exitReason || undefined };
   }
 
   // ── 工具执行 ──
@@ -429,16 +489,20 @@ export class TaskAgentRunner {
   ): Promise<{ success: boolean; message?: string; data?: Record<string, unknown> }> {
     const startTime = Date.now();
 
-    // run_command / execute_code → 需要用户确认
-    if (name === 'run_command' || name === 'execute_code') {
-      const displayText = name === 'execute_code'
-        ? `[${args['language'] ?? 'code'}] ${String(args['code'] ?? '')}`.substring(0, 500)
+    // run_command / execute_code / doc_code_exec → 需要用户确认
+    if (name === 'run_command' || name === 'execute_code' || name === 'doc_code_exec') {
+      const displayText = name === 'execute_code' || name === 'doc_code_exec'
+        ? `[${name === 'doc_code_exec' ? 'python(doc)' : (args['language'] ?? 'code')}] ${String(args['code'] ?? '')}`.substring(0, 500)
         : String(args['command'] ?? '');
+      console.log(`[TaskRunner] 🔐 安全确认: tool=${name} hasOnConfirm=${!!this.onConfirm} cmd=${displayText.substring(0, 100)}`);
       if (this.onConfirm) {
         const confirmed = await this.onConfirm(displayText);
+        console.log(`[TaskRunner] 🔐 用户确认结果: ${confirmed}`);
         if (!confirmed) {
           return { success: false, message: '用户拒绝执行此命令。' };
         }
+      } else {
+        console.warn(`[TaskRunner] ⚠️ 没有 onConfirm 回调，跳过安全确认！tool=${name}`);
       }
     }
 

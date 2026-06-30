@@ -169,6 +169,7 @@ export function handleChat(
     tools: p.tools,
     goal: p.goal,
     skipCache: p.skipCache,
+    extra: p.systemPromptExtra,
   });
 }
 
@@ -682,7 +683,11 @@ export async function handleRunCommand(
   rawParams: unknown,
 ): Promise<unknown> {
   const p = unwrapParams<RunCommandParams>(rawParams);
-  const { command, cwd, timeout_ms = 30000 } = p;
+  const { command, cwd: rawCwd, timeout_ms = 60000 } = p;
+  // Strip UNC prefix (\\?\) — cmd.exe doesn't support it
+  const cwd = rawCwd ? rawCwd.replace(/^\\\\\?\\/, '') : rawCwd;
+  // 最短 15 秒，防止 LLM 传入过短超时导致文件搜索等操作过早失败
+  const safeTimeout = Math.max(timeout_ms, 15000);
 
   if (!command) {
     return { ok: false, stdout: '', stderr: 'command is required', exitCode: -1, method: 'error' };
@@ -694,33 +699,33 @@ export async function handleRunCommand(
     return { ok: false, stdout: '', stderr: `⚠️ 命令被拦截：${dangerReason}`, exitCode: -1, method: 'blocked' };
   }
 
-  const isWindows = process.platform === 'win32';
+  // encoding='buffer' + GBK decode — no chcp needed
+  const execCommand = command;
 
-  // Windows: prepend chcp 65001 so Chinese paths/characters don't get garbled
-  // (exec wraps with cmd /s /c "..." automatically, so we just pass the command)
-  const execCommand = isWindows
-    ? `chcp 65001 >nul && ${command}`
-    : command;
+  const t0 = Date.now();
+  console.log(`[run_command] START cmd="${execCommand}" cwd="${cwd || '.'}" timeout=${safeTimeout}ms`);
 
   return new Promise((resolve) => {
-    const child = exec(execCommand, {
-      cwd,
-      timeout: timeout_ms,
-      windowsHide: true,
-      encoding: 'utf-8',
-    }, (error, stdout, stderr) => {
-      resolve({
-        ok: !error,
-        stdout: stdout ?? '',
-        stderr: stderr ?? (error ? error.message : ''),
-        exitCode: error?.code ?? 0,
-        method: 'backend',
+    const child = exec(execCommand, { cwd, timeout: safeTimeout, windowsHide: true, encoding: 'buffer', maxBuffer: 50 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const elapsed = Date.now() - t0;
+        const dec = (buf: Buffer | string | null) => {
+          if (!buf || buf.length === 0) return '';
+          if (typeof buf === 'string') return buf;
+          try { return new TextDecoder('gbk').decode(buf); } catch { return buf.toString('utf-8'); }
+        };
+        const outStr = dec(stdout);
+        const errStr = error && !stderr ? error.message : dec(stderr);
+        const timedOut = error && (error as NodeJS.ErrnoException).code === 'ETIMEDOUT' || (error?.killed === true);
+        const finalErrStr = timedOut
+          ? `⏱️ 命令执行超时 (${safeTimeout}ms)${errStr ? ': ' + errStr : ''}。请尝试缩小搜索范围（指定更具体的 path），或增加 timeout_ms 参数。`
+          : errStr;
+        console.log(`[run_command] END ${elapsed}ms exit=${error?.code ?? 0} timeout=${timedOut} stdout=${outStr.length}B`);
+        resolve({
+          ok: !error, stdout: outStr, stderr: finalErrStr, exitCode: error?.code ?? 0, method: 'backend',
+        });
       });
-    });
-
-    // 超时兜底
-    setTimeout(() => {
-      try { child.kill('SIGTERM'); } catch { /* ignore */ }
-    }, timeout_ms);
+    // timeout 由 exec 内置选项处理，无需额外的 setTimeout + child.kill
   });
 }
+

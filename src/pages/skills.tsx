@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { ArrowLeft, Monitor, Globe, Smartphone, AppWindow, Code, Eye, EyeOff, Play, CheckCircle, XCircle, Settings, Plus, Trash2, Pencil, Upload, Sparkles, Circle, Database, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Monitor, Globe, Smartphone, AppWindow, Code, Eye, EyeOff, Play, CheckCircle, X, XCircle, Settings, Plus, Trash2, Pencil, Upload, Sparkles, Circle, Database, ChevronDown, ChevronRight, RefreshCw, Bot, BookOpen } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settings-store';
 import { useSkillStore } from '@/stores/skill-store';
 import { useT } from '@/i18n/strings';
@@ -7,8 +7,12 @@ import { desktopService, type AppInfo } from '@/services/desktop-service';
 import systemPrompts from '@/config/system-prompts.json';
 import { SkillExecutor } from '@/skills/executor';
 import { UserDefinedSkill } from '@/skills/user-defined';
-import { parseSkillMarkdown } from '@/skills/loader';
-import { initBuiltinExecutor, getBuiltinExecutor, getBuiltinSkill } from '@/skills/builtin-executor';
+import { parseStandardSkillMd, standardNameToLegacyId, generateStandardSkillMd } from '@/skills/standard-md-parser';
+import { initBuiltinExecutor, getBuiltinExecutor, getBuiltinSkill, removeRuntimeSkillSource } from '@/skills/builtin-executor';
+import { getSkillRegistry } from '@/skills/sources/registry';
+import { useAgentStore } from '@/stores/agent-store';
+import { RESERVED_AGENT_NAMES, type UserAgentConfig } from '@/types/agent';
+import { ToolSelectorPanel } from '@/components/chat/tool-selector-panel';
 import type { SkillTool } from '@/skills/skill';
 import type { Skill } from '@/skills/skill';
 import type { UserSkillConfig, ToolDefinition } from '@/types/skill';
@@ -25,15 +29,24 @@ const skillIconMap: Record<string, React.ReactNode> = {
 
 // ── CategoryHeader ──
 
-function CategoryHeader({ title, count }: { title: string; count: number }) {
+function CategoryHeader({ title, count, onDelete }: { title: string; count: number; onDelete?: () => void }) {
   return (
-    <div className="flex items-center gap-2 px-4 pt-4 pb-1">
+    <div className="flex items-center gap-2 px-4 pt-4 pb-1 group">
       <span className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
         {title}
       </span>
       <span className="px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900 text-[10px] text-blue-700 dark:text-blue-300">
         {count}
       </span>
+      {onDelete && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          className="ml-auto p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-950 text-zinc-400 hover:text-red-500 transition-all"
+          title="删除此来源"
+        >
+          <X size={12} />
+        </button>
+      )}
     </div>
   );
 }
@@ -80,6 +93,7 @@ function TestDialog({ skillId, tool, onClose, isBuiltin }: { skillId: string; to
   const [values, setValues] = useState<Record<string, string>>({});
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<{ success: boolean; message: string; data?: Record<string, unknown> } | null>(null);
+  const [jsonErrors, setJsonErrors] = useState<Record<string, string>>({});
 
   const properties = (tool.parameters['properties'] as Record<string, Record<string, unknown>>) ?? {};
   const required = (tool.parameters['required'] as string[]) ?? [];
@@ -91,6 +105,24 @@ function TestDialog({ skillId, tool, onClose, isBuiltin }: { skillId: string; to
       setResult({ success: false, message: t('skills.missingParams', { params: missing.join(', ') }) });
       return;
     }
+
+    // Validate JSON for object/array types
+    const newJsonErrors: Record<string, string> = {};
+    for (const [key, schema] of Object.entries(properties)) {
+      const raw = values[key]?.trim();
+      if (!raw) continue;
+      const type = (schema['type'] as string) ?? 'string';
+      if (type === 'object' || type === 'array') {
+        try {
+          JSON.parse(raw);
+        } catch (e) {
+          newJsonErrors[key] = `Invalid JSON: ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+    }
+    setJsonErrors(newJsonErrors);
+    if (Object.keys(newJsonErrors).length > 0) return;
+
     setExecuting(true);
     setResult(null);
     const params: Record<string, unknown> = {};
@@ -100,6 +132,7 @@ function TestDialog({ skillId, tool, onClose, isBuiltin }: { skillId: string; to
       const type = (schema['type'] as string) ?? 'string';
       if (type === 'integer') params[key] = parseInt(raw, 10);
       else if (type === 'number') params[key] = parseFloat(raw);
+      else if (type === 'object' || type === 'array') params[key] = JSON.parse(raw);
       else params[key] = raw;
     }
     try {
@@ -143,17 +176,31 @@ function TestDialog({ skillId, tool, onClose, isBuiltin }: { skillId: string; to
                 const isRequired = required.includes(key);
                 const type = (schema['type'] as string) ?? 'string';
                 const desc = (schema['description'] as string) ?? '';
+                const isJsonType = type === 'object' || type === 'array';
                 return (
                   <div key={key}>
                     <label className="block text-[13px] font-medium text-zinc-700 dark:text-zinc-300 mb-1">
                       {key}{isRequired && ' *'} <span className="text-zinc-400 font-normal">({type})</span>
                     </label>
-                    <input
-                      type="text" value={values[key] ?? ''}
-                      onChange={(e) => setValues({ ...values, [key]: e.target.value })}
-                      placeholder={desc}
-                      className="w-full px-3 py-1.5 text-[13px] rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500"
-                    />
+                    {isJsonType ? (
+                      <>
+                        <textarea
+                          value={values[key] ?? ''}
+                          onChange={(e) => { setValues({ ...values, [key]: e.target.value }); setJsonErrors(prev => { const n = { ...prev }; delete n[key]; return n; }); }}
+                          placeholder={desc || `Enter ${type} as JSON`}
+                          rows={4}
+                          className="w-full px-3 py-1.5 text-[12px] font-mono rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500 resize-y"
+                        />
+                        {jsonErrors[key] && <p className="text-[11px] text-red-500 mt-1">{jsonErrors[key]}</p>}
+                      </>
+                    ) : (
+                      <input
+                        type="text" value={values[key] ?? ''}
+                        onChange={(e) => setValues({ ...values, [key]: e.target.value })}
+                        placeholder={desc}
+                        className="w-full px-3 py-1.5 text-[13px] rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500"
+                      />
+                    )}
                   </div>
                 );
               })
@@ -246,6 +293,7 @@ function ToolCard({ skillId, tool, isBuiltin, skillConfig }: { skillId: string; 
   // For user-defined skills: use exposedToAI from config; for built-in: use disabledTools
   const isDisabled = isBuiltin ? disabledTools.has(tool.name) : skillConfig?.exposedToAI === false;
   const [testOpen, setTestOpen] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const displayName = (isZh && tool.nameCn) || tool.name;
   const displayDesc = (isZh && tool.descriptionCn) || tool.description;
@@ -259,8 +307,25 @@ function ToolCard({ skillId, tool, isBuiltin, skillConfig }: { skillId: string; 
     }
   };
 
+  const handleDelete = async () => {
+    if (isBuiltin) {
+      // 内置 tool：永久禁用（从 LLM 工具列表中移除）
+      disableTool(tool.name);
+    } else if (skillConfig) {
+      // 用户自定义 skill：从 tools 数组中移除该 tool
+      const newTools = skillConfig.tools.filter(t => t.name !== tool.name);
+      if (newTools.length === 0) {
+        // 如果删光了，至少保留一个空占位
+        return;
+      }
+      const { updateSkill } = useSkillStore.getState();
+      await updateSkill({ ...skillConfig, tools: newTools });
+    }
+    setShowDeleteConfirm(false);
+  };
+
   return (
-    <div className="border border-zinc-200 dark:border-zinc-700 rounded-lg p-4 space-y-3">
+    <div className={`border rounded-lg p-4 space-y-3 ${isDisabled ? 'border-zinc-200 dark:border-zinc-700 opacity-70' : 'border-zinc-200 dark:border-zinc-700'}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <Code size={16} className="text-blue-500 dark:text-blue-400 shrink-0 mt-0.5" />
@@ -269,9 +334,14 @@ function ToolCard({ skillId, tool, isBuiltin, skillConfig }: { skillId: string; 
             {isZh && tool.nameCn && <p className="text-[11px] text-zinc-400 dark:text-zinc-500 font-mono">{tool.name}</p>}
           </div>
         </div>
-        <button onClick={() => setTestOpen(true)} className="flex items-center gap-1 px-2.5 py-1 text-[12px] rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 shrink-0">
-          <Play size={12} /> {t('skills.test')}
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button onClick={() => setTestOpen(true)} className="flex items-center gap-1 px-2.5 py-1 text-[12px] rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800">
+            <Play size={12} /> {t('skills.test')}
+          </button>
+          <button onClick={() => setShowDeleteConfirm(true)} className="p-1.5 rounded-lg text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950" title={t('skills.delete')}>
+            <Trash2 size={14} />
+          </button>
+        </div>
       </div>
       <p className="text-[13px] text-zinc-500 dark:text-zinc-400 leading-relaxed">{displayDesc}</p>
       <ParametersSection params={tool.parameters} t={t} />
@@ -285,6 +355,30 @@ function ToolCard({ skillId, tool, isBuiltin, skillConfig }: { skillId: string; 
           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isDisabled ? 'translate-x-1' : 'translate-x-6'}`} />
         </button>
       </div>
+
+      {/* Delete confirmation */}
+      {showDeleteConfirm && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/50" onClick={() => setShowDeleteConfirm(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-2xl p-6 max-w-sm w-full">
+              <p className="text-[14px] text-zinc-800 dark:text-zinc-200 mb-1 font-semibold">
+                {isBuiltin ? `禁用工具 "${displayName}"？` : `从 Skill 中删除 "${displayName}"？`}
+              </p>
+              <p className="text-[12px] text-zinc-500 dark:text-zinc-400 mb-4">
+                {isBuiltin
+                  ? '该工具将不再发送给 AI，可在设置中恢复。'
+                  : '该工具将从 Skill 定义中永久移除。'}
+              </p>
+              <div className="flex justify-end gap-2">
+                <button onClick={() => setShowDeleteConfirm(false)} className="px-3 py-1.5 text-[13px] rounded-lg text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">{t('skills.cancel')}</button>
+                <button onClick={handleDelete} className="px-3 py-1.5 text-[13px] rounded-lg bg-red-600 text-white hover:bg-red-700">删除</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       {testOpen && <TestDialog skillId={skillId} tool={tool} onClose={() => setTestOpen(false)} isBuiltin={isBuiltin} />}
     </div>
   );
@@ -401,24 +495,51 @@ function GenerateSkillDialog({ onClose, onGenerated }: { onClose: () => void; on
         text += chunk;
       }
 
-      // Try to extract JSON from response
-      const jsonMatch = /\{[\s\S]*\}/.exec(text);
-      if (!jsonMatch) throw new Error('No JSON found in response');
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      const cfg: UserSkillConfig = {
-        id: crypto.randomUUID(),
-        name: parsed.name || 'Generated Skill',
-        description: parsed.description || '',
-        category: parsed.category || 'user',
-        tools: (parsed.tools || []).map((t: Record<string, unknown>) => ({
-          name: t.name as string,
-          description: t.description as string,
-          parameters: (t.parameters as Record<string, unknown>) ?? { type: 'object', properties: {} },
-        })),
-        builtin: false,
-        implementation: parsed.implementation as string | undefined,
-      };
+      // Parse the response as standard SKILL.md format
+      let cfg: UserSkillConfig;
+      try {
+        const sc = parseStandardSkillMd(text);
+        cfg = {
+          id: crypto.randomUUID(),
+          name: sc.name,
+          description: sc.description,
+          category: sc['x-i18n']?.category_cn ?? 'user',
+          tools: (sc.tools || []).map((t) => ({
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters ?? { type: 'object', properties: {} },
+            returns: t.returns,
+            nameCn: t.nameCn,
+            descriptionCn: t.descriptionCn,
+          })),
+          builtin: false,
+          nameCn: sc['x-i18n']?.name_cn,
+          descriptionCn: sc['x-i18n']?.description_cn,
+          categoryCn: sc['x-i18n']?.category_cn,
+          usage: sc.usage,
+          usageCn: sc['x-i18n']?.usage_cn,
+          license: sc.license,
+          compatibility: sc.compatibility,
+        };
+      } catch {
+        // Fallback: try old JSON format for backward compatibility
+        const jsonMatch = /\{[\s\S]*\}/.exec(text);
+        if (!jsonMatch) throw new Error('No valid SKILL.md or JSON found in response');
+        const parsed = JSON.parse(jsonMatch[0]);
+        cfg = {
+          id: crypto.randomUUID(),
+          name: parsed.name || 'Generated Skill',
+          description: parsed.description || '',
+          category: parsed.category || 'user',
+          tools: (parsed.tools || []).map((t: Record<string, unknown>) => ({
+            name: t.name as string,
+            description: t.description as string,
+            parameters: (t.parameters as Record<string, unknown>) ?? { type: 'object', properties: {} },
+          })),
+          builtin: false,
+          implementation: parsed.implementation as string | undefined,
+        };
+      }
 
       setPreview(cfg);
     } catch (e) {
@@ -486,6 +607,57 @@ function GenerateSkillDialog({ onClose, onGenerated }: { onClose: () => void; on
 }
 
 // ── SkillDetail ──
+
+function KnowledgeSkillDetail({ name, onBack }: { name: string; onBack?: () => void }) {
+  const [body, setBody] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const { getKnowledgeSkillBody } = await import('@/skills/builtin-executor');
+        const text = await getKnowledgeSkillBody(name);
+        setBody(text || '(无内容)');
+      } catch {
+        setBody('加载失败');
+      }
+      setLoading(false);
+    })();
+  }, [name]);
+
+  return (
+    <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide">
+      <div className="p-4 space-y-4">
+        <div className="flex items-center gap-3">
+          {onBack && (
+            <button onClick={onBack} className="p-1 rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 lg:hidden">
+              <ArrowLeft size={18} />
+            </button>
+          )}
+          <div>
+            <div className="flex items-center gap-2">
+              <BookOpen size={16} className="text-emerald-500" />
+              <h2 className="text-[15px] font-semibold text-zinc-800 dark:text-zinc-200">{name}</h2>
+              <span className="px-1 py-0.5 rounded text-[9px] bg-emerald-100 dark:bg-emerald-900 text-emerald-600 dark:text-emerald-400">知识技能</span>
+            </div>
+            <p className="text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">流程知识</p>
+          </div>
+        </div>
+
+        <div className="border-t border-zinc-100 dark:border-zinc-800" />
+
+        {loading ? (
+          <p className="text-[12px] text-zinc-400">加载中...</p>
+        ) : (
+          <div className="prose prose-sm dark:prose-invert max-w-none text-[13px] text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap font-mono bg-zinc-50 dark:bg-zinc-900 rounded-lg p-4 border border-zinc-200 dark:border-zinc-800">
+            {body}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function SkillDetail({ skillId, onBack }: { skillId: string; onBack?: () => void }) {
   const { allConfigs, deleteSkill } = useSkillStore();
@@ -1173,21 +1345,141 @@ function CacheViewer() {
   );
 }
 
+// ── AgentEditorDialog ──
+
+function AgentEditorDialog({ config, allTools, initialToolNames, onSave, onClose }: {
+  config: UserAgentConfig | null;
+  allTools: SkillTool[];
+  initialToolNames: Set<string>;
+  onSave: (cfg: UserAgentConfig, toolNames: Set<string>) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(config?.name ?? '');
+  const [description, setDescription] = useState(config?.description ?? '');
+  const [systemPrompt, setSystemPrompt] = useState(config?.systemPrompt ?? '');
+  const [enabled, setEnabled] = useState(config?.enabled ?? true);
+  const [toolNames, setToolNames] = useState<Set<string>>(initialToolNames);
+  const [showTools, setShowTools] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = () => {
+    if (!name.trim()) { setError('名称为必填项'); return; }
+    if (RESERVED_AGENT_NAMES.includes(name.trim().toLowerCase())) {
+      setError(`"${name}" 是保留名称，请换一个`);
+      return;
+    }
+    onSave({
+      id: config?.id ?? '',
+      name: name.trim(),
+      description: description.trim(),
+      systemPrompt: systemPrompt.trim(),
+      toolNames: [...toolNames],
+      enabled,
+    }, toolNames);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white dark:bg-zinc-950 rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-200 dark:border-zinc-800 shrink-0">
+          <h2 className="text-[14px] font-semibold text-zinc-800 dark:text-zinc-200">
+            {config?.id ? '编辑 Agent' : '新建 Agent'}
+          </h2>
+          <button onClick={onClose} className="p-1 rounded text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"><XCircle size={18} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {error && <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-[12px] text-red-600 dark:text-red-400">{error}</div>}
+
+          <div>
+            <label className="block text-[11px] font-medium text-zinc-500 dark:text-zinc-400 mb-1">名称 *</label>
+            <input value={name} onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2 text-[13px] rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500"
+              placeholder="如：数据分析师、爬虫助手" />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-zinc-500 dark:text-zinc-400 mb-1">描述</label>
+            <input value={description} onChange={(e) => setDescription(e.target.value)}
+              className="w-full px-3 py-2 text-[13px] rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500"
+              placeholder="简短描述这个 Agent 的用途" />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-zinc-500 dark:text-zinc-400 mb-1">System Prompt</label>
+            <textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)}
+              className="w-full px-3 py-2 text-[12px] font-mono rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none focus:border-blue-500 resize-y"
+              rows={8}
+              placeholder="定义 Agent 的行为规则、能力范围和工作流程..." />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">工具选择 ({toolNames.size})</label>
+              <button onClick={() => setShowTools(!showTools)}
+                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline">
+                {showTools ? '收起' : '展开选择'}
+              </button>
+            </div>
+            {showTools && allTools.length > 0 && (
+              <div className="border border-zinc-200 dark:border-zinc-700 rounded-lg max-h-[300px] overflow-y-auto">
+                <ToolSelectorPanel
+                  tools={allTools}
+                  selected={toolNames}
+                  setSelected={setToolNames}
+                  onClose={() => setShowTools(false)}
+                  compact
+                />
+              </div>
+            )}
+            {toolNames.size > 0 && !showTools && (
+              <div className="flex flex-wrap gap-1">
+                {[...toolNames].map((tn) => (
+                  <span key={tn} className="px-2 py-0.5 rounded text-[10px] bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">{tn}</span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400">允许被系统调用（加入 request_agent 列表）</label>
+            <button onClick={() => setEnabled(!enabled)}
+              className={`relative w-8 h-5 rounded-full transition-colors ${enabled ? 'bg-blue-600' : 'bg-zinc-300 dark:bg-zinc-600'}`}>
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-zinc-200 dark:border-zinc-800 shrink-0">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-[13px] text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700">取消</button>
+          <button onClick={handleSubmit} className="px-4 py-2 rounded-lg text-[13px] font-medium text-white bg-blue-600 hover:bg-blue-700">保存</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main SkillsPage ──
 
 export default function SkillsPage() {
   const t = useT();
   const { loaded, allConfigs, userSkills, initializeSkills, createSkill, updateSkill } = useSkillStore();
+  const { agents: userAgents, loaded: agentsLoaded, load: loadAgents, createAgent, updateAgent, deleteAgent, toggleAgent } = useAgentStore();
+  const [tab, setTab] = useState<'skills' | 'agents'>('skills');
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [showGenerateDialog, setShowGenerateDialog] = useState(false);
+  const [showAgentEditor, setShowAgentEditor] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<UserAgentConfig | null>(null);
+  const [showToolSelector, setShowToolSelector] = useState(false);
+  const [agentToolNames, setAgentToolNames] = useState<Set<string>>(new Set());
   const [executorReady, setExecutorReady] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     (async () => {
       await initializeSkills();
-      // Pass DB configs (allConfigs) to executor — DB is the single source of truth
       const configs = useSkillStore.getState().allConfigs;
       if (configs.length > 0) {
         await initBuiltinExecutor(configs);
@@ -1196,16 +1488,21 @@ export default function SkillsPage() {
     })();
   }, [initializeSkills]);
 
-  // Build combined list: built-in skills from executor + user skills from store
+  useEffect(() => { loadAgents(); }, [loadAgents]);
+
+  // Build combined list: built-in skills from executor + user skills from store + knowledge skills
   const storeLocale = useSettingsStore((s) => s.locale);
   const isZh = storeLocale === 'zh' || !storeLocale;
   const builtinSkills = getBuiltinExecutor().allSkills;
   const userSkillList = [...userSkills.values()];
+  const knowledgeSkills = useSkillStore(s => s.knowledgeSkills);
 
   // Group by category
-  const allItems: Array<{ id: string; name: string; category: string; toolsLen: number; isBuiltin: boolean }> = [
+  type SkillItem = { id: string; name: string; category: string; toolsLen: number; isBuiltin: boolean; isKnowledge?: boolean };
+  const allItems: SkillItem[] = [
     ...builtinSkills.map((s) => ({ id: s.id, name: (isZh && s.nameCn) || s.name, category: (isZh && s.categoryCn) || s.category, toolsLen: s.tools.length, isBuiltin: true })),
     ...userSkillList.map((s) => ({ id: s.id, name: (isZh && s.nameCn) || s.name, category: (isZh && s.categoryCn) || s.category, toolsLen: s.tools.length, isBuiltin: false })),
+    ...knowledgeSkills.map((ks) => ({ id: `ks-${ks.name}`, name: ks.name, category: ks.sourceLabel || '知识技能', toolsLen: 0, isBuiltin: false, isKnowledge: true })),
   ];
 
   const grouped = new Map<string, typeof allItems>();
@@ -1215,7 +1512,29 @@ export default function SkillsPage() {
     grouped.set(item.category, list);
   }
 
+  // 可删除的来源：label → sourceId 映射
+  const removableSources = new Map<string, string>();
+  for (const source of getSkillRegistry().getSources()) {
+    if (source.type === 'directory') {
+      removableSources.set(source.label, source.id);
+    }
+  }
+
+  const handleDeleteSource = async (label: string) => {
+    const sourceId = removableSources.get(label);
+    if (!sourceId) return;
+    if (!confirm(`删除来源 "${label}" 及其所有技能？`)) return;
+    await removeRuntimeSkillSource(sourceId);
+    setSelectedSkillId(null);
+    // 重新初始化 executor
+    const store = useSkillStore.getState();
+    await initBuiltinExecutor(store.allConfigs);
+    setExecutorReady(true);
+  };
+
   const selectedSkill = selectedSkillId ? (getBuiltinSkill(selectedSkillId) ?? userSkills.get(selectedSkillId)) : null;
+  const isKnowledgeSelected = selectedSkillId?.startsWith('ks-');
+  const selectedKnowledgeName = isKnowledgeSelected ? selectedSkillId!.slice(3) : null;
 
   const handleCreate = async (cfg: UserSkillConfig) => {
     await createSkill(cfg);
@@ -1235,8 +1554,22 @@ export default function SkillsPage() {
         const parsed = JSON.parse(text);
         cfg = { id: crypto.randomUUID(), ...parsed, builtin: false, tools: parsed.tools ?? [] };
       } else {
-        const mdCfg = parseSkillMarkdown(text);
-        cfg = { ...mdCfg, id: crypto.randomUUID(), builtin: false, tools: mdCfg.tools ?? [] };
+        const mdCfg = parseStandardSkillMd(text);
+        cfg = {
+          id: crypto.randomUUID(),
+          name: mdCfg.name,
+          description: mdCfg.description,
+          category: mdCfg['x-i18n']?.category_cn ?? 'user',
+          tools: mdCfg.tools ?? [],
+          builtin: false,
+          nameCn: mdCfg['x-i18n']?.name_cn,
+          descriptionCn: mdCfg['x-i18n']?.description_cn,
+          categoryCn: mdCfg['x-i18n']?.category_cn,
+          usage: mdCfg.usage,
+          usageCn: mdCfg['x-i18n']?.usage_cn,
+          license: mdCfg.license,
+          compatibility: mdCfg.compatibility,
+        };
       }
       await createSkill(cfg);
       const executor2 = getBuiltinExecutor();
@@ -1246,7 +1579,45 @@ export default function SkillsPage() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, [createSkill]);
 
-  if (!loaded || !executorReady) {
+  // 导入目录：选择目录 → 扫描 */README.md → 注册为运行时 skill 源
+  const handleImportDir = useCallback(async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ directory: true, title: '选择 Skill 目录', multiple: false });
+      if (!selected || typeof selected !== 'string') return;
+
+      const dirName = selected.replace(/^.*[\\/]/, '');
+      const { addRuntimeSkillSource } = await import('@/skills/builtin-executor');
+      await addRuntimeSkillSource(selected, dirName);
+      await initializeSkills();
+      const store = useSkillStore.getState();
+      await initBuiltinExecutor(store.allConfigs);
+      setExecutorReady(true);
+    } catch (err) {
+      console.warn('[skills] importDir failed:', err);
+    }
+  }, [initializeSkills]);
+
+  // ── Agent handlers ──
+  const handleAgentSave = async (cfg: UserAgentConfig) => {
+    if (cfg.id && userAgents.some(a => a.id === cfg.id)) {
+      await updateAgent(cfg);
+    } else {
+      await createAgent({ ...cfg, id: crypto.randomUUID() });
+    }
+    setShowAgentEditor(false);
+    setEditingAgent(null);
+  };
+
+  const handleAgentDelete = async (id: string) => {
+    await deleteAgent(id);
+    if (selectedAgentId === id) setSelectedAgentId(null);
+  };
+
+  const selectedAgent = selectedAgentId ? userAgents.find(a => a.id === selectedAgentId) ?? null : null;
+  const allTools: SkillTool[] = getBuiltinExecutor().allTools;
+
+  if (!loaded || !executorReady || !agentsLoaded) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-zinc-400 dark:text-zinc-500">
         <Settings size={56} className="mb-4 opacity-30" />
@@ -1273,37 +1644,64 @@ export default function SkillsPage() {
     <div className="flex-1 flex flex-col min-h-0">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-200 dark:border-zinc-800 shrink-0">
-        <h1 className="flex-1 text-[14px] font-semibold text-zinc-800 dark:text-zinc-200">{t('skills.title')}</h1>
-        <input ref={fileInputRef} type="file" accept=".md,.json" onChange={handleImport} className="hidden" />
-        <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-          <Upload size={13} /> {t('skills.import')}
-        </button>
-        <button onClick={() => setShowGenerateDialog(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded-lg border border-purple-200 dark:border-purple-800 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950">
-          <Sparkles size={13} /> {t('skills.generate')}
-        </button>
-        <button onClick={() => setShowNewDialog(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-          <Plus size={13} /> {t('skills.new')}
-        </button>
+        <div className="flex items-center gap-0.5 bg-zinc-100 dark:bg-zinc-800 rounded-lg p-0.5">
+          <button onClick={() => { setTab('skills'); setSelectedSkillId(null); }} className={`px-3 py-1 text-[12px] rounded-md font-medium transition-colors ${tab === 'skills' ? 'bg-white dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-300'}`}>
+            {t('skills.title')}
+          </button>
+          <button onClick={() => { setTab('agents'); setSelectedAgentId(null); }} className={`px-3 py-1 text-[12px] rounded-md font-medium transition-colors ${tab === 'agents' ? 'bg-white dark:bg-zinc-700 text-zinc-800 dark:text-zinc-200 shadow-sm' : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-300'}`}>
+            Agents
+          </button>
+        </div>
+        <div className="flex-1" />
+        {tab === 'skills' ? (<>
+          <input ref={fileInputRef} type="file" accept=".md,.json" onChange={handleImport} className="hidden" />
+          <button
+            onClick={() => {
+              if ((window as any).__TAURI_INTERNALS__) handleImportDir();
+              else fileInputRef.current?.click();
+            }}
+            className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          >
+            <Upload size={13} /> {t('skills.import')}
+          </button>
+          <button onClick={() => setShowGenerateDialog(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded-lg border border-purple-200 dark:border-purple-800 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950">
+            <Sparkles size={13} /> {t('skills.generate')}
+          </button>
+          <button onClick={() => setShowNewDialog(true)} className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+            <Plus size={13} /> {t('skills.new')}
+          </button>
+        </>) : (
+          <button onClick={() => { setEditingAgent(null); setAgentToolNames(new Set()); setShowAgentEditor(true); }} className="flex items-center gap-1 px-2.5 py-1.5 text-[12px] rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+            <Plus size={13} /> 新建 Agent
+          </button>
+        )}
       </div>
 
       <div className="flex-1 flex min-h-0">
+        {/* ── Skills tab ── */}
+        {tab === 'skills' && (<>
         {/* Sidebar */}
         <div className={`${selectedSkillId ? 'hidden lg:block' : 'flex-1'} w-[280px] border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto shrink-0 min-h-0 scrollbar-hide`}>
           {[...grouped.entries()].map(([category, items]) => (
             <div key={category}>
-              <CategoryHeader title={category} count={items.length} />
+              <CategoryHeader
+                title={category}
+                count={items.length}
+                onDelete={removableSources.has(category) ? () => handleDeleteSource(category) : undefined}
+              />
               {items.map((item) => (
                 <button key={item.id} onClick={() => setSelectedSkillId(item.id)}
                   className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${item.id === selectedSkillId ? 'bg-blue-50 dark:bg-blue-950' : 'hover:bg-zinc-50 dark:hover:bg-zinc-900'}`}>
                   <span className={item.id === selectedSkillId ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400 dark:text-zinc-500'}>
-                    {skillIconMap[item.id] ?? <Settings size={20} />}
+                    {item.isKnowledge ? <BookOpen size={20} /> : (skillIconMap[item.id] ?? <Settings size={20} />)}
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <p className={`text-[13px] font-medium truncate ${item.id === selectedSkillId ? 'text-blue-700 dark:text-blue-300' : 'text-zinc-700 dark:text-zinc-300'}`}>{item.name}</p>
+                      {item.isKnowledge && <span className="shrink-0 px-1 py-0.5 rounded text-[9px] bg-emerald-100 dark:bg-emerald-900 text-emerald-600 dark:text-emerald-400">知识</span>}
                       {item.isBuiltin && <span className="shrink-0 px-1 py-0.5 rounded text-[9px] bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400">{t('skills.builtin')}</span>}
                     </div>
-                    <p className="text-[11px] text-zinc-400 dark:text-zinc-500">{t('skills.tools')} ({item.toolsLen})</p>
+                    <p className="text-[11px] text-zinc-400 dark:text-zinc-500">{item.isKnowledge ? '流程知识' : `${t('skills.tools')} (${item.toolsLen})`}</p>
                   </div>
                 </button>
               ))}
@@ -1329,6 +1727,8 @@ export default function SkillsPage() {
           <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide">
             <CacheViewer />
           </div>
+        ) : isKnowledgeSelected ? (
+          <KnowledgeSkillDetail name={selectedKnowledgeName!} onBack={() => setSelectedSkillId(null)} />
         ) : selectedSkill ? (
           <SkillDetail skillId={selectedSkill.id} onBack={() => setSelectedSkillId(null)} />
         ) : (
@@ -1339,11 +1739,102 @@ export default function SkillsPage() {
             </div>
           </div>
         )}
+        </>)}
+
+        {/* ── Agents tab ── */}
+        {tab === 'agents' && (<>
+        <div className={`${selectedAgentId ? 'hidden lg:block' : 'flex-1'} w-[280px] border-r border-zinc-200 dark:border-zinc-800 overflow-y-auto shrink-0 min-h-0 scrollbar-hide`}>
+          <div className="px-4 py-2 text-[11px] font-medium text-zinc-400 dark:text-zinc-500 uppercase tracking-wide">
+            用户 Agent ({userAgents.length})
+          </div>
+          {userAgents.length === 0 ? (
+            <p className="px-4 py-6 text-center text-[12px] text-zinc-400">暂无，点击右上角新建</p>
+          ) : (
+            userAgents.map((agent) => (
+              <button key={agent.id} onClick={() => setSelectedAgentId(agent.id)}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${agent.id === selectedAgentId ? 'bg-blue-50 dark:bg-blue-950' : 'hover:bg-zinc-50 dark:hover:bg-zinc-900'}`}>
+                <span className={agent.id === selectedAgentId ? 'text-blue-600 dark:text-blue-400' : 'text-zinc-400 dark:text-zinc-500'}>
+                  <Bot size={20} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <p className={`text-[13px] font-medium truncate ${agent.id === selectedAgentId ? 'text-blue-700 dark:text-blue-300' : 'text-zinc-700 dark:text-zinc-300'}`}>{agent.name}</p>
+                    <span className={`shrink-0 w-1.5 h-1.5 rounded-full ${agent.enabled ? 'bg-green-400' : 'bg-zinc-300 dark:bg-zinc-600'}`} />
+                  </div>
+                  <p className="text-[11px] text-zinc-400 dark:text-zinc-500">工具 ({agent.toolNames.length}) {agent.enabled ? '· 已启用' : '· 已禁用'}</p>
+                </div>
+              </button>
+            ))
+          )}
+        </div>
+
+        {/* Agent detail */}
+        {selectedAgent ? (
+          <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide">
+            <div className="p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-[15px] font-semibold text-zinc-800 dark:text-zinc-200">{selectedAgent.name}</h2>
+                  {selectedAgent.description && <p className="text-[12px] text-zinc-500 dark:text-zinc-400 mt-0.5">{selectedAgent.description}</p>}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => toggleAgent(selectedAgent.id, !selectedAgent.enabled)}
+                    className={`px-2 py-1 rounded text-[11px] font-medium transition-colors ${selectedAgent.enabled ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 hover:bg-green-200' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700'}`}>
+                    {selectedAgent.enabled ? '已启用' : '已禁用'}
+                  </button>
+                  <button onClick={() => { setEditingAgent(selectedAgent); setAgentToolNames(new Set(selectedAgent.toolNames)); setShowAgentEditor(true); }}
+                    className="p-1.5 rounded text-zinc-400 hover:text-blue-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+                    <Pencil size={14} />
+                  </button>
+                  <button onClick={() => { if (confirm(`确认删除 Agent "${selectedAgent.name}"？`)) handleAgentDelete(selectedAgent.id); }}
+                    className="p-1.5 rounded text-zinc-400 hover:text-red-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-[11px] font-medium text-zinc-400 uppercase tracking-wide mb-2">System Prompt</h3>
+                <pre className="text-[12px] bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg p-3 whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto">{selectedAgent.systemPrompt || '（未设置）'}</pre>
+              </div>
+
+              <div>
+                <h3 className="text-[11px] font-medium text-zinc-400 uppercase tracking-wide mb-2">已选工具 ({selectedAgent.toolNames.length})</h3>
+                {selectedAgent.toolNames.length === 0 ? (
+                  <p className="text-[12px] text-zinc-400">无</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {selectedAgent.toolNames.map((tn) => (
+                      <span key={tn} className="px-2 py-0.5 rounded text-[11px] bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">{tn}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="hidden lg:flex flex-1 items-center justify-center text-zinc-400 dark:text-zinc-500">
+            <div className="text-center">
+              <Bot size={40} className="mx-auto mb-3 opacity-30" />
+              <p className="text-[14px]">选择一个 Agent 查看详情</p>
+            </div>
+          </div>
+        )}
+        </>)}
       </div>
 
       {/* Dialogs */}
       {showNewDialog && <SkillEditorDialog onSave={handleCreate} onClose={() => setShowNewDialog(false)} />}
       {showGenerateDialog && <GenerateSkillDialog onClose={() => setShowGenerateDialog(false)} onGenerated={handleCreate} />}
+      {showAgentEditor && (
+        <AgentEditorDialog
+          config={editingAgent}
+          allTools={allTools}
+          initialToolNames={agentToolNames}
+          onSave={(cfg, toolNames) => { handleAgentSave({ ...cfg, toolNames: [...toolNames] }); }}
+          onClose={() => { setShowAgentEditor(false); setEditingAgent(null); }}
+        />
+      )}
     </div>
   );
 }

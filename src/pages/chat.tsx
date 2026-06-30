@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Menu, Terminal, Bug, MessageSquarePlus, Trash2, Plus, MessageCircle, ShieldCheck, ShieldX, ChevronDown, ChevronUp, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { Menu, Terminal, Bug, MessageSquarePlus, Trash2, Plus, MessageCircle, ShieldCheck, ShieldX } from 'lucide-react';
+import { AgentLogGroup } from '@/components/chat/agent-log-group';
 import { useChatStore, ToolMode } from '@/stores/chat-store';
 import { useT, formatRelativeTime } from '@/i18n/strings';
 import { ChatBubble } from '@/components/chat/chat-bubble';
@@ -12,110 +13,6 @@ import { useSettingsStore } from '@/stores/settings-store';
 import { getBuiltinExecutor, initBuiltinExecutor } from '@/skills/builtin-executor';
 import type { MessageContent, ChatMessage } from '@/types/message';
 
-/** Agent 内部日志折叠组 */
-function AgentLogGroup({ messages: agentMessages }: { messages: ChatMessage[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const startMsg = agentMessages.find((m) => m._isAgentStart);
-  const isRunning = startMsg?.status === 'streaming';
-  const agentType = startMsg?._agentType ?? 'computeruse';
-  const label = { computeruse: '🖥️ 计算机操作', web: '🌐 浏览器', document: '📄 文档', code: '💻 代码' }[agentType] ?? agentType;
-
-  // 统计工具调用
-  const toolCalls = agentMessages.filter((m) => m._toolCallInfo);
-  const toolResults = agentMessages.filter((m) => m.role === 'tool' && m._agentInternal);
-  const successCount = toolResults.filter((m) => typeof m.content === 'string' && m.content.startsWith('✅')).length;
-  const failCount = toolResults.filter((m) => typeof m.content === 'string' && m.content.startsWith('❌')).length;
-
-  return (
-    <div className="mx-3 my-2">
-      {/* 折叠标题 */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium transition-colors ${
-          isRunning
-            ? 'bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
-            : failCount > 0
-            ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
-            : 'bg-zinc-50 dark:bg-zinc-900/50 text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700'
-        }`}
-      >
-        {isRunning ? (
-          <Loader2 size={14} className="animate-spin" />
-        ) : failCount > 0 ? (
-          <XCircle size={14} />
-        ) : (
-          <CheckCircle size={14} />
-        )}
-        <span className="flex-1 text-left truncate">
-          {(typeof startMsg?.content === 'string' ? startMsg.content : null) ?? `${label} Agent 执行中...`}
-        </span>
-        {toolCalls.length > 0 && (
-          <span className="text-[11px] opacity-70">
-            {successCount}✅ {failCount > 0 && `${failCount}❌`}
-          </span>
-        )}
-        {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-      </button>
-
-      {/* 折叠内容 */}
-      {expanded && (
-        <div className="mt-1 ml-3 pl-3 border-l-2 border-zinc-200 dark:border-zinc-700 space-y-1.5 py-1">
-          {agentMessages.filter((m) => !m._isAgentStart).map((msg) => {
-            const text = typeof msg.content === 'string' ? msg.content : '';
-
-            // 工具调用信息
-            if (msg._toolCallInfo) {
-              const info = msg._toolCallInfo;
-              return (
-                <div key={msg.id} className="flex items-start gap-2 py-0.5">
-                  <Terminal size={12} className="mt-0.5 text-zinc-400 shrink-0" />
-                  <div className="min-w-0">
-                    <span className="text-[12px] font-mono text-zinc-500 dark:text-zinc-400">
-                      {info.name}
-                    </span>
-                    {info.status === 'running' && (
-                      <span className="ml-1 text-[11px] text-blue-500">运行中...</span>
-                    )}
-                  </div>
-                </div>
-              );
-            }
-
-            // 工具结果
-            if (msg.role === 'tool') {
-              return (
-                <div key={msg.id} className="text-[12px] font-mono text-zinc-500 dark:text-zinc-400">
-                  {text}
-                </div>
-              );
-            }
-
-            // LLM 思考
-            if (msg.role === 'assistant') {
-              return (
-                <div key={msg.id} className="text-[12px] text-zinc-600 dark:text-zinc-400">
-                  {msg.reasoning_content && (
-                    <div className="mb-1 text-[11px] text-amber-600 dark:text-amber-400 italic">
-                      💭 {msg.reasoning_content.substring(0, 150)}{msg.reasoning_content.length > 150 && '...'}
-                    </div>
-                  )}
-                  {text && <div className="whitespace-pre-wrap">{text.substring(0, 300)}{text.length > 300 && '...'}</div>}
-                </div>
-              );
-            }
-
-            // 其他（轮次信息等）
-            return (
-              <div key={msg.id} className="text-[12px] text-zinc-400 dark:text-zinc-500">
-                {text}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function ConversationsPanel({
   open,
@@ -171,7 +68,7 @@ function ConversationsPanel({
         <div className="border-t border-zinc-100 dark:border-zinc-800" />
 
         {/* Conversation list */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto scrollbar-hide">
           {conversations.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 px-4 text-zinc-400 dark:text-zinc-500">
               <MessageCircle size={40} className="mb-3 opacity-40" />
@@ -267,7 +164,7 @@ function DebugPanel({
       <div className="px-3 py-1 text-[11px] font-semibold text-zinc-400 dark:text-zinc-500 uppercase bg-zinc-100 dark:bg-zinc-800/50">
         {t('chat.debug.title')}
       </div>
-      <div className="max-h-48 overflow-y-auto px-2 py-1">
+      <div className="max-h-48 overflow-y-auto scrollbar-hide px-2 py-1">
         {messages.map((msg) => {
           const isCall = (msg.role as string) === 'tool_call';
           const contentStr =
@@ -314,6 +211,7 @@ export default function ChatPage() {
     setToolMode,
     setCustomTools,
     toggleCustomTool,
+    loadMessages,
     loadConversations,
     confirmToolCall,
     rejectToolCall,
@@ -328,6 +226,13 @@ export default function ChatPage() {
   const [showConversations, setShowConversations] = useState(false);
   const [executorReady, setExecutorReady] = useState(false);
   const [showSelectorPanel, setShowSelectorPanel] = useState(false);
+  // @ 长效保持：一次选择后持续生效，存 Zustand（同 session 跨窗口持久）
+  const stickyAgent = useChatStore((s) => s.stickyAgent);
+  const setStickyAgent = useChatStore((s) => s.setStickyAgent);
+  const stickyAgentRef = useRef(stickyAgent);
+  stickyAgentRef.current = stickyAgent;
+  // @ 即时选中（未发送前就隐藏工具选择栏）
+  const [selectedNow, setSelectedNow] = useState(false);
 
   // Auto-scroll when messages change
   useEffect(() => {
@@ -359,22 +264,67 @@ export default function ChatPage() {
     })();
   }, [loadConversations]);
 
+  // 窗口获得焦点时重新加载消息（浮窗写了新消息到 DB 后主窗口需要刷新）
+  useEffect(() => {
+    const reloadIfActive = () => {
+      const convId = useChatStore.getState().activeConversation?.id;
+      if (convId && !useChatStore.getState().isStreaming) {
+        useChatStore.getState().loadMessages(convId);
+      }
+    };
+    window.addEventListener('focus', reloadIfActive);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') reloadIfActive();
+    });
+    // 跨 WebView 同步 @ 长效状态（storage 事件在 OTHER webview 修改时触发）
+    const syncSticky = (e: StorageEvent) => {
+      const convId = useChatStore.getState().activeConversation?.id;
+      if (convId && e.key === `openpaw_sticky_agent:${convId}`) {
+        try {
+          const raw = localStorage.getItem(e.key);
+          setStickyAgent(raw ? JSON.parse(raw) : null);
+        } catch { setStickyAgent(null); }
+      }
+    };
+    window.addEventListener('storage', syncSticky);
+    return () => {
+      window.removeEventListener('focus', reloadIfActive);
+      document.removeEventListener('visibilitychange', reloadIfActive);
+      window.removeEventListener('storage', syncSticky);
+    };
+  }, []);
+
   const handleSend = useCallback(
     async (content: MessageContent, agentContext?: string) => {
-      if (agentContext) {
-        // 将 agent 上下文注入到消息前面
-        const text = typeof content === 'string' ? content : content;
-        if (typeof text === 'string') {
-          await sendMessage(`[Agent Context]\n${agentContext}\n\n[User Request]\n${text}`, '');
+      // 长效上下文：优先当即 @ 选择 → Zustand store（sendMessage 内会持久化到 localStorage）
+      const storedContext = stickyAgentRef.current?.context;
+      const effectiveContext = agentContext || storedContext;
+
+      // ── 集中 @ 解析 ──
+      const { resolveAgentMention } = await import('@/services/agent-mention-resolver');
+      const resolved = effectiveContext ? await resolveAgentMention(effectiveContext) : null;
+      const text = typeof content === 'string' ? content : '';
+
+      if (resolved) {
+
+        // @ 选中 → 绕过用户工具选择，按 agent 类型走各自工具集
+        if (resolved.useFreeAgent) {
+          // 知识型 skill → FreeAgent
+          await sendMessage(text, '', { systemExtra: resolved.systemExtra, useFreeAgent: true, agentContext: effectiveContext });
+        } else if (resolved.textPrefix) {
+          // custom_agent (@code, @web, @document, @computeruse) → 传 agentName 给后端路由
+          const agentName = effectiveContext!.startsWith('custom_agent:') ? effectiveContext!.slice(13) : '';
+          await sendMessage(text, '', { agentName, agentContext: effectiveContext });
+        } else if (resolved.systemExtra) {
+          // App agent 页面能力上下文
+          await sendMessage(text, '', { systemExtra: resolved.systemExtra, agentName: 'app', agentContext: effectiveContext });
         } else {
-          // Multi-part content: prepend context to the first text part
-          const parts = content as Array<{ type: string; text?: string }>;
-          const modified = parts.map((p, i) => i === 0 && p.type === 'text' ? { ...p, text: `[Agent Context]\n${agentContext}\n\n[User Request]\n${p.text}` } : p);
-          await sendMessage(modified as MessageContent, '');
+          await sendMessage(text, '', { agentContext: effectiveContext });
         }
-      } else {
-        await sendMessage(content, '');
+        return;
       }
+
+      await sendMessage(content, '');
     },
     [sendMessage],
   );
@@ -487,7 +437,7 @@ export default function ChatPage() {
       )}
 
       {/* Messages area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-hide">
         {hasMessages ? (
           <div className="py-2">
             {(() => {
@@ -561,29 +511,11 @@ export default function ChatPage() {
 
       {/* Execution log panel */}
       {showLog && (
-        <div className="mx-2 mb-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-900/50 h-36 overflow-y-auto">
+        <div className="mx-2 mb-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-900/50 h-36 overflow-y-auto scrollbar-hide">
           <div className="px-3 py-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
             Execution log — messages will appear here after sending
           </div>
         </div>
-      )}
-
-      {/* Tool mode bar */}
-      <ToolModeBar
-        mode={toolMode}
-        selectedCount={customTools.size}
-        onModeChanged={handleToolModeChange}
-        onFavoritesDoubleClick={handleFavoritesDoubleClick}
-      />
-
-      {/* Tool selector panel — shown for favorites (double-click) or custom (single-click) */}
-      {showSelectorPanel && (toolMode === ToolMode.favorites || toolMode === ToolMode.custom) && (
-        <ToolSelectorPanel
-          tools={allTools}
-          selected={toolMode === ToolMode.favorites ? favoriteTools : customTools}
-          setSelected={toolMode === ToolMode.favorites ? setFavoriteTools : setCustomTools}
-          onClose={() => setShowSelectorPanel(false)}
-        />
       )}
 
       {/* Command confirmation bar */}
@@ -619,11 +551,34 @@ export default function ChatPage() {
         </div>
       )}
 
+      {/* Tool mode bar — hide when @ is active */}
+      {!stickyAgent && !selectedNow && (
+        <>
+          <ToolModeBar
+            mode={toolMode}
+            selectedCount={customTools.size}
+            onModeChanged={handleToolModeChange}
+            onFavoritesDoubleClick={handleFavoritesDoubleClick}
+          />
+          {showSelectorPanel && (toolMode === ToolMode.favorites || toolMode === ToolMode.custom) && (
+            <ToolSelectorPanel
+              tools={allTools}
+              selected={toolMode === ToolMode.favorites ? favoriteTools : customTools}
+              setSelected={toolMode === ToolMode.favorites ? setFavoriteTools : setCustomTools}
+              onClose={() => setShowSelectorPanel(false)}
+            />
+          )}
+        </>
+      )}
+
       {/* Message input */}
       <MessageInput
         enabled={!isStreaming}
         hintText={t('chat.input.hint')}
         onSend={handleSend}
+        onAgentSelect={(name) => setSelectedNow(name !== null)}
+        stickyAgent={stickyAgent}
+        onClearStickyAgent={() => { setStickyAgent(null); setSelectedNow(false); }}
         onStop={() => useChatStore.getState().stopChat()}
       />
 

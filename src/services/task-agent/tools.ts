@@ -309,6 +309,7 @@ export const TASK_AGENT_TOOLS: Record<TaskAgentType, string[]> = {
   doc: ['think', 'request_user_input', 'doc_done', 'finalize'],
   web: ['think', 'request_user_input', 'web_done', 'finalize'],  // 动态工具通过 toolFilter 从 SkillExecutor 获取
   code: ['think', 'request_user_input', 'code_done', 'finalize'],  // 动态工具通过 toolFilter 从 SkillExecutor 获取
+  free: [],  // FreeAgent 使用 ToolDisclosure 渐进式披露，不走静态工具集
 };
 
 /** 获取指定 agent 类型的工具定义（OpenAI function 格式） */

@@ -1,183 +1,366 @@
 // FreeAgent 独立页面 — 全能力 AI 开发者
-// 布局：左侧对话区 + 右侧预览区
+// 使用通用 ChatPanel 组件 + DB 消息持久化
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Send, LoaderCircle, Wrench, CheckCircle, XCircle, Code, Globe, Trash2 } from 'lucide-react';
+import { Code, Globe, Trash2 } from 'lucide-react';
 import { useModelConfigStore } from '@/stores/model-config-store';
 import { FreeAgentGateway } from '@/services/free-agent';
 import type { AgentProgressEvent } from '@/services/task-agent/runner';
-import { useSettingsStore } from '@/stores/settings-store';
+import { ChatPanel } from '@/components/chat/chat-panel';
+import type { DisplayMessage, ToolCallEntry, ConfirmationState, UserInputFormState } from '@/types/chat';
+import type { MessageContent } from '@/types/message';
+import { extractText } from '@/utils/content';
+import { getDB } from '@/db';
+import { retrieveRelevantExperiences, formatExperiencesForPrompt } from '@/services/task-memory';
 
-interface ToolCallEntry {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-  success?: boolean;
-  message?: string;
+// FreeAgent 固定 conversation_id（单对话模式）
+const FREE_AGENT_CONV_ID = 'free-agent-default';
+
+// ── DB persistence ──
+
+async function loadMessages(): Promise<DisplayMessage[]> {
+  try {
+    const db = await getDB();
+    const rows = await db.query<{
+      id: string; role: string; content: string; timestamp: string;
+      reasoning_content: string | null; tool_calls: string | null;
+    }>(
+      `SELECT id, role, content, timestamp, reasoning_content, tool_calls
+       FROM messages WHERE conversation_id = ? AND agent_internal = 0
+       ORDER BY timestamp ASC`,
+      [FREE_AGENT_CONV_ID],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      role: (r.role === 'user' || r.role === 'assistant') ? r.role : 'assistant',
+      content: r.content,
+      status: 'done' as const,
+      timestamp: r.timestamp,
+      reasoning_content: r.reasoning_content ?? undefined,
+      toolCalls: r.tool_calls ? (safeParse(r.tool_calls) || undefined) : undefined,
+    }));
+  } catch {
+    return [];
+  }
 }
 
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  toolCalls?: ToolCallEntry[];
-  timestamp: string;
+async function saveMessage(msg: DisplayMessage): Promise<void> {
+  try {
+    const db = await getDB();
+    const toolCallsJson = msg.toolCalls?.length ? JSON.stringify(msg.toolCalls) : null;
+    await db.execute(
+      `INSERT INTO messages (id, conversation_id, role, content, timestamp, reasoning_content, tool_calls, agent_internal, agent_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, '')`,
+      [msg.id, FREE_AGENT_CONV_ID, msg.role, msg.content, msg.timestamp ?? new Date().toISOString(), msg.reasoning_content ?? null, toolCallsJson],
+    );
+  } catch { /* non-critical */ }
 }
+
+function safeParse(s: string): ToolCallEntry[] | null {
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v as ToolCallEntry[] : null; } catch { return null; }
+}
+
+// ── Component ──
 
 export default function FreeAgentPage() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
-  const [currentToolCalls, setCurrentToolCalls] = useState<ToolCallEntry[]>([]);
+  const [streamingToolCalls, setStreamingToolCalls] = useState<ToolCallEntry[]>([]);
   const [streamingText, setStreamingText] = useState('');
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const [streamingReasoning, setStreamingReasoning] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, streamingText, currentToolCalls]);
+  // ── 安全确认状态 ──
+  const [confirmationState, setConfirmationState] = useState<ConfirmationState | undefined>();
+  const [userInputForm, setUserInputForm] = useState<UserInputFormState | undefined>();
 
-  // Focus input on mount
-  useEffect(() => { inputRef.current?.focus(); }, []);
+  // Load history + init skill store on mount（@ 下拉需要知识型 skill 数据）
+  useEffect(() => {
+    loadMessages().then(setMessages);
+    import('@/stores/skill-store').then(({ useSkillStore }) => {
+      useSkillStore.getState().initializeSkills();
+    });
+  }, []);
 
-  const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text || isRunning) return;
+  const handleSend = useCallback(async (content: MessageContent, agentContext?: string) => {
+    const rawText = extractText(content);
+    if (!rawText || isRunning) return;
 
-    setInput('');
+    // ── 集中 @ 解析（FreeAgent 仅支持知识型 skill）──
+    const { resolveAgentMention } = await import('@/services/agent-mention-resolver');
+    const resolved = await resolveAgentMention(agentContext);
+    const systemExtra = resolved?.systemExtra ?? '';
+    const text = rawText;
+
+    setError(null);
     setIsRunning(true);
     setStreamingText('');
-    setCurrentToolCalls([]);
+    setStreamingReasoning('');
+    setStreamingToolCalls([]);
     setPreviewHtml(null);
     setPreviewImage(null);
 
     const abortController = new AbortController();
     abortRef.current = abortController;
 
-    const userMsg: Message = {
+    const userMsg: DisplayMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: text,
+      status: 'done',
       timestamp: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, userMsg]);
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
+    saveMessage(userMsg);
 
     const assistantMsgId = crypto.randomUUID();
     let assistantContent = '';
+    let assistantReasoning = '';
     const toolCalls: ToolCallEntry[] = [];
 
+    // ── 获取 provider 配置 ──
+    await useModelConfigStore.getState().load();
+    const config = useModelConfigStore.getState().defaultConfig();
+    if (!config) {
+      setError('未配置模型，请先在模型设置中添加一个模型。');
+      setIsRunning(false);
+      return;
+    }
+    const apiKey = await useModelConfigStore.getState().getApiKey(config.id, '');
+    if (!apiKey) {
+      setError('API Key 为空，请在模型设置中配置。');
+      setIsRunning(false);
+      return;
+    }
+
+    console.log('[FreeAgent] 🚀 provider config:', {
+      type: config.type, model: config.model, baseUrl: config.baseUrl,
+      thinkingMode: config.thinkingMode, supportsTools: config.supportsTools,
+    });
+
     try {
-      await useModelConfigStore.getState().load();
-      const config = useModelConfigStore.getState().defaultConfig();
-      if (!config) {
-        setMessages((prev) => [...prev, {
-          id: assistantMsgId, role: 'assistant',
-          content: '未配置模型，请先在模型设置中添加一个模型。',
-          timestamp: new Date().toISOString(),
-        }]);
-        return;
-      }
 
-      const apiKey = await useModelConfigStore.getState().getApiKey(config.id, '');
-      if (!apiKey) {
-        setMessages((prev) => [...prev, {
-          id: assistantMsgId, role: 'assistant',
-          content: 'API Key 为空，请在模型设置中配置。',
-          timestamp: new Date().toISOString(),
-        }]);
-        return;
-      }
+      const { getBuiltinExecutor, initBuiltinExecutor, setCodeToolsModelService } = await import('@/skills/builtin-executor');
 
-      const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
-      const executor = getBuiltinExecutor();
+      // 确保 executor 已初始化（注册所有内置技能）
+      const { useSkillStore } = await import('@/stores/skill-store');
+      const skillStore = useSkillStore.getState();
+      await skillStore.initializeSkills();
+      const dbConfigs = skillStore.allConfigs.filter((c: { builtin?: boolean }) => c.builtin);
+      const executor = await initBuiltinExecutor(dbConfigs);
+
+      // 为 CodeTools 配置 LLM 访问能力
+      const { getModelService } = await import('@/services/model-service-singleton');
+      setCodeToolsModelService(getModelService(), config, apiKey);
+
       const gateway = new FreeAgentGateway(executor);
 
+      // ── 检索相关历史经验，注入上下文 ──
+      const relevantExps = await retrieveRelevantExperiences(text, 3);
+      const expContext = formatExperiencesForPrompt(relevantExps);
+      const enrichedGoal = expContext ? `${expContext}\n\n当前任务: ${text}` : text;
+
+      // ── 构建对话历史（含工具执行记录，确保 LLM 有完整上下文） ──
+      const historyMessages = messages.slice(-20).map((m) => {
+        const role = (m.role === 'user' || m.role === 'assistant') ? m.role as 'user' | 'assistant' : 'assistant' as const;
+        let content = m.content;
+        // 把上一轮的工具执行链拼入 assistant 消息，LLM 才知道之前执行过什么
+        if (role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          const toolSummary = m.toolCalls
+            .map(tc => `${tc.success === false ? '❌' : '✅'} ${tc.name}${tc.message ? ': ' + tc.message : ''}`)
+            .join('\n');
+          content = content
+            ? `${content}\n\n[本轮执行记录]\n${toolSummary}`
+            : `[本轮执行记录]\n${toolSummary}`;
+        }
+        return { role, content };
+      });
+
       const response = await gateway.handleUserGoal({
-        goal: text,
+        goal: enrichedGoal,
+        chatMessages: historyMessages.length > 0 ? historyMessages : undefined,
         provider: config,
         apiKey,
+        customSystemPrompt: systemExtra || undefined,
         signal: abortController.signal,
+        // ── 安全确认回调：run_command / execute_code 需要用户确认 ──
+        onConfirm: (command: string) => {
+          return new Promise<boolean>((resolve) => {
+            setConfirmationState({
+              command,
+              toolName: 'run_command',
+              args: { command },
+              onConfirm: () => { setConfirmationState(undefined); resolve(true); },
+              onReject: () => { setConfirmationState(undefined); resolve(false); },
+            });
+          });
+        },
+        onUserInput: (message: string, fields: Array<{ label: string; key: string; type?: string }>) => {
+          return new Promise<Record<string, string>>((resolve) => {
+            setUserInputForm({
+              message,
+              fields,
+              onSubmit: (values: Record<string, string>) => { setUserInputForm(undefined); resolve(values); },
+            });
+          });
+        },
         onProgress: (event: AgentProgressEvent) => {
           switch (event.type) {
+            case 'stream_chunk':
+              // 实时推理流式推送
+              if (event.reasoning) {
+                setStreamingReasoning((prev) => prev + event.reasoning!);
+                assistantReasoning += event.reasoning;
+              }
+              break;
             case 'llm_thinking':
               setStreamingText((prev) => prev + (event.text || ''));
               assistantContent += event.text || '';
+              if (event.reasoning) {
+                setStreamingReasoning((prev) => prev + event.reasoning!);
+                assistantReasoning += event.reasoning;
+              }
               break;
             case 'tool_start': {
               const tc: ToolCallEntry = {
                 id: crypto.randomUUID(),
                 name: event.name,
                 args: event.args,
+                status: 'running',
               };
               toolCalls.push(tc);
-              setCurrentToolCalls([...toolCalls]);
+              setStreamingToolCalls([...toolCalls]);
               break;
             }
             case 'tool_end': {
-              const tc = toolCalls.find((t) => t.name === event.name && t.success === undefined);
+              const tc = toolCalls.find((t) => t.name === event.name && t.status === 'running');
               if (tc) {
+                tc.status = event.success ? 'done' : 'error';
                 tc.success = event.success;
                 tc.message = event.message;
               }
-              setCurrentToolCalls([...toolCalls]);
+              setStreamingToolCalls([...toolCalls]);
               break;
             }
           }
         },
       });
 
-      // Extract HTML/image preview from results
-      if (response.tasks[0]?.message) {
-        const msg = response.tasks[0].message;
-        // Check for HTML content
+      // 将 finalize 总结追加到 assistantContent 末尾（如果有且尚未包含）
+      const finalSummary = response.tasks[0]?.message;
+      if (finalSummary && !assistantContent.includes(finalSummary)) {
+        assistantContent = assistantContent ? `${assistantContent}\n\n${finalSummary}` : finalSummary;
+      }
+
+      // Extract HTML/image preview
+      if (finalSummary) {
+        const msg = finalSummary;
         const htmlMatch = msg.match(/```html\n([\s\S]*?)```/) || msg.match(/<html[\s\S]*?<\/html>/i);
-        if (htmlMatch) {
-          setPreviewHtml(htmlMatch[1] || htmlMatch[0]);
-        }
-        // Check for image
+        if (htmlMatch) setPreviewHtml(htmlMatch[1] || htmlMatch[0]);
         const imgMatch = msg.match(/!\[.*?\]\((data:image\/[^)]+)\)/);
-        if (imgMatch) {
-          setPreviewImage(imgMatch[1]);
-        }
+        if (imgMatch) setPreviewImage(imgMatch[1]);
       }
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
       if (errorMsg !== 'AbortError' && !errorMsg.includes('abort')) {
         assistantContent += `\n\n> ⚠️ ${errorMsg}`;
+        setError(errorMsg);
       }
     }
 
     setStreamingText('');
-    setCurrentToolCalls([]);
-    setMessages((prev) => [...prev, {
+    setStreamingReasoning('');
+    setStreamingToolCalls([]);
+
+    const assistantMsg: DisplayMessage = {
       id: assistantMsgId,
       role: 'assistant',
       content: assistantContent || '任务执行完成',
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      status: 'done',
+      reasoning_content: assistantReasoning || undefined,
+      toolCalls: toolCalls.length > 0 ? toolCalls.map(tc => ({ ...tc, status: tc.status as 'done' | 'error' | 'running' })) : undefined,
       timestamp: new Date().toISOString(),
-    }]);
+    };
+    const finalMessages = [...updatedMessages, assistantMsg];
+    setMessages(finalMessages);
+    saveMessage(assistantMsg);
+
     setIsRunning(false);
     abortRef.current = null;
-  }, [input, isRunning]);
+  }, [messages, isRunning]);
 
-  const handleStop = () => {
+  const handleStop = useCallback(() => {
     abortRef.current?.abort();
     setIsRunning(false);
-  };
+  }, []);
 
-  const clearChat = () => {
+  const clearChat = useCallback(async () => {
     setMessages([]);
     setPreviewHtml(null);
     setPreviewImage(null);
-  };
+    try {
+      const db = await getDB();
+      await db.execute('DELETE FROM messages WHERE conversation_id = ?', [FREE_AGENT_CONV_ID]);
+    } catch { /* ignore */ }
+  }, []);
+
+  // Preview panel
+  const previewPanel = (
+    <div className="w-[40%] min-w-[300px] flex flex-col bg-white dark:bg-zinc-950 border-l border-zinc-200 dark:border-zinc-800">
+      <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-zinc-100 dark:border-zinc-800">
+        <span className="text-[13px] font-medium text-zinc-600 dark:text-zinc-400">预览</span>
+      </div>
+      <div className="flex-1 overflow-hidden">
+        {previewHtml ? (
+          <iframe
+            srcDoc={previewHtml}
+            sandbox="allow-scripts allow-same-origin"
+            className="w-full h-full border-0"
+            title="Preview"
+          />
+        ) : previewImage ? (
+          <div className="flex items-center justify-center h-full p-4">
+            <img src={previewImage} alt="Preview" className="max-w-full max-h-full object-contain rounded-lg" />
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-full text-zinc-400 dark:text-zinc-600 text-[13px]">
+            HTML 输出或图片将在此预览
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
-    <div className="flex h-full">
-      {/* ── 左侧：对话区 ── */}
-      <div className="flex-1 flex flex-col min-w-0 border-r border-zinc-200 dark:border-zinc-800">
-        {/* Header */}
+    <ChatPanel
+      messages={messages}
+      onSend={handleSend}
+      isStreaming={isRunning}
+      streamingContent={streamingText}
+      streamingReasoning={streamingReasoning}
+      streamingToolCalls={streamingToolCalls}
+      error={error}
+      onStop={handleStop}
+      onDismissError={() => setError(null)}
+      showReasoning
+      showStreaming
+      allowImagePaste
+      allowFileUpload
+      allowStop
+      agentTypes="knowledge"
+      confirmationState={confirmationState}
+      userInputForm={userInputForm}
+      layout="full"
+      previewPanel={previewPanel}
+      inputPlaceholder="描述你的需求，如：分析 sales.csv 并画趋势图 / 爬取这个网站的文章列表 / 建一个图书管理数据库..."
+      emptyTitle="FreeAgent — 全能力 AI 开发者"
+      emptyDescription="完整代码执行环境 | Python 完全访问 | 文件系统 | 网络搜索 | Shell 命令"
+      emptyIcon={<Code size={40} className="opacity-30" />}
+      header={
         <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-zinc-100 dark:border-zinc-800">
           <div className="flex items-center gap-2">
             <Globe size={18} className="text-purple-500" />
@@ -193,133 +376,7 @@ export default function FreeAgentPage() {
             <Trash2 size={15} />
           </button>
         </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-          {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-zinc-400 dark:text-zinc-500 gap-3">
-              <Code size={40} className="opacity-30" />
-              <div className="text-center">
-                <p className="text-[14px] font-medium">FreeAgent — 全能力 AI 开发者</p>
-                <p className="text-[12px] mt-1 max-w-md">
-                  完整代码执行环境 | Python 完全访问 | 文件系统 | 网络搜索 | Shell 命令
-                </p>
-              </div>
-            </div>
-          )}
-          {messages.map((msg) => (
-            <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] rounded-xl px-4 py-2.5 text-[13px] ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100'
-              }`}>
-                <div className="whitespace-pre-wrap break-words">{msg.content}</div>
-                {msg.toolCalls && msg.toolCalls.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-zinc-200 dark:border-zinc-700">
-                    {msg.toolCalls.map((tc) => (
-                      <div key={tc.id} className="flex items-center gap-1.5 py-0.5 text-[11px]">
-                        {tc.success === undefined
-                          ? <LoaderCircle size={10} className="text-zinc-400 animate-spin" />
-                          : tc.success
-                            ? <CheckCircle size={10} className="text-green-500" />
-                            : <XCircle size={10} className="text-red-500" />
-                        }
-                        <Wrench size={10} className="text-zinc-400" />
-                        <span className="font-medium text-zinc-600 dark:text-zinc-400">{tc.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-          {/* Streaming / tool calls in progress */}
-          {(streamingText || currentToolCalls.length > 0) && (
-            <div className="flex justify-start">
-              <div className="max-w-[85%] rounded-xl px-4 py-2.5 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100">
-                {streamingText && (
-                  <div className="whitespace-pre-wrap break-words text-[13px]">{streamingText}</div>
-                )}
-                {currentToolCalls.length > 0 && (
-                  <div className="mt-1 pt-1 border-t border-zinc-200 dark:border-zinc-700">
-                    {currentToolCalls.map((tc) => (
-                      <div key={tc.id} className="flex items-center gap-1.5 py-0.5 text-[11px]">
-                        {tc.success === undefined
-                          ? <LoaderCircle size={10} className="text-blue-500 animate-spin" />
-                          : tc.success
-                            ? <CheckCircle size={10} className="text-green-500" />
-                            : <XCircle size={10} className="text-red-500" />
-                        }
-                        <Wrench size={10} className="text-zinc-400" />
-                        <span className="text-zinc-600 dark:text-zinc-400">{tc.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
-
-        {/* Input */}
-        <div className="shrink-0 p-3 border-t border-zinc-200 dark:border-zinc-800">
-          <div className="flex gap-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) handleSend(); }}
-              placeholder="描述你的需求，如：分析 sales.csv 并画趋势图 / 爬取这个网站的文章列表 / 建一个图书管理数据库..."
-              disabled={isRunning}
-              className="flex-1 px-3 py-2 text-[13px] rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 outline-none focus:border-purple-500 disabled:opacity-50"
-            />
-            {isRunning ? (
-              <button
-                onClick={handleStop}
-                className="px-4 py-2 rounded-lg bg-red-500 text-white text-[13px] font-medium hover:bg-red-600 flex items-center gap-1"
-              >
-                <XCircle size={14} /> 停止
-              </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!input.trim()}
-                className="px-4 py-2 rounded-lg bg-purple-600 text-white text-[13px] font-medium hover:bg-purple-700 disabled:opacity-40 flex items-center gap-1"
-              >
-                <Send size={14} /> 发送
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ── 右侧：预览区 ── */}
-      <div className="w-[40%] min-w-[300px] flex flex-col bg-white dark:bg-zinc-950">
-        <div className="shrink-0 px-4 py-2 border-b border-zinc-100 dark:border-zinc-800">
-          <span className="text-[13px] font-medium text-zinc-600 dark:text-zinc-400">预览</span>
-        </div>
-        <div className="flex-1 overflow-hidden">
-          {previewHtml ? (
-            <iframe
-              srcDoc={previewHtml}
-              sandbox="allow-scripts allow-same-origin"
-              className="w-full h-full border-0"
-              title="Preview"
-            />
-          ) : previewImage ? (
-            <div className="flex items-center justify-center h-full p-4">
-              <img src={previewImage} alt="Preview" className="max-w-full max-h-full object-contain rounded-lg" />
-            </div>
-          ) : (
-            <div className="flex items-center justify-center h-full text-zinc-400 dark:text-zinc-600 text-[13px]">
-              HTML 输出或图片将在此预览
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
+      }
+    />
   );
 }

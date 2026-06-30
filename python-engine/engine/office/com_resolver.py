@@ -783,6 +783,9 @@ def _resolve_user_doc_path_all(
         _path_cache[filename] = results[0]["path"]
 
     return results
+
+
+def _search_wps_rcvr(filename: str) -> str | None:
     """Search WPS rcvr_*.ini recovery records for a filename.
 
     WPS stores recent file paths in XML-like config files:

@@ -3,7 +3,7 @@ import {
   AppWindow, Play, Code, Trash2, RefreshCw, Eye, EyeOff,
   Save, Plus, Search, Folder, File, ChevronRight, ChevronDown,
   PanelLeftClose, PanelLeft, FolderOpen, Import,
-  Send, Bot, User, LoaderCircle, Wrench, Square,
+  Send, Bot, User, LoaderCircle, Wrench,
 } from 'lucide-react';
 import { useT } from '@/i18n/strings';
 import { getDB } from '@/db';
@@ -15,7 +15,10 @@ import { useModelConfigStore } from '@/stores/model-config-store';
 import { AgentEndpoint } from '@/api/types';
 import { runAgentLoop } from '@/services/agent-loop';
 import type { ISkillExecutor } from '@/interfaces/skill-executor';
-import type { LLMMessage } from '@/types/message';
+import { ChatPanel } from '@/components/chat/chat-panel';
+import type { DisplayMessage, ToolCallEntry } from '@/types/chat';
+import type { LLMMessage, MessageContent } from '@/types/message';
+import { extractText } from '@/utils/content';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,6 +68,20 @@ interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   toolCalls: string[];  // tool call summaries shown inline
+}
+
+function toDisplayMessages(msgs: ChatMessage[]): DisplayMessage[] {
+  return msgs.map((m, i) => ({
+    id: `app-msg-${i}`,
+    role: m.role,
+    content: m.content,
+    status: 'done' as const,
+    toolCalls: m.toolCalls?.map((tc, j) => ({
+      id: `app-tc-${i}-${j}`,
+      name: tc,
+      status: 'done' as const,
+    })),
+  }));
 }
 
 interface SavedProject {
@@ -415,7 +432,7 @@ function HTMLPreview({
     <iframe
       ref={iframeRef}
       title="HTML Preview"
-      sandbox="allow-scripts allow-modals"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
       className="w-full h-full border-0 bg-white"
       style={{ minHeight: '400px' }}
     />
@@ -933,10 +950,9 @@ export default function AppsPage() {
   }, [importPath, setActiveProject]);
 
   // ── Send chat message to code agent (multi-turn, user-stoppable) ──
-  const handleChatSend = useCallback(async () => {
-    const input = chatInput.trim();
-    if (!input || !selectedProject) return;
-    setChatInput('');
+  const handleChatSend = useCallback(async (content: MessageContent) => {
+    const text = extractText(content);
+    if (!text || !selectedProject) return;
     setChatLoading(true);
 
     // Create abort controller so user can stop mid-run
@@ -976,9 +992,9 @@ export default function AppsPage() {
       if (isImported && selectedProject.local_path) {
         userContent += `\n工作目录: ${selectedProject.local_path}`;
       }
-      userContent += `\n\n${input}`;
+      userContent += `\n\n${text}`;
     } else {
-      userContent = input;
+      userContent = text;
     }
 
     // ── LLM messages — reuse existing history, append new user message ──
@@ -988,7 +1004,7 @@ export default function AppsPage() {
     ];
 
     // ── Add user message to visible UI + DB ──
-    const userMsg: ChatMessage = { role: 'user', content: input, toolCalls: [] };
+    const userMsg: ChatMessage = { role: 'user', content: content, toolCalls: [] };
     setChatMessages((prev) => {
       const msgs = [...(prev[pid] || []), userMsg];
       return { ...prev, [pid]: msgs };
@@ -1080,7 +1096,7 @@ export default function AppsPage() {
     chatAbortRef.current = null;
     setChatLoading(false);
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-  }, [chatInput, selectedProject, chatMessages]);
+  }, [selectedProject, chatMessages]);
 
   // ── Stop running chat ──
   const handleChatStop = useCallback(() => {
@@ -1401,6 +1417,32 @@ export default function AppsPage() {
                           </div>
                         </div>
                       )}
+                      {/* Chat Panel — below preview */}
+                      <div className="shrink-0 border-t border-zinc-200 dark:border-zinc-800">
+                        <ChatPanel
+                          messages={toDisplayMessages(chatMessages[selectedProject.id] || [])}
+                          onSend={handleChatSend}
+                          isStreaming={chatLoading}
+                          onStop={handleChatStop}
+                          allowStop
+                          showStreaming
+                          layout="compact"
+                          maxHeight="140px"
+                          inputPlaceholder={`Tell code agent about ${selectedProject.name}...`}
+                          emptyTitle="与 code agent 对话，操作当前项目"
+                          header={
+                            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-100 dark:border-zinc-800">
+                              <Bot size={13} className="text-blue-500" />
+                              <span className="text-[11px] font-medium text-zinc-500">Chat</span>
+                              {chatLoading && (
+                                <span className="flex items-center gap-1 text-[10px] text-zinc-400">
+                                  <LoaderCircle size={10} className="animate-spin" />
+                                </span>
+                              )}
+                            </div>
+                          }
+                        />
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -1433,6 +1475,32 @@ export default function AppsPage() {
                           </p>
                         </div>
                       )}
+                    </div>
+                    {/* Chat Panel — below editor for imported projects */}
+                    <div className="shrink-0 border-t border-zinc-200 dark:border-zinc-800">
+                      <ChatPanel
+                        messages={toDisplayMessages(chatMessages[selectedProject.id] || [])}
+                        onSend={handleChatSend}
+                        isStreaming={chatLoading}
+                        onStop={handleChatStop}
+                        allowStop
+                        showStreaming
+                        layout="compact"
+                        maxHeight="140px"
+                        inputPlaceholder={`Tell code agent about ${selectedProject.name}...`}
+                        emptyTitle="与 code agent 对话，操作当前项目"
+                        header={
+                          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-100 dark:border-zinc-800">
+                            <Bot size={13} className="text-blue-500" />
+                            <span className="text-[11px] font-medium text-zinc-500">Chat</span>
+                            {chatLoading && (
+                              <span className="flex items-center gap-1 text-[10px] text-zinc-400">
+                                <LoaderCircle size={10} className="animate-spin" />
+                              </span>
+                            )}
+                          </div>
+                        }
+                      />
                     </div>
                   </>
                 )}
@@ -1468,110 +1536,6 @@ export default function AppsPage() {
           )}
         </div>
 
-        {/* ── Chat Panel ── */}
-        <div className="border-t border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 shrink-0">
-          {selectedProject ? (
-            <>
-              {/* Chat header */}
-              <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-100 dark:border-zinc-800">
-                <Bot size={14} className="text-blue-500" />
-                <span className="text-[11px] font-medium text-zinc-500">
-                  Chat · {selectedProject.name}
-                </span>
-                {chatLoading && (
-                  <span className="flex items-center gap-1 text-[10px] text-zinc-400">
-                    <LoaderCircle size={10} className="animate-spin" />
-                    Thinking...
-                  </span>
-                )}
-              </div>
-
-              {/* Messages */}
-              <div className="max-h-[200px] overflow-y-auto px-4 py-2 space-y-2">
-                {(chatMessages[selectedProject.id] || []).length === 0 && !chatLoading && (
-                  <p className="text-[11px] text-zinc-400 text-center py-4">
-                    在这里与 code agent 对话，操作当前项目
-                  </p>
-                )}
-                {(chatMessages[selectedProject.id] || []).map((msg, i) => (
-                  <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                    {msg.role === 'assistant' && (
-                      <Bot size={14} className="text-blue-500 shrink-0 mt-0.5" />
-                    )}
-                    <div className={`max-w-[80%] rounded-lg px-3 py-1.5 text-[12px] ${
-                      msg.role === 'user'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300'
-                    }`}>
-                      {/* Tool calls */}
-                      {msg.toolCalls.length > 0 && (
-                        <div className="mb-1 space-y-0.5">
-                          {msg.toolCalls.map((tc, j) => (
-                            <div key={j} className="flex items-center gap-1 text-[10px] text-zinc-500 dark:text-zinc-400">
-                              <Wrench size={10} />
-                              <span className="truncate">{tc}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {/* Content */}
-                      {msg.content && (
-                        <div className="whitespace-pre-wrap break-words">
-                          {msg.content}
-                        </div>
-                      )}
-                    </div>
-                    {msg.role === 'user' && (
-                      <User size={14} className="text-zinc-400 shrink-0 mt-0.5" />
-                    )}
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
-
-              {/* Input */}
-              <div className="flex items-center gap-2 px-4 py-2 border-t border-zinc-100 dark:border-zinc-800">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleChatSend();
-                    }
-                  }}
-                  placeholder={chatLoading ? 'Waiting...' : `Tell code agent about ${selectedProject.name}...`}
-                  disabled={chatLoading}
-                  className="flex-1 px-3 py-1.5 text-[12px] bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50"
-                />
-                {chatLoading ? (
-                  <button
-                    onClick={handleChatStop}
-                    className="p-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white transition-colors"
-                    title="Stop"
-                  >
-                    <Square size={14} />
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleChatSend}
-                    disabled={!chatInput.trim()}
-                    className="p-1.5 rounded-lg bg-blue-500 hover:bg-blue-600 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Send size={14} />
-                  </button>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="px-4 py-3 text-center">
-              <p className="text-[11px] text-zinc-400">
-                选择一个项目，开始与 code agent 协作
-              </p>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );

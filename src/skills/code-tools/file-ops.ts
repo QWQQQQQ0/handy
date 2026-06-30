@@ -36,7 +36,7 @@ export async function handleReadFile(params: Record<string, unknown>): Promise<S
 
   const result = await tryReadFile(filePath);
   if (!result.ok) {
-    return SkillFail(`File not found: ${filePath}`, { file_path: filePath });
+    return SkillFail(result.error || `File not found: ${filePath}`, { file_path: filePath });
   }
 
   const lines = result.content.split('\n');

@@ -245,7 +245,7 @@ function UserBubble({
               );
             }
             if ('type' in part && part.type === 'text' && 'text' in part) {
-              return <p key={i} className="text-[14px] leading-relaxed">{part.text as string}</p>;
+              return <p key={i} className="text-[14px] leading-relaxed break-words">{part.text as string}</p>;
             }
             return null;
           })}
@@ -264,7 +264,7 @@ function UserBubble({
       onMouseLeave={() => setHovered(false)}
     >
       <div className="max-w-[82%] bg-blue-600 text-white rounded-2xl rounded-br-md px-3 py-2">
-        <p className="text-[14px] leading-relaxed whitespace-pre-wrap">{String(content)}</p>
+        <p className="text-[14px] leading-relaxed whitespace-pre-wrap break-words">{String(content)}</p>
       </div>
       <div className={`flex items-center gap-0.5 mt-0.5 transition-opacity duration-150 ${hovered ? 'opacity-100' : 'opacity-0'}`}>
         <MessageActions message={message} onDelete={onDelete} onEdit={onEdit} onEditStart={() => setEditing(true)} />
