@@ -63,7 +63,7 @@ function buildInternal(source: ChatMessage[]): LLMMessage[] {
   for (const m of source) {
     if ((m.role as string) === 'tool_call') continue;
     if (m.role === 'tool') {
-      result.push({ role: 'tool', toolCallId: m.id, content: m.content });
+      result.push({ role: 'tool', toolCallId: m.toolCallId, content: m.content });
     } else if (m.role === 'assistant') {
       const hasContent = typeof m.content === 'string' ? m.content.length > 0 : true;
       if (!hasContent && !m.toolCalls) continue;
@@ -272,16 +272,6 @@ export async function* sendChatMessage(params: SendMessageParams): AsyncGenerato
           };
           debugMessages.push(toolMsgBase);
           internalMessages.push({ ...toolMsgBase });
-
-          if (tr.fullUserMessage) {
-            const userMsg = {
-              id: crypto.randomUUID(), conversationId,
-              role: 'user' as const, content: tr.fullUserMessage,
-              timestamp: new Date().toISOString(), status: 'done' as const,
-            };
-            debugMessages.push(userMsg);
-            internalMessages.push({ ...userMsg });
-          }
         }
 
         yield { messages: buildVisible(visibleMessages), debugMessages: [...debugMessages], isStreaming: true };

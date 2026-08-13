@@ -79,6 +79,24 @@ export const MarkdownBody = memo(function MarkdownBody({ content }: { content: s
               />
             );
           },
+          table({ children }) {
+            return (
+              <div className="overflow-x-auto my-2">
+                <table className="min-w-full border-collapse border border-zinc-300 dark:border-zinc-600 text-[12px]">
+                  {children}
+                </table>
+              </div>
+            );
+          },
+          thead({ children }) {
+            return <thead className="bg-zinc-100 dark:bg-zinc-800">{children}</thead>;
+          },
+          th({ children }) {
+            return <th className="border border-zinc-300 dark:border-zinc-600 px-2 py-1 text-left font-medium">{children}</th>;
+          },
+          td({ children }) {
+            return <td className="border border-zinc-300 dark:border-zinc-600 px-2 py-1">{children}</td>;
+          },
         }}
       >
         {content}

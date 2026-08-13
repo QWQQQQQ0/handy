@@ -70,17 +70,29 @@ export default function FloatPage() {
     writeLocal('float_custom_tools', [...tools]);
   }, []);
 
-  const handleSaveGroup = useCallback((name: string) => {
-    const newGroup: ToolGroup = {
-      id: crypto.randomUUID(),
-      name,
-      tools: [...customTools],
-      createdAt: new Date().toISOString(),
-    };
-    const updated = [...groups, newGroup];
-    setGroups(updated);
-    writeToolGroups(updated);
-  }, [customTools, groups]);
+  const handleSaveGroup = useCallback((name: string, tools: Set<string>) => {
+    const existingIdx = groups.findIndex(g => g.name === name);
+    if (existingIdx >= 0) {
+      // 同名分组 → 更新工具列表
+      const updated = [...groups];
+      updated[existingIdx] = { ...updated[existingIdx], tools: [...tools] };
+      setGroups(updated);
+      writeToolGroups(updated);
+    } else {
+      const newGroup: ToolGroup = {
+        id: crypto.randomUUID(),
+        name,
+        tools: [...tools],
+        createdAt: new Date().toISOString(),
+      };
+      const updated = [...groups, newGroup];
+      setGroups(updated);
+      writeToolGroups(updated);
+    }
+    // 同步 customTools 到保存的工具集
+    setCustomTools(tools);
+    writeLocal('float_custom_tools', [...tools]);
+  }, [groups, setCustomTools]);
 
   const handleDeleteGroup = useCallback((groupId: string) => {
     const updated = groups.filter(g => g.id !== groupId);
@@ -141,6 +153,22 @@ export default function FloatPage() {
     const interval = setInterval(checkExtension, 5000);
     return () => { mounted = false; clearInterval(interval); };
   }, []);
+
+  // ── Browser heartbeat: keep Playwright event loop alive ──
+  useEffect(() => {
+    if (!browserLaunched) return;
+    let running = true;
+    const heartbeat = async () => {
+      if (!running) return;
+      try {
+        const { desktopService } = await import('@/services/desktop-service');
+        await desktopService.webHeartbeat();
+      } catch { /* ignore */ }
+    };
+    heartbeat(); // immediate first tick
+    const id = setInterval(heartbeat, 500);
+    return () => { running = false; clearInterval(id); };
+  }, [browserLaunched]);
 
   // ── Settings popover ──
   const [showSettings, setShowSettings] = useState(false);

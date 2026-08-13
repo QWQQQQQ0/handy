@@ -92,7 +92,11 @@ src/pages/
 ├── web.tsx                       -- Web 自动化页：Playwright 浏览器控制
 ├── phone.tsx                     -- 手机控制页 (占位)
 ├── models.tsx                    -- 模型配置管理：Provider CRUD
-├── skills.tsx                    -- 技能管理：创建、编辑、删除技能
+├── skills/                       -- 技能管理页
+│   ├── index.tsx                 -- SkillsPage 主组件 + CategoryHeader
+│   ├── skill-detail.tsx          -- ToolCard, SkillDetail, KnowledgeSkillDetail
+│   ├── dialogs.tsx               -- TestDialog, SkillEditorDialog, GenerateSkillDialog, AgentEditorDialog
+│   └── cache-viewer.tsx          -- CacheHitTester, CacheViewer (7级缓存仪表盘)
 ├── settings.tsx                  -- 设置页：主题、语言、工具偏好
 ├── apps.tsx                      -- 项目页：项目列表、文件树、代码编辑器、HTML 预览、内嵌 Chat (多轮工具调用)
 ├── watchers.tsx                  -- 后台任务管理页 (/scheduled-tasks)：查看、编辑、删除
@@ -189,7 +193,13 @@ src/db/
 
 ```
 src/stores/
-├── chat-store.ts                 -- 聊天状态：会话、消息、流式、工具模式
+├── chat-store.ts                 -- Barrel re-export (→ chat/)
+├── chat/                         -- 聊天状态管理
+│   ├── index.ts                  -- Store 定义 + 简单 CRUD actions
+│   ├── tool-config.ts            -- ToolMode、工具常量、Agent 路由表
+│   ├── send-message.ts           -- sendMessage 调度层
+│   ├── free-agent-handler.ts     -- FreeAgent 分支 (toolMode=all)
+│   └── tool-loop-handler.ts      -- Tool Loop 分支 (LLM 循环 + agent 路由)
 ├── settings-store.ts             -- 设置状态：主题、语言、工具偏好
 ├── model-config-store.ts         -- 模型配置状态：Provider CRUD、API Key 加密
 ├── skill-store.ts                -- 技能状态：DB CRUD、SkillRegistry 集成、知识型技能管理 ★
@@ -713,10 +723,12 @@ python-engine/
     ├── __init__.py                -- 包标记
     ├── screenshot.py             -- 截图
     ├── browser.py                -- Playwright 浏览器自动化 (--load-extension 自动加载扩展)
+    ├── browser_recording.py     -- 浏览器 DOM 事件录制 Mixin (从 browser.py 拆分)
     ├── extension_ws.py           -- Chrome 扩展 WebSocket 服务端 (port 19840)
     ├── web_search.py             -- 网络搜索+网页抓取 (DuckDuckGo + Playwright/httpx 双策略，含 stealth 反检测)
     ├── desktop_uia.py            -- 桌面 UIA 自动化
     ├── ocr.py                    -- OCR 文字识别
+    ├── sandbox.py               -- 代码沙箱执行 (exec_python/web_code_exec/doc_code_exec, 从 main.py 拆分)
     ├── global_listener.py        -- 全局输入监听
     ├── event_collector.py        -- 事件收集器
     └── office/                   -- Office 文档生成 + COM 实时编辑
@@ -790,6 +802,42 @@ Chat LLM (系统配置工具 + request_agent)
 ```
 
 坐标还原：executor 层自动处理（ToolContext + SkillExecutor.applyCoordinateScale）
+
+### injectHistory：对话上下文的双层架构
+
+**所有模式都会记住对话历史**，区别在于历史是**在哪一层**被消费的：
+
+```
+send-message.ts (入口)
+  │
+  ├── FreeAgent (全工具模式)
+  │     ↓
+  │   handleFreeAgent → FreeAgentGateway → runner.runAgent(injectHistory: true)
+  │                                               ↑
+  │                    runner 内部从零构建 messages[]，必须手动注入完整对话历史
+  │                    （user + assistant[toolCalls] + tool[toolCallId] 消息链）
+  │
+  ├── Tool Loop (工具循环/基础/常用模式)
+  │     ↓
+  │   Chat LLM 直接收到完整历史 ← 消息在 Zustand store + DB 中自然积累
+  │     ↓ (LLM 调 request_agent)
+  │   子 Agent → runner.runAgent(injectHistory: false)
+  │                    ↑
+  │              子 Agent 不注入历史，只拿当前指令 + chatMessages 中的图片
+  │              因为子 Agent 执行的是单次任务，用户闲聊历史与干活无关
+  │
+  └── 基础模式 (无工具)
+        ↓
+      Chat LLM 直接收到完整历史 ← LLM 系统本身维持多轮记忆
+```
+
+**关键区分**：
+
+- **Chat LLM 层**：消息在 Zustand store ↔ DB 之间持久化，`loadMessages()` 加载，直接发给 Chat LLM。对话历史**天然存在**，不需要 `injectHistory` 机制。
+- **runner 层**：`TaskAgentRunner` 有自己的内部 LLM 循环和 `messages[]` 数组，**每次执行都从零构建**。`injectHistory: true` 的作用是把外层 store 中的历史消息手动灌进 runner 的内部数组。
+- **子 Agent 层**：`injectHistory: false` — 子 Agent 是"工具人"，只需当前任务指令，不需要之前的闲聊上下文。
+
+> **注意**：`injectHistory` 路径（`runner.ts:150-181`）在注入历史消息时**必须同时传递 `toolCalls`（assistant 消息）和 `toolCallId`（tool 消息）**，漏掉任何一个都会导致 Anthropic API 报错 "tool_use_id not found"。
 
 ### Agent API 架构
 

@@ -229,7 +229,7 @@ Example:
           const rawContent = result.data ? JSON.stringify(result.data) : result.message ?? '';
           const tr = truncateToolResult(tc.name, rawContent);
           ctxMessages.push({ role: 'tool', content: tr.toolContent, toolCallId: tc.id });
-          if (tr.fullUserMessage) ctxMessages.push({ role: 'user', content: tr.fullUserMessage });
+          // fullUserMessage 已废弃，超长内容直接在 toolContent 中截断提示
         }
       }
 

@@ -260,7 +260,7 @@ export class WebAutomationAgent {
         } else {
           const tr = truncateToolResult(tc.name, content);
           ctx.messages.push({ role: 'tool', content: tr.toolContent, toolCallId: tc.id });
-          if (tr.fullUserMessage) ctx.messages.push({ role: 'user', content: tr.fullUserMessage });
+          // fullUserMessage 已废弃
         }
 
         await onStep?.({ type: 'after_tool', data: { name: tc.name, arguments: resolvedArgs, success: result.success, message: result.message, ...(result.data ? { data: result.data } : {}) }, turnIndex: turn });

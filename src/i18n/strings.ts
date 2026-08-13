@@ -104,6 +104,7 @@ const translations: Record<string, Record<string, string>> = {
   'toolmode.basic.subtitle': { en: 'Default basic tools for chat', zh: '聊天默认基础工具' },
   'toolmode.groups': { en: 'Groups', zh: '分组' },
   'toolmode.saveGroup': { en: 'Save as Group', zh: '保存为组' },
+  'toolmode.updateGroup': { en: 'Update', zh: '更新' },
   'toolmode.saveGroupName': { en: 'Group name...', zh: '组名称...' },
   'toolmode.deleteGroup': { en: 'Delete', zh: '删除' },
   'toolmode.noGroups': { en: 'No saved groups', zh: '暂无保存的组' },

@@ -12,7 +12,9 @@ interface ToolSelectorPanelProps {
   setSelected: (tools: Set<string>) => void;
   onClose: () => void;
   compact?: boolean;
-  onSaveGroup?: (name: string) => void;
+  onSaveGroup?: (name: string, tools: Set<string>) => void;
+  /** 当前选中的分组名，有则预填名称且保存为更新 */
+  editingGroupName?: string;
 }
 
 // Group tools by category for the tool selector panel.
@@ -86,13 +88,13 @@ function getGroupLabel(group: string): string {
   return GROUP_LABELS[group] || `📌 ${group}`;
 }
 
-export function ToolSelectorPanel({ tools, selected, setSelected, onClose, compact, onSaveGroup }: ToolSelectorPanelProps) {
+export function ToolSelectorPanel({ tools, selected, setSelected, onClose, compact, onSaveGroup, editingGroupName }: ToolSelectorPanelProps) {
   const t = useT();
   const storeLocale = useSettingsStore((s) => s.locale);
   const isZh = storeLocale === 'zh' || !storeLocale;
   const { disabledTools } = useSettingsStore();
   const groupNameRef = useRef<HTMLInputElement>(null);
-  const [groupName, setGroupName] = useState('');
+  const [groupName, setGroupName] = useState(editingGroupName ?? '');
 
   const enabledTools = useMemo(() => tools.filter((tool) => !disabledTools.has(tool.name)), [tools, disabledTools]);
 
@@ -271,7 +273,7 @@ export function ToolSelectorPanel({ tools, selected, setSelected, onClose, compa
             onChange={(e) => setGroupName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && groupName.trim()) {
-                onSaveGroup(groupName.trim());
+                onSaveGroup(groupName.trim(), localSelected);
                 setGroupName('');
               }
             }}
@@ -281,14 +283,14 @@ export function ToolSelectorPanel({ tools, selected, setSelected, onClose, compa
           <button
             onClick={() => {
               if (groupName.trim()) {
-                onSaveGroup(groupName.trim());
+                onSaveGroup(groupName.trim(), localSelected);
                 setGroupName('');
               }
             }}
             disabled={!groupName.trim()}
             className={`rounded font-medium bg-purple-500 text-white hover:bg-purple-600 disabled:opacity-40 transition-colors shrink-0 ${compact ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-[12px]'}`}
           >
-            {t('toolmode.saveGroup')}
+            {editingGroupName ? t('toolmode.updateGroup') : t('toolmode.saveGroup')}
           </button>
         </div>
       )}

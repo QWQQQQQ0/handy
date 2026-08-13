@@ -75,6 +75,7 @@ export interface IDesktopService {
   // 浏览器自动化
   webPwLaunch(headless?: boolean, channel?: string, connectExisting?: boolean): Promise<Record<string, unknown>>;
   webPwLaunchBrowser(browser?: string, port?: number): Promise<Record<string, unknown>>;
+  webHeartbeat(): Promise<void>;
   webPwNavigate(url: string): Promise<Record<string, unknown>>;
   webPwGetInteractive(): Promise<Record<string, unknown>>;
   webPwClickSelector(selector: string): Promise<Record<string, unknown>>;

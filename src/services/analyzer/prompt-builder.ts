@@ -4,6 +4,7 @@ import type { RecordingSession } from '@/types/recording-session';
 import type { DataFlow } from '@/types/unified-data';
 import type { UnifiedAction } from '@/types/unified-action';
 import type { AutomationTemplate } from '@/types/automation-template';
+import type { SemanticEvent } from '@/types/semantic-event';
 import { getScreenCoord } from './utils';
 import { buildCoordinatePatternsSummary } from './coord-patterns';
 import type { CoordinatePattern } from './types';
@@ -22,67 +23,27 @@ export function describeTarget(target?: UnifiedAction['target'], params?: Record
   return '';
 }
 
-function buildManualStepsSummary(session: RecordingSession): string {
-  const steps = session.manualSteps;
-  if (!steps || steps.length === 0) return '';
-
-  const lines = steps.map((s, i) => {
-    if (s.stepType === 'tool_call') {
-      return `${i + 1}. [手动] tool_call: ${s.toolName} — ${s.description}`;
-    }
-    return `${i + 1}. [手动] llm_call: "${(s.llmPrompt || '').substring(0, 80)}" — ${s.description}`;
-  });
-
-  return `
-### 用户手动插入的步骤
-
-${lines.join('\n')}
-
-注意：这些步骤穿插在录制事件序列中，afterEventId 指定了插入位置。请按整体顺序编排。
-`;
-}
-
-function buildAvailableToolsSummary(): string {
-  try {
-    const { getBuiltinExecutor } = require('@/skills/builtin-executor');
-    const { ToolDisclosure } = require('@/skills/tool-disclosure');
-    const executor = getBuiltinExecutor();
-    if (!executor || executor.allTools.length === 0) return '';
-
-    const disclosure = new ToolDisclosure({ executor });
-    const menuText = disclosure.buildMenuText();
-    if (!menuText) return '';
-
-    return `
-### 可用工具
-
-以下 tools 可在步骤中使用（action="tool_call", params.toolName="工具名"）。每个工具后附一句话描述，需要完整参数时可在执行时动态加载。
-
-${menuText}
-`;
-  } catch {
-    return '';
-  }
+/** 录制上下文，分析阶段产生，供微调阶段复用 */
+export interface RecordingContext {
+  /** 用户录制描述 */
+  userDescription: string;
+  /** 涉及的窗口列表（逗号分隔） */
+  windowList: string;
+  /** 格式化的事件序列摘要 */
+  eventsSummary: string;
+  /** 数据流摘要（可选） */
+  dataFlowSummary?: string;
+  /** 坐标规律摘要（可选） */
+  coordPatternsSummary?: string;
 }
 
 /**
- * 构建组合 prompt（分析+生成一步到位）
+ * 从录制事件构建格式化的步骤摘要（可复用，分析和微调阶段共用）
  */
-export function buildCombinedPrompt(
-  session: RecordingSession,
-  dataFlow: DataFlow | null,
-  coordPatterns: Map<string, CoordinatePattern>,
-  screenSize: { width: number; height: number },
+export function buildEventsSummary(
+  events: SemanticEvent[],
 ): string {
-  const windowSet = new Set<string>();
-  for (const e of session.events) {
-    const title = e.context?.windowTitle;
-    if (title) windowSet.add(title);
-  }
-  const windowList = [...windowSet].join('、') || '未知';
-
-  // 过滤：跳过原始中间事件，只保留已分类的可执行动作
-  const filteredEvents = session.events.filter(e => {
+  const filteredEvents = events.filter(e => {
     const t = e.action.type;
     if (t === 'mouse_down' || t === 'mouse_up') return false;
     if (t === 'key_up') return false;
@@ -90,26 +51,7 @@ export function buildCombinedPrompt(
     return true;
   });
 
-  // [DEBUG]
-  const removedEvents = session.events.filter(e => {
-    const t = e.action.type;
-    return t === 'mouse_down' || t === 'mouse_up' || t === 'key_up' || t === 'key_down';
-  });
-  console.log('[UnifiedAnalyzer] buildCombinedPrompt — raw: %d, filtered: %d, removed: %d',
-    session.events.length, filteredEvents.length, removedEvents.length);
-  if (removedEvents.length > 0) {
-    console.log('[UnifiedAnalyzer] removed events:');
-    removedEvents.forEach(e => console.log(`  ✕ %s — %s`, e.action.type, e.context?.windowTitle || ''));
-  }
-  console.log('[UnifiedAnalyzer] events sent to LLM:');
-  filteredEvents.forEach((e, i) => {
-    const coord = e.action.target?.coordinate;
-    const c = coord ? `(${coord.x}, ${coord.y})` : '';
-    const key = e.action.params?.key ? ` [${e.action.params.key}]` : '';
-    console.log(`  %d. %s%s — %s%s`, i + 1, e.action.type, c, e.context?.windowTitle || '', key);
-  });
-
-  const eventsSummary = filteredEvents.map((e, i) => {
+  return filteredEvents.map((e, i) => {
     const action = e.action.type;
     const target = describeTarget(e.action.target, e.action.params);
     const element = e.element
@@ -134,6 +76,121 @@ export function buildCombinedPrompt(
 
     return `${i + 1}. ${action}${coord} ${element}${structure}${window}${key}${waitStr}`;
   }).join('\n');
+}
+
+function buildManualStepsSummary(session: RecordingSession): string {
+  const steps = session.manualSteps;
+  if (!steps || steps.length === 0) return '';
+
+  const lines = steps.map((s, i) => {
+    if (s.stepType === 'tool_call') {
+      return `${i + 1}. [手动] tool_call: ${s.toolName} — ${s.description}`;
+    }
+    return `${i + 1}. [手动] llm_call: "${(s.llmPrompt || '').substring(0, 80)}" — ${s.description}`;
+  });
+
+  return `
+### 用户手动插入的步骤
+
+${lines.join('\n')}
+
+注意：这些步骤穿插在录制事件序列中，afterEventId 指定了插入位置。请按整体顺序编排。
+`;
+}
+
+/** 录制工作流中常用的工具白名单 — 始终提供完整参数 schema */
+const RECORDER_TOOL_WHITELIST = new Set([
+  'desktop_screenshot',
+  'desktop_focus_window',
+  'desktop_ocr_read_text',
+]);
+
+function buildAvailableToolsSummary(session?: RecordingSession): string {
+  try {
+    const { getBuiltinExecutor } = require('@/skills/builtin-executor');
+    const executor = getBuiltinExecutor();
+    if (!executor || executor.allTools.length === 0) return '';
+
+    // 收集手动步骤中引用的工具名
+    const manualToolNames = new Set<string>();
+    if (session?.manualSteps) {
+      for (const s of session.manualSteps) {
+        if (s.stepType === 'tool_call' && s.toolName) {
+          manualToolNames.add(s.toolName);
+        }
+      }
+    }
+
+    // 精选工具：白名单 + 用户手动插入的工具（去重），全部给完整 schema
+    const selectedTools: Array<{ name: string; description: string; parameters: Record<string, unknown>; returns?: string }> = [];
+    const seen = new Set<string>();
+
+    for (const tool of executor.allTools) {
+      const isWhitelisted = RECORDER_TOOL_WHITELIST.has(tool.name);
+      const isManual = manualToolNames.has(tool.name);
+
+      if (!isWhitelisted && !isManual) continue;
+      if (seen.has(tool.name)) continue;
+      seen.add(tool.name);
+      selectedTools.push(tool);
+    }
+
+    if (selectedTools.length === 0) return '';
+
+    const parts: string[] = [];
+    parts.push('### 可用工具（完整参数 schema）');
+    parts.push('');
+    parts.push('以下工具可以在步骤中使用（action="tool_call"，params.toolName=工具名，params.arguments=参数对象）。务必参照参数定义填写：');
+    parts.push('');
+
+    for (const tool of selectedTools) {
+      const paramsStr = JSON.stringify(tool.parameters, null, 2);
+      const isWhitelisted = RECORDER_TOOL_WHITELIST.has(tool.name);
+      const tag = isWhitelisted ? ' [内置]' : ' [手动添加]';
+      parts.push(`**${tool.name}**${tag}: ${tool.description}`);
+      if (paramsStr !== '{}' && paramsStr !== '{"type":"object","properties":{}}') {
+        parts.push(`\`\`\`json\n${paramsStr}\n\`\`\``);
+      } else {
+        parts.push(`  参数: 无（空对象 {}）`);
+      }
+      if (tool.returns) {
+        parts.push(`  返回值: ${tool.returns}`);
+      }
+      parts.push('');
+    }
+
+    return '\n' + parts.join('\n') + '\n';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 构建组合 prompt（分析+生成一步到位）
+ */
+export function buildCombinedPrompt(
+  session: RecordingSession,
+  dataFlow: DataFlow | null,
+  coordPatterns: Map<string, CoordinatePattern>,
+  screenSize: { width: number; height: number },
+): string {
+  const windowSet = new Set<string>();
+  for (const e of session.events) {
+    const title = e.context?.windowTitle;
+    if (title) windowSet.add(title);
+  }
+  const windowList = [...windowSet].join('、') || '未知';
+
+  const eventsSummary = buildEventsSummary(session.events);
+
+  // 过滤后的有效事件数（供概况行使用）
+  const filteredCount = session.events.filter(e => {
+    const t = e.action.type;
+    if (t === 'mouse_down' || t === 'mouse_up') return false;
+    if (t === 'key_up') return false;
+    if (t === 'key_down') return false;
+    return true;
+  }).length;
 
   const dataFlowSummary = dataFlow
     ? `
@@ -154,7 +211,7 @@ export function buildCombinedPrompt(
   return `## 操作录制分析与模板生成
 
 ### 录制概况
-- 操作数量: ${filteredEvents.length} 个
+- 操作数量: ${filteredCount} 个
 - 录制时长: ${duration}
 - 涉及窗口: ${windowList}
 - 屏幕分辨率: ${screenSize.width}x${screenSize.height}
@@ -166,7 +223,7 @@ ${eventsSummary}
 ${dataFlowSummary}
 ${coordPatternsSummary}
 ${buildManualStepsSummary(session)}
-${buildAvailableToolsSummary()}
+${buildAvailableToolsSummary(session)}
 
 ### 任务要求
 
@@ -203,7 +260,7 @@ ${buildAvailableToolsSummary()}
    - \`break\` / \`continue\` — 循环控制
 
    外部调用（调用已注册的 skill tool 或 LLM）：
-   - \`tool_call\` — 调用已注册的 skill tool。params.toolName=工具名, params.arguments={参数对象}。可用的 tools 见上方"可用工具"列表
+   - \`tool_call\` — 调用已注册的 skill tool。params.toolName=工具名, params.arguments={参数对象}。手动添加的工具见上方"完整参数 schema"（务必参照其中的参数定义填写 arguments），其他工具见"简要列表"（参数在执行时动态加载）
    - \`llm_call\` — 调用 LLM 执行智能判断任务。params.prompt=提示词文本, params.systemPrompt=系统提示词(可选), params.model=模型名(可选), params.multimodal=是否启用多模态(布尔值), params.include_screenshots=引用前序截图步骤ID的数组。执行时可将截图传给 LLM 做视觉分析
 
    **重要**：事件摘要中的 action 类型已对齐上表，直接引用即可。
@@ -432,6 +489,27 @@ ${buildAvailableToolsSummary()}
 }
 
 /**
+ * 构建录制上下文摘要文本（供 refine prompt 复用）
+ */
+export function buildRecordingContextText(ctx: RecordingContext): string {
+  const parts: string[] = [];
+
+  parts.push(`- 用户描述: ${ctx.userDescription || '无'}`);
+  parts.push(`- 涉及窗口: ${ctx.windowList}`);
+
+  if (ctx.dataFlowSummary) {
+    parts.push(`\n### 数据流\n${ctx.dataFlowSummary}`);
+  }
+  if (ctx.coordPatternsSummary) {
+    parts.push(`\n### 坐标规律\n${ctx.coordPatternsSummary}`);
+  }
+
+  parts.push(`\n### 录制事件序列\n${ctx.eventsSummary}`);
+
+  return parts.join('\n');
+}
+
+/**
  * 构建 refine（模板微调）prompt
  */
 export function buildRefinePrompt(
@@ -439,6 +517,7 @@ export function buildRefinePrompt(
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
   userMessage: string,
   screenSize: { width: number; height: number },
+  recordingContext?: RecordingContext,
 ): string {
   const templateJson = JSON.stringify({
     name: currentTemplate.name,
@@ -451,6 +530,16 @@ export function buildRefinePrompt(
     ? conversationHistory.map(m => `**${m.role === 'user' ? '用户' : 'AI'}**: ${m.content}`).join('\n\n')
     : '（无历史对话）';
 
+  const recordingSection = recordingContext
+    ? `### 原始录制信息（模板由此生成，请参照修改）
+
+${buildRecordingContextText(recordingContext)}
+
+**重要**：以上是录制时采集的原始数据。当前模板是根据这些数据生成的。当用户要求调整模板时，请参照这些原始信息来理解每个步骤的来源，避免做出与录制事实不符的修改。
+
+`
+    : '';
+
   return `## 模板微调
 
 ### 当前模板
@@ -459,7 +548,7 @@ export function buildRefinePrompt(
 ${templateJson}
 \`\`\`
 
-### 对话历史
+${recordingSection}### 对话历史
 
 ${historyStr}
 
@@ -482,7 +571,7 @@ ${screenSize.width}x${screenSize.height}
 6. **tool_call**：params.toolName 为工具名，params.arguments 为参数对象。可配合 llm_call 实现截图+分析等智能判断链
 7. **llm_call**：调用 LLM 做智能判断，params.prompt 为提示词，params.multimodal 开启多模态，params.include_screenshots 引用截图步骤 id 数组
 8. **waitBefore**：保留步骤间的等待时间（ms）
-9. **不要编造录制中没有的操作**：只调整用户明确要求的部分
+9. **不要编造录制中没有的操作**：只调整用户明确要求的部分。如果原始录制信息可用，请务必参照其中的事件序列来理解每步的来源
 ### 输出格式
 
 返回纯 JSON，不要添加任何说明文字：

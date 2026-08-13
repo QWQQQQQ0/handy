@@ -9,10 +9,16 @@ fn python_exe() -> String {
 
 /// Walk up from the given directory until we find a directory containing
 /// `src-tauri/Cargo.toml` — the canonical marker of a Tauri project root.
+/// Skips `src-tauri/` itself (which also has Cargo.toml but is NOT the project root).
 fn find_project_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut current = Some(start.to_path_buf());
     while let Some(dir) = current {
         if dir.join("src-tauri").join("Cargo.toml").exists() {
+            // Skip if `dir` IS src-tauri (dev mode exe is at src-tauri/target/debug/)
+            if dir.file_name().map_or(false, |n| n == "src-tauri") {
+                current = dir.parent().map(|p| p.to_path_buf());
+                continue;
+            }
             return Some(dir);
         }
         current = dir.parent().map(|p| p.to_path_buf());

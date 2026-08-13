@@ -79,6 +79,7 @@ pub fn run() {
       commands::bridge::web_scroll,
       commands::bridge::web_close,
       commands::bridge::web_launch_browser,
+      commands::bridge::web_heartbeat,
       commands::bridge::web_start_recording,
       commands::bridge::web_stop_recording,
       commands::bridge::web_get_recorded_events,

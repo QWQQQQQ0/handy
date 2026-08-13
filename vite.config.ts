@@ -29,8 +29,9 @@ export default defineConfig({
     port: 3000,
     logLevel: 'warn',
     watch: {
-      // code agent 写入 workspace/ 时不触发 HMR 重载
-      ignored: ['**/workspace/**'],
+      // code agent / doc agent 写入 workspace/ 时不触发 HMR 重载
+      // 用绝对路径避免 Windows 上 glob 匹配不可靠的问题
+      ignored: [path.resolve(__dirname, 'workspace')],
     },
   },
 });

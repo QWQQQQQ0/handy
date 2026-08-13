@@ -190,6 +190,10 @@ const tauriApi = {
       port: port ?? 9222,
     });
   },
+  webHeartbeat: async (): Promise<void> => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke<void>('web_heartbeat');
+  },
   webPwNavigate: async (url: string): Promise<Record<string, unknown>> => {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke<Record<string, unknown>>('web_navigate', { url });
@@ -304,6 +308,7 @@ const fallback = {
   webPwLaunch: async () => { throw new Error(fallbackError); },
   webConnectCdp: async () => { throw new Error(fallbackError); },
   webPwLaunchBrowser: async () => { throw new Error(fallbackError); },
+  webHeartbeat: async () => { /* no-op in fallback */ },
   webPwNavigate: async () => { throw new Error(fallbackError); },
   webNavigate: async () => { throw new Error(fallbackError); },
   webPwGetInteractive: async () => { throw new Error(fallbackError); },

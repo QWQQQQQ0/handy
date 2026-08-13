@@ -21,7 +21,7 @@ interface Props {
   allTools: SkillTool[];
   onToolModeChange: (mode: ToolMode) => void;
   onCustomToolsChange: (tools: Set<string>) => void;
-  onSaveGroup: (name: string) => void;
+  onSaveGroup: (name: string, tools: Set<string>) => void;
   onDeleteGroup: (groupId: string) => void;
   onGroupSelect: (groupId: string) => void;
   onRefreshWatcherConfigs: () => Promise<void>;
@@ -48,6 +48,7 @@ export default function TaskMode({
   const saveSkillNameRef = useRef<HTMLInputElement>(null);
   const goalRef = useRef<HTMLInputElement>(null);
   const [showSelectorPanel, setShowSelectorPanel] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   const { favoriteTools, setFavoriteTools } = useSettingsStore();
 
@@ -75,21 +76,28 @@ export default function TaskMode({
 
   const handleToolModeChange = useCallback((mode: ToolMode) => {
     onToolModeChange(mode);
-    if (mode === ToolMode.custom) {
-      if (customTools.size === 0) {
-        const skill = getBuiltinSkill('desktop_screen');
-        const allNames = new Set(skill?.tools.map((t) => t.name) ?? []);
-        onCustomToolsChange(allNames);
-        writeLocal('float_custom_tools', [...allNames]);
-      }
+    if (mode === ToolMode.custom && selectedGroupId) {
+      // 已有分组选中 → 编辑模式
       setShowSelectorPanel(true);
     } else {
-      setShowSelectorPanel(false);
+      setSelectedGroupId(null);
+      if (mode === ToolMode.custom) {
+        if (customTools.size === 0) {
+          const skill = getBuiltinSkill('desktop_screen');
+          const allNames = new Set(skill?.tools.map((t) => t.name) ?? []);
+          onCustomToolsChange(allNames);
+          writeLocal('float_custom_tools', [...allNames]);
+        }
+        setShowSelectorPanel(true);
+      } else {
+        setShowSelectorPanel(false);
+      }
     }
-  }, [customTools, onToolModeChange, onCustomToolsChange]);
+  }, [customTools, selectedGroupId, onToolModeChange, onCustomToolsChange]);
 
   const handleFavoritesDoubleClick = useCallback(() => {
     onToolModeChange(ToolMode.favorites);
+    setSelectedGroupId(null);
     writeLocal('float_tool_mode', ToolMode.favorites);
     setShowSelectorPanel(true);
   }, [onToolModeChange]);
@@ -239,11 +247,18 @@ export default function TaskMode({
       <ToolModeBar
         mode={toolMode}
         selectedCount={customTools.size}
+        selectedGroupId={selectedGroupId}
         onModeChanged={handleToolModeChange}
         onFavoritesDoubleClick={handleFavoritesDoubleClick}
         compact={true}
         groups={groups}
-        onGroupSelect={onGroupSelect}
+        onGroupSelect={(groupId) => {
+          onGroupSelect(groupId);
+          setSelectedGroupId(groupId);
+          setShowSelectorPanel(false);
+          writeLocal('float_custom_tools', [...(groups.find(g => g.id === groupId)?.tools ?? [])]);
+          writeLocal('float_tool_mode', ToolMode.custom);
+        }}
         onDeleteGroup={onDeleteGroup}
       />
 
@@ -255,6 +270,7 @@ export default function TaskMode({
           onClose={() => setShowSelectorPanel(false)}
           compact={true}
           onSaveGroup={toolMode === ToolMode.custom ? onSaveGroup : undefined}
+          editingGroupName={selectedGroupId ? groups.find(g => g.id === selectedGroupId)?.name : undefined}
         />
       )}
 

@@ -348,6 +348,83 @@ function AssistantBubble({
   );
 }
 
+// ── Consecutive Assistant Merge ──
+// FreeAgent 按轮次存储多条 assistant，UI 层合并为一条气泡显示。
+
+/** 是否为中间轮次的 assistant（含 toolCalls，内容为进度文本） */
+function isIntermediateAssistant(msg: ChatMessage): boolean {
+  if (msg.role !== 'assistant') return false;
+  if (!msg.toolCalls || msg.toolCalls.length === 0) return false;
+  const text = typeof msg.content === 'string' ? msg.content : '';
+  // 进度文本（"🔧 正在执行..." / "🔧 已执行..."）或空内容 → 中间轮次
+  return text === '' || text.startsWith('🔧');
+}
+
+/**
+ * 合并连续的中间 assistant 气泡为一个显示条目。
+ * 不影响其他模式——其他模式下不存在连续的中间 assistant。
+ * 返回合并后的 ChatMessage 列表（新数组，不修改原数据）。
+ */
+export function mergeConsecutiveAssistants(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length === 0) return messages;
+  const result: ChatMessage[] = [];
+  let i = 0;
+
+  while (i < messages.length) {
+    const msg = messages[i];
+
+    if (isIntermediateAssistant(msg)) {
+      // 收集所有连续的中间 assistant + 最后的文本 assistant
+      const mergedFields = {
+        ids: [msg.id],
+        toolCalls: [...(msg.toolCalls || [])],
+        reasoningContents: [] as string[],
+      };
+      let lastContent = typeof msg.content === 'string' ? msg.content : '';
+      if (msg.reasoning_content) mergedFields.reasoningContents.push(msg.reasoning_content);
+
+      i++;
+      while (i < messages.length) {
+        const next = messages[i];
+        if (next.role === 'assistant' && next.toolCalls) {
+          // 后续含 toolCalls 的 assistant → 继续合并
+          mergedFields.ids.push(next.id);
+          mergedFields.toolCalls.push(...(next.toolCalls || []));
+          if (next.reasoning_content) mergedFields.reasoningContents.push(next.reasoning_content as string);
+          const nextText = typeof next.content === 'string' ? next.content : '';
+          if (nextText && !nextText.startsWith('🔧')) lastContent = nextText;
+          i++;
+        } else if (next.role === 'assistant' && !next.toolCalls) {
+          // 纯文本 assistant → 合并并结束
+          mergedFields.ids.push(next.id);
+          const nextText = typeof next.content === 'string' ? next.content : '';
+          if (nextText) lastContent = nextText;
+          if (next.reasoning_content) mergedFields.reasoningContents.push(next.reasoning_content as string);
+          i++;
+          break;
+        } else {
+          break;
+        }
+      }
+
+      // 用第一个中间 assistant 的 id 和 timestamp 作为合并后的标识
+      const merged: ChatMessage = {
+        ...msg,
+        id: mergedFields.ids[0],
+        content: lastContent || msg.content,
+        toolCalls: mergedFields.toolCalls,
+        reasoning_content: mergedFields.reasoningContents.join('\n') || msg.reasoning_content,
+      };
+      result.push(merged);
+    } else {
+      result.push(msg);
+      i++;
+    }
+  }
+
+  return result;
+}
+
 // ── Main Export ──
 
 export function ChatBubble({

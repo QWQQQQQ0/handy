@@ -41,10 +41,10 @@ async function injectSystemPrompt(
   if (prompt.includes('{menu}')) {
     try {
       const { getBuiltinExecutor } = await import('@/skills/builtin-executor');
-      const { ToolDisclosure, FREE_AGENT_TOOLS } = await import('@/skills/tool-disclosure');
+      const { ToolDisclosure } = await import('@/skills/tool-disclosure');
       const executor = getBuiltinExecutor();
       if (executor.allTools.length > 0) {
-        const disclosure = new ToolDisclosure({ executor, tools: FREE_AGENT_TOOLS });
+        const disclosure = new ToolDisclosure({ executor, tools: new Set(executor.enabledToolNames) });
         const menuText = disclosure.buildMenuText();
         prompt = prompt.replaceAll('{menu}', menuText);
       } else {

@@ -364,7 +364,7 @@ export class DesktopAutomationAgent {
           ctx.allResults.push(markResult);
           const mr = truncateToolResult(tc.name, JSON.stringify(markResult));
           ctx.messages.push({ role: 'tool', content: mr.toolContent, toolCallId: tc.id });
-          if (mr.fullUserMessage) ctx.messages.push({ role: 'user', content: mr.fullUserMessage });
+          // fullUserMessage 已废弃
           continue;
         }
 
@@ -519,7 +519,7 @@ export class DesktopAutomationAgent {
         } else {
           const tr = truncateToolResult(tc.name, content);
           ctx.messages.push({ role: 'tool', content: tr.toolContent, toolCallId: tc.id });
-          if (tr.fullUserMessage) ctx.messages.push({ role: 'user', content: tr.fullUserMessage });
+          // fullUserMessage 已废弃
         }
 
         // 区域验证截图 → 多模态 user 消息

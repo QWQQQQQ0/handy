@@ -38,6 +38,7 @@ import { unifiedAnalyzer } from '@/services/unified-analyzer';
 import { unifiedExecutor } from '@/services/unified-executor';
 import { webRecorder } from '@/services/web-recorder';
 import { applyStepFieldEdit } from '@/services/template-edit-utils';
+import { buildEventsSummary, type RecordingContext } from '@/services/analyzer/prompt-builder';
 import type { SemanticEvent, EventTag, ManualStep } from '@/types/semantic-event';
 import type { RecordingSession } from '@/types/recording-session';
 import type { AutomationTemplate } from '@/types/automation-template';
@@ -100,6 +101,9 @@ export function RecorderMode() {
 
   // ── 模板编辑 ──
   const [editTemplate, setEditTemplate] = useState<AutomationTemplate | null>(null);
+
+  // ── 录制上下文（分析阶段生成，供微调阶段复用，防止 LLM 丢失录制原始信息）──
+  const [recordingContext, setRecordingContext] = useState<RecordingContext | null>(null);
 
   // ── 多轮对话微调 ──
   const [refineMessages, setRefineMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -391,6 +395,21 @@ export function RecorderMode() {
         });
       }
 
+      // 构建录制上下文，供后续微调阶段复用
+      const windowSet = new Set<string>();
+      for (const e of events) {
+        const title = e.context?.windowTitle;
+        if (title) windowSet.add(title);
+      }
+      setRecordingContext({
+        userDescription: description || session.metadata.userDescription || '',
+        windowList: [...windowSet].join('、') || '未知',
+        eventsSummary: buildEventsSummary(events),
+        dataFlowSummary: result.dataFlow
+          ? `源: ${result.dataFlow.source.type} (${result.dataFlow.source.fields.map(f => f.name).join(', ')})\n目标: ${result.dataFlow.target.type} (${result.dataFlow.target.fields.map(f => f.name).join(', ')})`
+          : undefined,
+      });
+
       initRefineConversation(result);
 
       setMode('preview');
@@ -433,6 +452,7 @@ export function RecorderMode() {
           onReasoning: (text) => setRefineReasoning(text),
           onProgress: (text) => setRefineReasoning(text),
         },
+        recordingContext ?? undefined,
       );
 
       setTemplate(result);
@@ -631,6 +651,7 @@ export function RecorderMode() {
     setManualSteps([]);
     setShowInsertDialog(false);
     setEditTemplate(null);
+    setRecordingContext(null);
     setRefineMessages([]);
     setRefineLoading(false);
     setRefineReasoning('');

@@ -172,109 +172,99 @@ function convertTools(tools: Record<string, unknown>[]): Record<string, unknown>
   });
 }
 
-// Convert LLMMessages to Anthropic Messages API format
+// Convert LLMMessages to Anthropic Messages API format.
+// Merges consecutive tool_result blocks into a single user message to satisfy
+// Anthropic's strict user/assistant alternation requirement.
 function convertMessagesForAnthropic(messages: LLMMessage[]): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = [];
+  // Buffer for collecting consecutive tool_result blocks
+  let toolResultBuffer: Array<Record<string, unknown>> = [];
+
+  function flushToolResults(): void {
+    if (toolResultBuffer.length === 0) return;
+    result.push({
+      role: 'user',
+      content: toolResultBuffer,
+    });
+    toolResultBuffer = [];
+  }
+
+  function buildToolResultBlock(
+    toolCallId: string,
+    toolContent: string | Array<Record<string, unknown>>,
+  ): Record<string, unknown> {
+    return {
+      type: 'tool_result',
+      tool_use_id: toolCallId,
+      content: toolContent,
+    };
+  }
+
+  function parseMultimodalParts(content: unknown): Array<Record<string, unknown>> {
+    if (!Array.isArray(content)) return [];
+    const parts: Array<Record<string, unknown>> = [];
+    for (const part of content) {
+      const p = part as Record<string, unknown>;
+      if (p['type'] === 'image_url') {
+        const iu = p['image_url'] as Record<string, unknown>;
+        let url = iu['url'] as string;
+        let mediaType: string | undefined;
+        let data: string;
+        if (url.startsWith('data:')) {
+          const comma = url.indexOf(',');
+          if (comma >= 0) {
+            const header = url.substring(5, comma);
+            const semicolon = header.indexOf(';');
+            mediaType = semicolon >= 0 ? header.substring(0, semicolon) : header;
+            data = url.substring(comma + 1);
+          } else {
+            data = url.substring(5);
+          }
+        } else {
+          data = url;
+        }
+        parts.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType ?? 'image/png', data },
+        });
+      } else if (p['type'] === 'input_audio') {
+        const audio = p['input_audio'] as Record<string, unknown>;
+        const data = (audio['data'] ?? '') as string;
+        parts.push({ type: 'text', text: `[Audio: ${data.substring(0, 200)}]` });
+      } else if (p['type'] === 'video_url') {
+        const vu = p['video_url'] as Record<string, unknown>;
+        parts.push({ type: 'text', text: `[Video: ${vu['url'] ?? ''}]` });
+      } else if (p['type'] === 'text') {
+        parts.push({ type: 'text', text: p['text'] });
+      }
+    }
+    return parts;
+  }
 
   for (const m of messages) {
     const content = m.content;
 
-    // Tool result with multimodal content (images + text + audio + video)
+    // Tool result with multimodal content
     if (m.role === 'tool' && Array.isArray(content)) {
-      const toolResultContent: Array<Record<string, unknown>> = [];
-      for (const part of content) {
-        const p = part as Record<string, unknown>;
-        if (p['type'] === 'image_url') {
-          const iu = p['image_url'] as Record<string, unknown>;
-          let url = iu['url'] as string;
-          let mediaType: string | undefined;
-          let data: string;
-          if (url.startsWith('data:')) {
-            const comma = url.indexOf(',');
-            if (comma >= 0) {
-              const header = url.substring(5, comma);
-              const semicolon = header.indexOf(';');
-              mediaType = semicolon >= 0 ? header.substring(0, semicolon) : header;
-              data = url.substring(comma + 1);
-            } else {
-              data = url.substring(5);
-            }
-          } else {
-            data = url;
-          }
-          toolResultContent.push({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mediaType ?? 'image/png',
-              data,
-            },
-          });
-        } else if (p['type'] === 'input_audio') {
-          // Anthropic does not support audio — convert to text reference
-          const audio = p['input_audio'] as Record<string, unknown>;
-          const data = (audio['data'] ?? '') as string;
-          toolResultContent.push({ type: 'text', text: `[Audio: ${data.substring(0, 200)}]` });
-        } else if (p['type'] === 'video_url') {
-          const vu = p['video_url'] as Record<string, unknown>;
-          toolResultContent.push({ type: 'text', text: `[Video: ${vu['url'] ?? ''}]` });
-        } else if (p['type'] === 'text') {
-          toolResultContent.push({ type: 'text', text: p['text'] });
-        }
-      }
-      result.push({
-        role: 'user',
-        content: [{
-          type: 'tool_result',
-          tool_use_id: m.toolCallId ?? '',
-          content: toolResultContent,
-        }],
-      });
+      const toolContent = parseMultimodalParts(content);
+      toolResultBuffer.push(buildToolResultBlock(m.toolCallId ?? '', toolContent));
+      continue;
     }
+
+    // Tool result (plain text) — buffer it for merging
+    if (m.role === 'tool') {
+      toolResultBuffer.push(
+        buildToolResultBlock(m.toolCallId ?? '', content?.toString() ?? ''),
+      );
+      continue;
+    }
+
+    // Non-tool message: flush buffered tool results first
+    flushToolResults();
+
     // Multimodal user/assistant message
-    else if (Array.isArray(content)) {
-      const parts: Array<Record<string, unknown>> = [];
-      for (const part of content) {
-        const p = part as Record<string, unknown>;
-        if (p['type'] === 'image_url') {
-          const iu = p['image_url'] as Record<string, unknown>;
-          let url = iu['url'] as string;
-          let mediaType: string | undefined;
-          let data: string;
-          if (url.startsWith('data:')) {
-            const comma = url.indexOf(',');
-            if (comma >= 0) {
-              const header = url.substring(5, comma);
-              const semicolon = header.indexOf(';');
-              mediaType = semicolon >= 0 ? header.substring(0, semicolon) : header;
-              data = url.substring(comma + 1);
-            } else {
-              data = url.substring(5);
-            }
-          } else {
-            data = url;
-          }
-          parts.push({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mediaType ?? 'image/png',
-              data,
-            },
-          });
-        } else if (p['type'] === 'input_audio') {
-          // Anthropic does not support audio — convert to text reference
-          const audio = p['input_audio'] as Record<string, unknown>;
-          const data = (audio['data'] ?? '') as string;
-          parts.push({ type: 'text', text: `[Audio provided: ${data.substring(0, 150)}...]` });
-        } else if (p['type'] === 'video_url') {
-          const vu = p['video_url'] as Record<string, unknown>;
-          parts.push({ type: 'text', text: `[Video URL: ${vu['url'] ?? ''}]` });
-        } else if (p['type'] === 'text') {
-          parts.push({ type: 'text', text: p['text'] });
-        }
-      }
-      result.push({ role: m.role, content: parts });
+    if (Array.isArray(content)) {
+      result.push({ role: m.role, content: parseMultimodalParts(content) });
     }
     // Assistant message with tool calls
     else if (m.toolCalls && m.toolCalls.length > 0) {
@@ -299,17 +289,6 @@ function convertMessagesForAnthropic(messages: LLMMessage[]): Array<Record<strin
       }
       result.push({ role: 'assistant', content: blocks });
     }
-    // Tool result message
-    else if (m.role === 'tool') {
-      result.push({
-        role: 'user',
-        content: [{
-          type: 'tool_result',
-          tool_use_id: m.toolCallId ?? '',
-          content: content?.toString() ?? '',
-        }],
-      });
-    }
     // Plain text message
     else {
       result.push({
@@ -318,6 +297,24 @@ function convertMessagesForAnthropic(messages: LLMMessage[]): Array<Record<strin
       });
     }
   }
+
+  // Flush remaining tool results at end
+  flushToolResults();
+
+  // ── 序列校验：检测连续相同 role 的消息（Anthropic 要求严格 user↔assistant 交替）──
+  if (result.length > 1) {
+    for (let i = 1; i < result.length; i++) {
+      const prevRole = result[i - 1]['role'] as string;
+      const currRole = result[i]['role'] as string;
+      if (prevRole === currRole) {
+        console.warn(
+          `[anthropic] ⚠️ 连续相同 role 消息（索引 ${i - 1} 和 ${i}，role="${currRole}"）— 将导致 API 400 错误。` +
+          `请检查上游消息组装逻辑。`,
+        );
+      }
+    }
+  }
+
   return result;
 }
 

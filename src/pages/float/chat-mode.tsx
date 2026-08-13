@@ -6,6 +6,7 @@ import { extractBbox, BboxOverlay } from '@/components/bbox-overlay';
 import { MessageInput } from '@/components/chat/message-input';
 import { StreamingText } from '@/components/chat/streaming-text';
 import { MarkdownBody } from '@/components/chat/markdown-body';
+import { mergeConsecutiveAssistants } from '@/components/chat/chat-bubble';
 import { ToolModeBar } from '@/components/chat/tool-mode-bar';
 import { ToolSelectorPanel } from '@/components/chat/tool-selector-panel';
 import { formatRelativeTime } from '@/i18n/strings';
@@ -30,7 +31,7 @@ interface Props {
   executorReady: boolean;
   onToolModeChange: (mode: ToolMode) => void;
   onCustomToolsChange: (tools: Set<string>) => void;
-  onSaveGroup: (name: string) => void;
+  onSaveGroup: (name: string, tools: Set<string>) => void;
   onDeleteGroup: (groupId: string) => void;
   onGroupSelect: (groupId: string) => void;
 }
@@ -292,6 +293,7 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
   const [manualMode, setManualMode] = useState(false);
   const [allTools, setAllTools] = useState<SkillTool[]>([]);
   const [showSelectorPanel, setShowSelectorPanel] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   // @ 长效保持：一次选择后持续生效，存 Zustand（同 session 跨窗口持久）
   const stickyAgent = useChatStore((s) => s.stickyAgent);
   const setStickyAgent = useChatStore((s) => s.setStickyAgent);
@@ -349,7 +351,7 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
   // 同步浮窗 toolMode 到 store，确保 sendMessage / editMessage 使用正确的工具筛选
   const syncToolMode = useCallback(() => {
     useChatStore.getState().setToolMode(toolModeRef.current);
-    useChatStore.getState().setCustomTools(customToolsRef.current);
+    useChatStore.getState().setCustomToolsRaw(customToolsRef.current);
   }, []);
 
   const handleSend = useCallback(async (content: MessageContent, agentContext?: string) => {
@@ -393,9 +395,9 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
       return;
     }
 
-    // 无 @ agent → basic 模式显式走 FreeAgent，其余走普通 Chat LLM
+    // 无 @ agent → all 模式走 FreeAgent（全工具），其余走普通 Chat LLM
     const currentToolMode = toolModeRef.current;
-    if (currentToolMode === ToolMode.basic) {
+    if (currentToolMode === ToolMode.all) {
       await sendMessage(text, '', { useFreeAgent: true, noSystemPrompt });
     } else {
       await sendMessage(content, '', { noSystemPrompt });
@@ -410,9 +412,12 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
 
   // Use deferred value to avoid DOM race conditions during streaming
   const deferredMessages = useDeferredValue(messages);
-  // Filter out system-injected internal messages, but keep agent internal messages for grouped display
+  // Filter out system-injected internal messages, then merge consecutive assistant bubbles
   const visibleMessages = useMemo(
-    () => deferredMessages.filter((m) => !(m as any)._internal),
+    () => {
+      const filtered = deferredMessages.filter((m) => !(m as any)._internal);
+      return mergeConsecutiveAssistants(filtered);
+    },
     [deferredMessages],
   );
 
@@ -610,6 +615,7 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
           onClose={() => setShowSelectorPanel(false)}
           compact={true}
           onSaveGroup={toolMode === ToolMode.custom ? onSaveGroup : undefined}
+          editingGroupName={selectedGroupId ? groups.find(g => g.id === selectedGroupId)?.name : undefined}
         />
       )}
 
@@ -617,16 +623,24 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
       {!stickyAgent && !selectedNow && <ToolModeBar
         mode={toolMode}
         selectedCount={customTools.size}
+        selectedGroupId={selectedGroupId}
         onModeChanged={(m) => {
           onToolModeChange(m);
-          if (m === ToolMode.custom || m === ToolMode.favorites) {
+          if (m === ToolMode.custom && selectedGroupId) {
+            // 已有分组选中 → 编辑模式：保留分组，打开面板
             setShowSelectorPanel(true);
           } else {
-            setShowSelectorPanel(false);
+            setSelectedGroupId(null);
+            if (m === ToolMode.custom || m === ToolMode.favorites) {
+              setShowSelectorPanel(true);
+            } else {
+              setShowSelectorPanel(false);
+            }
           }
         }}
         onFavoritesDoubleClick={() => {
           onToolModeChange(ToolMode.favorites);
+          setSelectedGroupId(null);
           writeLocal('float_tool_mode', ToolMode.favorites);
           setShowSelectorPanel(true);
         }}
@@ -637,9 +651,10 @@ const ChatMode = forwardRef<ChatModeHandle, Props>(function ChatMode({
           if (group) {
             onCustomToolsChange(new Set(group.tools));
             onToolModeChange(ToolMode.custom);
+            setSelectedGroupId(groupId);
             writeLocal('float_custom_tools', [...group.tools]);
             writeLocal('float_tool_mode', ToolMode.custom);
-            setShowSelectorPanel(true);
+            setShowSelectorPanel(false);
           }
         }}
         onDeleteGroup={onDeleteGroup}

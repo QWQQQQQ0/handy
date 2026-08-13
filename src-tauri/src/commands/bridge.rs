@@ -34,13 +34,26 @@ impl PythonBridge {
         let engine_path = resolve_engine_path()?;
         let python = std::env::var("HANDY_PYTHON").unwrap_or_else(|_| "python".to_string());
 
+        // Resolve the project root directory so Python's CWD is the project root,
+        // not src-tauri/ (which is the default in Tauri dev mode).
+        // This ensures relative paths in doc_code_exec, office generators, etc.
+        // resolve to <project_root>/ rather than <project_root>/src-tauri/.
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+            .map_err(|_| "CARGO_MANIFEST_DIR not set".to_string())?;
+        let project_root = std::path::Path::new(&manifest_dir)
+            .parent()
+            .ok_or("Cannot resolve project root")?
+            .to_path_buf();
+
         let mut child = Command::new(&python)
             .arg(&engine_path)
+            .current_dir(&project_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8")
+            .env("HANDY_WORKSPACE", project_root.join("workspace").to_string_lossy().to_string())
             .spawn()
             .map_err(|e| {
                 format!(
@@ -472,6 +485,18 @@ pub async fn web_launch_browser(
             "browser": browser.unwrap_or_else(|| "msedge".into()),
             "port": port.unwrap_or(9222)
         }),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn web_heartbeat(
+    state: tauri::State<'_, BridgeState>,
+) -> Result<serde_json::Value, String> {
+    bridge_call_async(
+        state.bridge.clone(),
+        "web_heartbeat".into(),
+        serde_json::json!({}),
     )
     .await
 }

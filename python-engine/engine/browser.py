@@ -19,121 +19,10 @@ try:
 except ImportError:
     HAS_PLAYWRIGHT = False
 
-# JS code injected into the page to capture DOM events with semantic info
-_RECORD_LISTENERS_JS = """() => {
-    if (window.__handy_recording) return;  // already injected
-    window.__handy_recording = true;
-    window.__handy_event_buffer = [];
-
-    function getElementInfo(el) {
-        if (!el || el === document.documentElement || el === document.body) return null;
-        const r = el.getBoundingClientRect();
-
-        // Build best selector (priority: id > aria-label > text > css)
-        let selector = '';
-        if (el.id) {
-            selector = '#' + CSS.escape(el.id);
-        } else if (el.getAttribute('aria-label')) {
-            selector = el.tagName.toLowerCase() + '[aria-label="' + CSS.escape(el.getAttribute('aria-label')) + '"]';
-        } else if (el.className && typeof el.className === 'string') {
-            const classes = el.className.trim().split(/\\s+/).filter(c => c).map(c => '.' + CSS.escape(c)).join('');
-            selector = el.tagName.toLowerCase() + classes;
-        }
-
-        // Get accessible name
-        const name = el.getAttribute('aria-label')
-            || el.getAttribute('title')
-            || el.getAttribute('placeholder')
-            || el.getAttribute('alt')
-            || (el.textContent || '').trim().substring(0, 80);
-
-        // Get ARIA role
-        const role = el.getAttribute('role')
-            || (el.tagName === 'BUTTON' ? 'button' : '')
-            || (el.tagName === 'A' ? 'link' : '')
-            || (el.tagName === 'INPUT' ? (el.type || 'textbox') : '')
-            || (el.tagName === 'SELECT' ? 'combobox' : '')
-            || (el.tagName === 'TEXTAREA' ? 'textbox' : '');
-
-        return {
-            tag: el.tagName.toLowerCase(),
-            text: (el.textContent || '').trim().substring(0, 120),
-            selector: selector,
-            role: role,
-            name: name,
-            bounds: {
-                x: Math.round(r.left), y: Math.round(r.top),
-                width: Math.round(r.width), height: Math.round(r.height)
-            }
-        };
-    }
-
-    // Physical screen size (set by Python backend, used for coordinate correction)
-    if (!window.__handy_physical_screen) {
-        window.__handy_physical_screen = { width: 0, height: 0 };
-    }
-
-    function pushEvent(type, e, extra) {
-        const info = e ? getElementInfo(e.target) : null;
-        // 使用 Date.now() 获取当前 Unix 毫秒时间戳，和 Rust 的 SystemTime::now() 一致
-        const eventData = {
-            type: type,
-            timestamp: Date.now(),
-            x: e ? e.clientX : 0,
-            y: e ? e.clientY : 0,
-            // Screen coordinates (for cross-DPI scaling)
-            screenX: e ? e.screenX : 0,
-            screenY: e ? e.screenY : 0,
-            // Browser's logical screen size
-            screenWidth: screen.width,
-            screenHeight: screen.height,
-            // Physical screen size from backend (for coordinate correction)
-            physicalWidth: window.__handy_physical_screen.width,
-            physicalHeight: window.__handy_physical_screen.height,
-            element: info,
-            key: extra && extra.key ? extra.key : undefined,
-            modifiers: extra && extra.modifiers ? extra.modifiers : undefined,
-            value: extra && extra.value !== undefined ? extra.value : undefined,
-            url: location.href,
-            title: document.title,
-        };
-        // Push to Python if exposed (real-time path)
-        if (window.__handy_push_event) {
-            try {
-                window.__handy_push_event(eventData);
-            } catch(e) {
-                console.warn('[Handy] __handy_push_event call failed, buffering:', e);
-                window.__handy_event_buffer.push(eventData);
-            }
-        } else {
-            // Buffer as fallback when push function not available
-            window.__handy_event_buffer.push(eventData);
-        }
-    }
-
-    document.addEventListener('click', function(e) { pushEvent('click', e); }, true);
-    document.addEventListener('dblclick', function(e) { pushEvent('dblclick', e); }, true);
-    document.addEventListener('contextmenu', function(e) { pushEvent('contextmenu', e); }, true);
-    document.addEventListener('keydown', function(e) {
-        const mods = [];
-        if (e.ctrlKey) mods.push('Ctrl');
-        if (e.altKey) mods.push('Alt');
-        if (e.shiftKey) mods.push('Shift');
-        if (e.metaKey) mods.push('Meta');
-        pushEvent('keydown', e, { key: e.key, modifiers: mods });
-    }, true);
-    document.addEventListener('input', function(e) {
-        pushEvent('input', e, { value: e.target.value });
-    }, true);
-}"""
-
-_REMOVE_LISTENERS_JS = """() => {
-    window.__handy_recording = false;
-    window.__handy_event_buffer = [];
-}"""
+from engine.browser_recording import BrowserRecordingMixin
 
 
-class BrowserEngine:
+class BrowserEngine(BrowserRecordingMixin):
     """Wraps Playwright for web automation."""
 
     # 空闲超时：5 分钟无操作自动关闭浏览器
@@ -219,15 +108,7 @@ class BrowserEngine:
             self._idle_timer = None
 
     def launch(self, headless: bool = True, channel: str = "", connect_existing: bool = True) -> dict[str, Any]:
-        """Launch browser. Uses system Edge/Chrome by default (no download needed).
-
-        Tries channels in order: msedge → chrome → chromium (bundled fallback).
-
-        Args:
-            headless: Run in headless mode
-            channel: Browser channel ('chrome', 'msedge', or auto-detect)
-            connect_existing: If True, try to connect to existing browser first (default True)
-        """
+        """Launch browser. Uses system Edge/Chrome by default (no download needed)."""
         # Clean up any previous instance first
         self._cleanup_playwright()
 
@@ -281,7 +162,7 @@ class BrowserEngine:
                 "--disable-translate",
                 "--metrics-recording-only",
                 "--safebrowsing-disable-auto-update",
-                "--enable-automation",
+                "--disable-blink-features=AutomationControlled",
                 "--suppress-message-center-popups",
                 "--disable-features=PrivacySandboxSettings4,CookieConsent,TrackingProtectionUI",
                 "--no-pings",
@@ -464,9 +345,13 @@ class BrowserEngine:
                 print(f"[browser] real profile locked (lockfile={lock_file}), falling back to temp", file=sys.stderr, flush=True)
 
         if user_data_dir is None:
-            user_data_dir = tempfile.mkdtemp(prefix="handy_debug_")
-            profile_dir = None  # don't pass --profile-directory for temp dirs
-            print(f"[browser] temp profile: {user_data_dir}", file=sys.stderr, flush=True)
+            # Dedicated persistent profile — avoids WebView2 lockfile conflicts
+            # and preserves cookies/logins across restarts.
+            handy_profile = os.path.expandvars(r"%LocalAppData%\Handy\BrowserProfile")
+            os.makedirs(handy_profile, exist_ok=True)
+            user_data_dir = handy_profile
+            profile_dir = "Default"
+            print(f"[browser] using dedicated persistent profile: {handy_profile}", file=sys.stderr, flush=True)
 
         # Launch browser with debug port (+ auto-load extension)
         try:
@@ -487,7 +372,7 @@ class BrowserEngine:
                 "--metrics-recording-only",
                 "--safebrowsing-disable-auto-update",
                 # ── Suppress extension / automation warnings ──
-                "--enable-automation",
+                "--disable-blink-features=AutomationControlled",
                 "--suppress-message-center-popups",
                 "--disable-extensions-http-throttling",
                 # ── Suppress cookie / privacy / tracking prompts ──
@@ -552,7 +437,56 @@ class BrowserEngine:
                 print(f"[browser] ERROR: self._page is None after connect_cdp!", file=sys.stderr, flush=True)
                 return {"connected": False, "launched": False, "error": "Failed to get page"}
 
-            # Start tab monitoring
+            # ── 注入反端口探测脚本 ──
+            # 拦截页面 JS 对 127.0.0.1:9222 的 WebSocket/fetch 探测，
+            # 模拟端口不存在（立即抛错），防止目标网站检测到 CDP 调试端口。
+            _ANTI_PORT_DETECT_JS = """\
+(() => {
+    window.__handy_init_ran = true;
+    window.__handy_action_log = [];
+    const _log = function(msg) {
+        window.__handy_action_log.push({ time: Date.now(), msg: msg });
+        console.log('[Handy] ' + msg);
+    };
+
+    // ── 监控：记录 window.close / history.back / history.go / beforeunload ──
+    const _origClose = window.close;
+    window.close = function() { _log('window.close() at ' + location.href); return _origClose.apply(this, arguments); };
+    const _origBack = history.back;
+    history.back = function() { _log('history.back() at ' + location.href); return _origBack.apply(this, arguments); };
+    const _origGo = history.go;
+    history.go = function(n) { _log('history.go(' + n + ') at ' + location.href); return _origGo.apply(this, arguments); };
+    window.addEventListener('beforeunload', function() { _log('beforeunload: ' + location.href); });
+    window.addEventListener('popstate', function() { _log('popstate: ' + location.href); });
+
+    // ── 监控：记录 9222 端口探测 ──
+    const BLOCKED = '127.0.0.1:9222';
+    const OrigWS = window.WebSocket;
+    window.WebSocket = function(url, protocols) {
+        if (typeof url === 'string' && url.indexOf(BLOCKED) !== -1) _log('WebSocket to 9222');
+        return new OrigWS(url, protocols);
+    };
+    window.WebSocket.prototype = OrigWS.prototype;
+    window.WebSocket.CONNECTING = OrigWS.CONNECTING;
+    window.WebSocket.OPEN = OrigWS.OPEN;
+    window.WebSocket.CLOSING = OrigWS.CLOSING;
+    window.WebSocket.CLOSED = OrigWS.CLOSED;
+
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) {
+        const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (url.indexOf(BLOCKED) !== -1) _log('fetch to 9222');
+        return origFetch.apply(this, arguments);
+    };
+})();"""
+            for ctx in self._browser.contexts:
+                try:
+                    ctx.add_init_script(_ANTI_PORT_DETECT_JS)
+                    print("[browser] anti-port-detect init script added to context", file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"[browser] add_init_script failed: {e}", file=sys.stderr, flush=True)
+
+            # ── Start tab monitoring (no CDP, Playwright-native only) ──
             self._start_tab_monitoring()
 
             result = {
@@ -571,52 +505,90 @@ class BrowserEngine:
             return {"connected": False, "launched": False, "error": str(e)}
 
     def _start_tab_monitoring(self) -> None:
-        """Start monitoring tab changes via CDP events."""
+        """Start tab monitoring.
+
+        For new-tab detection to work, Playwright's event loop must be kept
+        alive via periodic API calls from the main thread.  The frontend
+        should call ``heartbeat()`` every ~500ms while the browser is open.
+        """
         if not self._browser:
+            print("[browser] _start_tab_monitoring: _browser is None, skipping", file=sys.stderr, flush=True)
             return
 
-        try:
-            # Create a browser-level CDP session
-            self._cdp_session = self._browser.new_browser_cdp_session()
+        # ── Rebuild initial page mapping ──
+        self._rebuild_target_mapping()
 
-            # Build initial target -> page mapping
-            self._rebuild_target_mapping()
+        # ── Diagnostic: dump browser fingerprint on new pages ──
 
-            # Listen for target attached (new tab opened or switched to)
-            def on_target_created(event: dict) -> None:
-                target_info = event.get("targetInfo", {})
-                target_id = target_info.get("targetId")
-                target_type = target_info.get("type")
-                if target_type == "page" and target_id:
-                    self._last_active_target_id = target_id
-                    print(f"[browser] target_created: targetId={target_id}, url={target_info.get('url', '')}", file=sys.stderr, flush=True)
-                    self._rebuild_target_mapping()
+        # ── Anchor page: always evaluate on this one to drive event loop ──
+        self._anchor_page = self._page
 
-            def on_target_destroyed(event: dict) -> None:
-                target_id = event.get("targetId")
-                if target_id and target_id in self._target_id_to_page:
-                    del self._target_id_to_page[target_id]
-                    print(f"[browser] target_destroyed: targetId={target_id}", file=sys.stderr, flush=True)
+        # ── Playwright-native new-tab detection ──
+        for ctx in self._browser.contexts:
+            def _on_page(page, _ctx=ctx):
+                print(f"[browser] new page detected: url={page.url}", file=sys.stderr, flush=True)
+                page.on("close", lambda p=page: print(
+                    f"[browser] ❌ PAGE CLOSED: url={p.url}", file=sys.stderr, flush=True))
+                if page.url.startswith("http"):
+                    self._page = page
+                    # ── Diagnostic: dump browser fingerprint ──
+                    try:
+                        fp = page.evaluate("""() => ({
+                            webdriver: navigator.webdriver,
+                            plugins_len: navigator.plugins.length,
+                            languages: navigator.languages,
+                            platform: navigator.platform,
+                            vendor: navigator.vendor,
+                            hardwareConcurrency: navigator.hardwareConcurrency,
+                            deviceMemory: navigator.deviceMemory,
+                            hasChrome: typeof window.chrome !== 'undefined',
+                            opener: !!window.opener,
+                            openerHref: window.opener ? window.opener.location.href : null,
+                            pwGlobals: Object.keys(window).filter(k => k.includes('pw') || k.includes('playwright') || k.includes('__nightmare') || k.includes('__selenium')),
+                            outerWH: [window.outerWidth, window.outerHeight],
+                            screenWH: [screen.width, screen.height],
+                            permissions: typeof navigator.permissions !== 'undefined',
+                            connection: typeof navigator.connection !== 'undefined' ? navigator.connection.effectiveType : 'none',
+                            touchPoints: navigator.maxTouchPoints,
+                            pdfViewer: typeof navigator.pdfViewerEnabled !== 'undefined' ? navigator.pdfViewerEnabled : 'unknown',
+                        })""")
+                        print(f"[browser] 🔍 FINGERPRINT {page.url[:60]}: {fp}", file=sys.stderr, flush=True)
+                    except Exception:
+                        pass
+                self._rebuild_target_mapping()
 
-            def on_target_info_changed(event: dict) -> None:
-                target_info = event.get("targetInfo", {})
-                target_id = target_info.get("targetId")
-                target_type = target_info.get("type")
-                url = target_info.get("url", "")
-                if target_type == "page" and target_id:
-                    self._last_active_target_id = target_id
-                    print(f"[browser] target_info_changed: targetId={target_id}, url={url}", file=sys.stderr, flush=True)
+            ctx.on("page", _on_page)
+            print(f"[browser] page listener on context ({len(ctx.pages)} page(s))", file=sys.stderr, flush=True)
 
-            self._cdp_session.on("Target.targetCreated", on_target_created)
-            self._cdp_session.on("Target.targetDestroyed", on_target_destroyed)
-            self._cdp_session.on("Target.targetInfoChanged", on_target_info_changed)
+        print("[browser] tab monitoring started", file=sys.stderr, flush=True)
 
-            # Enable target discovery
-            self._cdp_session.send("Target.setDiscoverTargets", {"discover": True})
+    def heartbeat(self) -> None:
+        """Drive Playwright's event loop + unpause new tabs.
 
-            print("[browser] tab monitoring started", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"[browser] tab monitoring failed: {e}", file=sys.stderr, flush=True)
+        Caches one CDP session per page (keyed by page object id) so we
+        don't leak session handles — Chromium kills pages when too many
+        CDP sessions are open.
+        """
+        if not self._browser:
+            return
+        if not hasattr(self, '_page_sessions'):
+            self._page_sessions: dict[int, Any] = {}
+        for ctx in self._browser.contexts:
+            for page in ctx.pages:
+                if page.is_closed():
+                    self._page_sessions.pop(id(page), None)
+                    continue
+                if not page.url.startswith("http"):
+                    continue  # skip edge://, chrome://, about:blank, etc.
+                # Only drive event loop on the anchor page.
+                # Let Playwright handle new-tab initialization and
+                # Runtime.runIfWaitingForDebugger — our own CDP session
+                # might trigger anti-bot detection.
+                if page == self._anchor_page:
+                    try:
+                        page.evaluate("1")
+                    except Exception:
+                        pass
 
     def _rebuild_target_mapping(self) -> None:
         """Rebuild target ID to Page mapping."""
@@ -625,46 +597,53 @@ class BrowserEngine:
 
         self._target_id_to_page = {}
         try:
-            # Get all targets via CDP
-            targets = self._cdp_session.send("Target.getTargets")
-            page_targets = [t for t in targets.get("targetInfos", []) if t.get("type") == "page"]
-            print(f"[browser] _rebuild_target_mapping: found {len(page_targets)} page targets", file=sys.stderr, flush=True)
-
-            # Map target IDs to Playwright pages
-            for target in page_targets:
-                target_id = target.get("targetId")
-                target_url = target.get("url", "")
-
-                # Find matching Playwright page
+            if self._cdp_session:
+                # CDP path — used when a CDP session is available (legacy flow)
+                targets = self._cdp_session.send("Target.getTargets")
+                page_targets = [t for t in targets.get("targetInfos", []) if t.get("type") == "page"]
+                print(f"[browser] _rebuild_target_mapping: CDP found {len(page_targets)} page targets", file=sys.stderr, flush=True)
+                for target in page_targets:
+                    target_id = target.get("targetId")
+                    target_url = target.get("url", "")
+                    for ctx in self._browser.contexts:
+                        for page in ctx.pages:
+                            if page.url == target_url:
+                                self._target_id_to_page[target_id] = page
+                                break
+            else:
+                # Playwright fallback — build mapping directly from context pages
                 for ctx in self._browser.contexts:
                     for page in ctx.pages:
-                        # Match by URL (not perfect but works for most cases)
-                        if page.url == target_url:
-                            self._target_id_to_page[target_id] = page
-                            print(f"[browser] mapped target {target_id} -> page {target_url}", file=sys.stderr, flush=True)
-                            break
+                        if not page.is_closed():
+                            key = str(id(page))
+                            self._target_id_to_page[key] = page
+                print(f"[browser] _rebuild_target_mapping: Playwright found {len(self._target_id_to_page)} pages", file=sys.stderr, flush=True)
 
             print(f"[browser] target mapping: {len(self._target_id_to_page)} entries", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"[browser] rebuild mapping failed: {e}", file=sys.stderr, flush=True)
 
     def _get_active_page(self) -> Page | None:
-        """Get the currently active page via CDP."""
-        if not self._cdp_session or not self._browser:
+        """Get the currently active page."""
+        if not self._browser:
             return None
         try:
-            # Get all targets
-            targets = self._cdp_session.send("Target.getTargets")
-            page_targets = [t for t in targets.get("targetInfos", []) if t.get("type") == "page"]
-            # Find the one that is focused/active
-            for target in page_targets:
-                if target.get("attached"):
-                    target_id = target.get("targetId")
-                    # Find matching Playwright page
-                    for ctx in self._browser.contexts:
-                        for page in ctx.pages:
-                            if not page.is_closed():
-                                return page
+            if self._cdp_session:
+                # CDP path
+                targets = self._cdp_session.send("Target.getTargets")
+                page_targets = [t for t in targets.get("targetInfos", []) if t.get("type") == "page"]
+                for target in page_targets:
+                    if target.get("attached"):
+                        for ctx in self._browser.contexts:
+                            for page in ctx.pages:
+                                if not page.is_closed():
+                                    return page
+            else:
+                # Playwright fallback
+                for ctx in self._browser.contexts:
+                    for page in ctx.pages:
+                        if not page.is_closed():
+                            return page
         except Exception as e:
             print(f"[browser] _get_active_page failed: {e}", file=sys.stderr, flush=True)
         return None
@@ -851,127 +830,6 @@ class BrowserEngine:
             return {"scrolled": True, "delta_y": delta_y}
         except Exception:
             return {"scrolled": False, "error": traceback.format_exc()}
-
-    def _inject_physical_screen_size(self) -> None:
-        """Inject physical screen size into page for coordinate correction."""
-        if not self._page:
-            return
-        try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            w = user32.GetSystemMetrics(0)  # SM_CXSCREEN
-            h = user32.GetSystemMetrics(1)  # SM_CYSCREEN
-            self._page.evaluate(
-                f"() => {{ window.__handy_physical_screen = {{ width: {w}, height: {h} }}; }}"
-            )
-        except Exception:
-            pass
-
-    def start_recording(self) -> dict[str, Any]:
-        """Inject DOM event listeners into the current page and start recording."""
-        if not self._page:
-            return {"recording": False, "error": "Browser not launched"}
-        try:
-            self._recorded_events = []
-            self._recording_active = True
-
-            # Expose Python callback so JS can push events in real-time
-            # (expose_function persists across same-origin navigations)
-            if not self._event_handler_ref:
-                def on_event(event_data: dict) -> None:
-                    if self._recording_active:
-                        event_data["_received_at"] = time.time()
-                        self._recorded_events.append(event_data)
-
-                self._event_handler_ref = on_event
-
-            # Always try to expose — handle both first-time and re-expose
-            try:
-                self._page.expose_function("__handy_push_event", self._event_handler_ref)
-            except Exception as e:
-                # Already exposed from previous session — verify it's callable
-                if "already registered" in str(e).lower() or "already exposed" in str(e).lower():
-                    pass  # OK, the existing binding will work
-                else:
-                    # Unexpected error — reset ref so next attempt retries
-                    self._event_handler_ref = None
-                    return {"recording": False, "error": f"Failed to expose event function: {e}"}
-
-            # Inject listeners into current page
-            self._page.evaluate(_RECORD_LISTENERS_JS)
-
-            # Inject physical screen size for coordinate correction
-            self._inject_physical_screen_size()
-
-            # Verify injection succeeded
-            is_injected = self._page.evaluate("() => !!window.__handy_recording")
-            has_push_fn = self._page.evaluate("() => typeof window.__handy_push_event === 'function'")
-            if not is_injected:
-                return {"recording": False, "error": "JS listener injection failed"}
-            if not has_push_fn:
-                return {"recording": False, "error": "expose_function binding not available — __handy_push_event is not a function"}
-
-            # Re-inject on page navigation (same-origin loads)
-            def on_load(page: Page) -> None:
-                try:
-                    page.evaluate(_RECORD_LISTENERS_JS)
-                    self._inject_physical_screen_size()
-                except Exception:
-                    pass
-
-            self._page.on("load", on_load)
-
-            return {"recording": True, "url": self._page.url}
-        except Exception:
-            return {"recording": False, "error": traceback.format_exc()}
-
-    def stop_recording(self) -> dict[str, Any]:
-        """Remove event listeners and return all recorded events."""
-        if not self._page:
-            return {"events": self._recorded_events, "count": len(self._recorded_events)}
-        try:
-            self._recording_active = False
-            # Try to remove listeners from page
-            try:
-                self._page.evaluate(_REMOVE_LISTENERS_JS)
-            except Exception:
-                pass
-            # Collect any remaining events from the page buffer
-            try:
-                buffer = self._page.evaluate("() => window.__handy_event_buffer || []")
-                for evt in buffer:
-                    evt["_received_at"] = time.time()
-                    self._recorded_events.append(evt)
-            except Exception:
-                pass
-            return {
-                "events": self._recorded_events,
-                "count": len(self._recorded_events),
-            }
-        except Exception:
-            return {"events": self._recorded_events, "count": len(self._recorded_events), "error": traceback.format_exc()}
-
-    def get_recorded_events(self) -> dict[str, Any]:
-        """Return newly recorded events since last call and clear the buffer.
-
-        Also drains the JS-side buffer as a fallback (in case __handy_push_event
-        is unavailable, e.g. after cross-origin navigation).
-        """
-        # Drain JS buffer as fallback
-        if self._page and self._recording_active:
-            try:
-                js_events = self._page.evaluate(
-                    "() => { const buf = window.__handy_event_buffer || []; window.__handy_event_buffer = []; return buf; }"
-                )
-                for evt in js_events:
-                    evt["_received_at"] = time.time()
-                    self._recorded_events.append(evt)
-            except Exception:
-                pass  # page may have navigated away
-
-        events = list(self._recorded_events)
-        self._recorded_events = []
-        return {"events": events, "count": len(events)}
 
     def close(self) -> dict[str, Any]:
         """Close browser and clean up.

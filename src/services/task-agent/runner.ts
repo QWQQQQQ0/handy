@@ -119,6 +119,9 @@ export class TaskAgentRunner {
       : ['think', 'request_user_input', 'desktop_done', 'finalize',
          'desktop_screenshot', 'desktop_list_windows', 'desktop_open_app', 'desktop_wait'];
 
+    // 聚合 system prompt 额外内容（customSystemPrompt；工具菜单由 api/client.ts 的 {menu} 占位符统一注入）
+    let systemPromptExtra = '';
+
     if (agentType === 'free') {
       // ── 渐进式披露：首轮只发门卫 ──
       disclosure = new ToolDisclosure({
@@ -161,10 +164,21 @@ export class TaskAgentRunner {
                 : textParts,
             });
           }
-        } else if (msg.content) {
-          messages.push({ role: msg.role, content: msg.content });
+        } else if (msg.content || msg.toolCalls) {
+          const entry: Record<string, unknown> = { role: msg.role, content: msg.content ?? null };
+          if (msg.toolCalls && msg.toolCalls.length > 0) {
+            entry.toolCalls = msg.toolCalls;
+          }
+          if (msg.reasoning_content) {
+            entry.reasoning_content = msg.reasoning_content;
+          }
+          if (msg.toolCallId) {
+            entry.toolCallId = msg.toolCallId;
+          }
+          messages.push(entry);
         }
       }
+
       console.log(`[TaskRunner] 📜 FreeAgent 注入对话历史: ${chatMessages.length} 条 → ${messages.length} 条有效消息`);
     }
 
@@ -249,7 +263,7 @@ export class TaskAgentRunner {
           endpoint,
           currentProvider,
           currentApiKey,
-          { messages, tools, goal, systemPromptExtra: customSystemPrompt || undefined },
+          { messages, tools, goal, systemPromptExtra: (customSystemPrompt ? systemPromptExtra + '\n\n' + customSystemPrompt : systemPromptExtra) || undefined },
         );
 
         for await (const chunk of stream) {
@@ -341,7 +355,7 @@ export class TaskAgentRunner {
           const rawGatekeeper = JSON.stringify({ success: true, message: summary });
           const gk = truncateToolResult(tc.name, rawGatekeeper);
           messages.push({ role: 'tool', toolCallId: tc.id, content: gk.toolContent });
-          if (gk.fullUserMessage) messages.push({ role: 'user', content: gk.fullUserMessage });
+          // fullUserMessage 已废弃
           onProgress?.({ type: 'tool_end', name: tc.name, success: true, message: summary, turn });
           console.log(`[TaskRunner] 🔍 tool_detail: requested=${requestedTools.length} loaded=${loaded.length} totalActive=${tools.length}`);
           continue;
@@ -395,9 +409,7 @@ export class TaskAgentRunner {
           const rawContent = JSON.stringify(filteredResult);
           const tr = truncateToolResult(tc.name, rawContent);
           messages.push({ role: 'tool', toolCallId: tc.id, content: tr.toolContent });
-          if (tr.fullUserMessage) {
-            messages.push({ role: 'user', content: tr.fullUserMessage });
-          }
+          // fullUserMessage 已废弃
         }
 
         // request_user_input 后：用户操作可能导致界面变化（可能只填了信息，也可能进入了下一步）

@@ -13,7 +13,7 @@ import { TaskAgentRunner, type AgentProgressEvent } from '@/services/task-agent/
 import { TaskTreeDB } from '@/services/multi-agent/task-tree-db';
 import type { TaskResult } from '@/services/task-agent/gateway';
 import { codeSandboxService } from '@/services/code-sandbox';
-import { FREE_AGENT_TOOLS } from '@/skills/tool-disclosure';
+// toolFilter: undefined = all enabled tools (no whitelist restriction)
 
 export interface FreeAgentResponse {
   message: string;
@@ -67,7 +67,7 @@ export class FreeAgentGateway {
         password,
         maxTurns: maxTurns ?? 30,
         signal,
-        toolFilter: FREE_AGENT_TOOLS,
+        toolFilter: undefined,  // all enabled tools
         chatMessages,
         injectHistory: true,
         onConfirm,

@@ -1,12 +1,9 @@
 // LLM 请求日志工具 — 在 fetch 之前把完整请求体写入日志文件
 
+import { isTauri } from '@/utils/platform';
+
 // 日志目录：应用数据目录下的 logs/llm
 const LOG_DIR = 'logs/llm';
-
-// 检测是否在 Tauri 环境中（浏览器 + window.__TAURI__ 存在）
-function isTauriEnv(): boolean {
-  return typeof window !== 'undefined' && '__TAURI__' in window;
-}
 
 /**
  * 记录 LLM 请求到日志文件
@@ -22,7 +19,7 @@ export async function logLLMRequest(
   bodyJson: string,
 ): Promise<void> {
   // 非 Tauri 环境（如 Node.js SSR）跳过日志写入
-  if (!isTauriEnv()) {
+  if (!isTauri()) {
     return;
   }
 

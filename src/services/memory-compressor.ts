@@ -185,7 +185,8 @@ export class MemoryCompressor {
         [today],
       );
       return (snapRows[0]?.cnt ?? 0) === 0;
-    } catch {
+    } catch (e) {
+      console.warn('[MemoryCompressor] needsCompression check failed:', e);
       return false;
     }
   }

@@ -70,14 +70,23 @@ export function AppInitWrapper() {
 /**
  * 检查是否需要执行每日记忆压缩，如果需要则在后台静默执行。
  * 延迟 3 秒启动，避免与应用初始化竞速。
+ * 内置重试机制：如果首次检查失败（DB 未就绪等瞬态错误），会延迟重试最多 3 次。
  */
-async function scheduleDailyCompression() {
+async function scheduleDailyCompression(retryCount = 0) {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 5000; // 重试间隔 5 秒
+
   try {
     const compressor = getMemoryCompressor();
     const needs = await compressor.needsCompression();
     if (!needs) {
-      console.log('[MemoryCompressor] No compression needed today — ' +
-        `(already done, or < 3 unsummarized messages)`);
+      // 如果是重试阶段，输出更详细的信息
+      if (retryCount > 0) {
+        console.log(`[MemoryCompressor] Retry #${retryCount}: compression still not needed, giving up.`);
+      } else {
+        console.log('[MemoryCompressor] No compression needed today — ' +
+          `(already done, or < 3 unsummarized messages)`);
+      }
       return;
     }
 
@@ -106,6 +115,11 @@ async function scheduleDailyCompression() {
       }
     }, 3000);
   } catch (err) {
-    console.warn('[MemoryCompressor] needsCompression check failed:', err);
+    console.warn(`[MemoryCompressor] needsCompression check failed (attempt ${retryCount + 1}/${MAX_RETRIES + 1}):`, err);
+    // 瞬态错误（如 DB 未就绪）时延迟重试
+    if (retryCount < MAX_RETRIES) {
+      console.log(`[MemoryCompressor] Will retry in ${RETRY_DELAY_MS / 1000}s...`);
+      setTimeout(() => scheduleDailyCompression(retryCount + 1), RETRY_DELAY_MS);
+    }
   }
 }

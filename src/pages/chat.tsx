@@ -4,7 +4,7 @@ import { Menu, Terminal, Bug, MessageSquarePlus, Trash2, Plus, MessageCircle, Sh
 import { AgentLogGroup } from '@/components/chat/agent-log-group';
 import { useChatStore, ToolMode } from '@/stores/chat-store';
 import { useT, formatRelativeTime } from '@/i18n/strings';
-import { ChatBubble } from '@/components/chat/chat-bubble';
+import { ChatBubble, mergeConsecutiveAssistants } from '@/components/chat/chat-bubble';
 import { MessageInput } from '@/components/chat/message-input';
 import { ModelSwitcher } from '@/components/chat/model-switcher';
 import { ToolModeBar } from '@/components/chat/tool-mode-bar';
@@ -441,8 +441,10 @@ export default function ChatPage() {
         {hasMessages ? (
           <div className="py-2">
             {(() => {
-              // 过滤内部消息（截图等），但保留 Agent 内部消息
-              const visibleMessages = messages.filter((m) => !(m as any)._internal);
+              // 过滤内部消息（截图等），然后合并连续 assistant 气泡
+              const visibleMessages = mergeConsecutiveAssistants(
+                messages.filter((m) => !(m as any)._internal),
+              );
 
               // 将消息分组：连续的 Agent 内部消息分为一组
               const groups: Array<{ type: 'agent' | 'normal'; messages: ChatMessage[] }> = [];

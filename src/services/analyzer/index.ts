@@ -31,7 +31,7 @@ import {
   applyCoordinatePatterns,
   removeRedundantClicks,
 } from './coord-patterns';
-import { buildCombinedPrompt, buildRefinePrompt } from './prompt-builder';
+import { buildCombinedPrompt, buildRefinePrompt, type RecordingContext } from './prompt-builder';
 import { callLLM, parseLLMResponse, parseSimpleTemplateResponse } from './llm-client';
 import { detectPatternLocally, generateTemplateLocally } from './template-generator';
 import type { LLMAnalysisResult, CoordinatePattern } from './types';
@@ -209,6 +209,7 @@ class UnifiedAnalyzer {
       onReasoning?: (text: string) => void;
       onProgress?: (text: string) => void;
     },
+    recordingContext?: RecordingContext,
   ): Promise<AutomationTemplate> {
     if (!this.modelService || !this.provider || !this.apiKey) {
       throw new Error('LLM not configured');
@@ -221,7 +222,7 @@ class UnifiedAnalyzer {
       if (s?.width && s?.height) screenSize = s;
     } catch { /* use browser fallback */ }
 
-    const prompt = buildRefinePrompt(currentTemplate, conversationHistory, userMessage, screenSize);
+    const prompt = buildRefinePrompt(currentTemplate, conversationHistory, userMessage, screenSize, recordingContext);
 
     console.log('[UnifiedAnalyzer] refine — userMessage:', userMessage);
     const response = await callLLM(this.modelService, this.provider, this.apiKey, prompt, 300000, callbacks);

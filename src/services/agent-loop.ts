@@ -174,17 +174,14 @@ export async function runAgentLoop(
 
       onToolResult?.(fnName, result.success, result.message);
 
-      // 工具结果超长截断：tool 消息保留截断版，完整内容以 user 消息兜底
+      // 工具结果超长截断
       const rawToolContent = JSON.stringify(result);
-      const { toolContent, fullUserMessage } = truncateToolResult(fnName, rawToolContent);
+      const { toolContent } = truncateToolResult(fnName, rawToolContent);
       messages.push({
         role: 'tool',
         toolCallId: call.id || `call_${crypto.randomUUID().substring(0, 8)}`,
         content: toolContent,
       });
-      if (fullUserMessage) {
-        messages.push({ role: 'user', content: fullUserMessage });
-      }
     }
 
     completedRounds = round + 1;

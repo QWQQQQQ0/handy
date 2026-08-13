@@ -34,14 +34,17 @@ export function extractText(content: MessageContent): string {
 
 // ── Tool 结果截断 ──
 // 当工具返回内容过大时，LLM 可能直接不回复（尤其 MiMo 等模型）。
-// 解决：超长时截断 tool 消息，完整内容以 user 消息兜底发送。
+// 超长时截断 tool 消息，引导 LLM 用专门工具获取完整数据。
+//
+// 注意：不再使用独立的 user 消息兜底完整内容——这会在 Anthropic 适配器中
+// 产生连续 user(tool_result) + user(文本) 的非法消息序列。
 
 const DEFAULT_TOOL_RESULT_MAX_LEN = 8000;
 
 export interface TruncatedToolResult {
   /** 放入 role:'tool' 的内容（截断后） */
   toolContent: string;
-  /** 如果超长，完整的 user 消息文本；否则 undefined */
+  /** @deprecated 不再使用——保留字段避免编译错误，始终为 undefined */
   fullUserMessage?: string;
 }
 
@@ -54,7 +57,7 @@ export function truncateToolResult(
     return { toolContent: rawContent };
   }
   const truncated = rawContent.substring(0, maxLen)
-    + `\n\n...[截断] 完整结果共 ${rawContent.length} 字符，见下一条 user 消息`;
-  const fullUserMessage = `[工具 "${toolName}" 的完整返回结果 (${rawContent.length} 字符)]:\n\n${rawContent}`;
-  return { toolContent: truncated, fullUserMessage };
+    + `\n\n...[截断] 完整结果共 ${rawContent.length} 字符。`
+    + `如需完整数据，请使用合适的工具直接读取（如 read_file、execute_code 等）`;
+  return { toolContent: truncated };
 }
