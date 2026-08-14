@@ -36,6 +36,20 @@ export class SystemConfigSkill implements Skill {
         required: ['skill_id', 'enabled'],
       },
     },
+    {
+      name: 'save_skill',
+      description: 'Create or save a user-defined skill from a SKILL.md definition. Provide the full SKILL.md text (YAML frontmatter with name/description/tools, optionally an implementation field) and an optional skill-level implementation (JavaScript function body). The skill becomes immediately available.',
+      nameCn: '保存技能',
+      descriptionCn: '从 SKILL.md 定义创建或保存用户自定义技能。提供完整 SKILL.md 文本（含 name/description/tools 的 YAML frontmatter，可选 implementation 字段），以及可选的 skill 级 implementation（JavaScript 函数体）。技能保存后立即可用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill_md: { type: 'string', description: 'Complete SKILL.md content (YAML frontmatter with name/description/tools, optionally implementation).' },
+          implementation: { type: 'string', description: 'Optional skill-level JS implementation body, executed via new Function(params, skill, executor). Overrides skill_md implementation if both provided.' },
+        },
+        required: ['skill_md'],
+      },
+    },
     // ── Model Management ──
     {
       name: 'list_models',
@@ -147,6 +161,8 @@ export class SystemConfigSkill implements Skill {
           return this.handleListSkills();
         case 'toggle_skill':
           return this.handleToggleSkill(params);
+        case 'save_skill':
+          return this.handleSaveSkill(params);
         case 'list_models':
           return this.handleListModels();
         case 'switch_model':
@@ -199,6 +215,58 @@ export class SystemConfigSkill implements Skill {
     const store = useSkillStore.getState();
     store.toggleSkill(skillId, enabled);
     return SkillOk(`Skill "${skillId}" ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  private async handleSaveSkill(params: Record<string, unknown>): Promise<SkillResult> {
+    const skillMd = params.skill_md as string;
+    if (!skillMd) return SkillFail('Missing required parameter: skill_md');
+
+    const { parseStandardSkillMd } = await import('./standard-md-parser');
+    let sc: import('./standard-md-parser').StandardSkillConfig;
+    try {
+      sc = parseStandardSkillMd(skillMd);
+    } catch (e) {
+      return SkillFail(`Invalid SKILL.md: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    const { useSkillStore } = await import('@/stores/skill-store');
+    const { UserDefinedSkill } = await import('./user-defined');
+    const { getBuiltinExecutor } = await import('./builtin-executor');
+
+    const cfg = {
+      id: crypto.randomUUID(),
+      name: sc.name,
+      description: sc.description,
+      category: sc['x-i18n']?.category_cn ?? 'user',
+      tools: (sc.tools || []).map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters ?? { type: 'object', properties: {} },
+        returns: t.returns,
+        nameCn: t.nameCn,
+        descriptionCn: t.descriptionCn,
+      })),
+      builtin: false,
+      nameCn: sc['x-i18n']?.name_cn,
+      descriptionCn: sc['x-i18n']?.description_cn,
+      categoryCn: sc['x-i18n']?.category_cn,
+      usage: sc.usage,
+      usageCn: sc['x-i18n']?.usage_cn,
+      license: sc.license,
+      compatibility: sc.compatibility,
+      implementation: (params.implementation as string | undefined) || sc.implementation,
+    };
+
+    await useSkillStore.getState().createSkill(cfg);
+
+    // 立即注册到 executor，让新 skill 的工具在后续对话中可用
+    const executor = getBuiltinExecutor();
+    if (executor.getSkill(cfg.id)) executor.unregister(cfg.id);
+    const skill = new UserDefinedSkill(cfg);
+    skill.setExecutor(executor);
+    executor.register(skill);
+
+    return SkillOk(`Skill "${sc.name}" saved (${cfg.tools.length} tools)`, { id: cfg.id, name: sc.name });
   }
 
   // ── Model Management ──

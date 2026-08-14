@@ -299,28 +299,74 @@ export function GenerateSkillDialog({ onClose, onGenerated }: { onClose: () => v
       try { apiKey = await useModelConfigStore.getState().getApiKey(config.id, ''); } catch { /* ignore */ }
       if (!apiKey) throw new Error('API key not configured');
 
-      const { ModelScenario } = await import('@/adapters/model-call-service');
-      const { getModelService } = await import('@/services/model-service-singleton');
-      const modelService = getModelService();
+      // 确保 executor 已初始化（code 沙箱工具可用）
+      const { initBuiltinExecutor } = await import('@/skills/builtin-executor');
+      const skillStore = useSkillStore.getState();
+      if (getBuiltinExecutor().allSkills.length === 0) {
+        await skillStore.initializeSkills();
+        await initBuiltinExecutor(skillStore.allConfigs.filter((c) => c.builtin));
+      }
+      const executor = getBuiltinExecutor();
 
-      const systemPrompt = systemPrompts.skillGenerator;
+      // 注入 model service（供 generate_code 等工具使用）
+      try {
+        const { getModelService } = await import('@/services/model-service-singleton');
+        const { setCodeToolsModelService } = await import('@/skills/builtin-executor');
+        setCodeToolsModelService(getModelService(), config, apiKey);
+      } catch { /* ignore */ }
 
-      const stream = modelService.chatStream({
-        scenario: ModelScenario.chat,
-        messages: [
-          { role: 'user', content: systemPrompt },
-          { role: 'user', content: `Generate a skill that: ${prompt}` },
-        ],
+      // 复用 code agent 工具集（文件 I/O + 代码沙箱 + Shell + 联网），跳过用户手动选工具
+      const { getAgentToolFilter } = await import('@/stores/chat/tool-config');
+      const toolFilter = new Set(getAgentToolFilter('code'));
+
+      const { TaskAgentRunner } = await import('@/services/task-agent/runner');
+      const { TaskTreeDB } = await import('@/services/multi-agent/task-tree-db');
+      const runner = new TaskAgentRunner(executor);
+      const taskDB = new TaskTreeDB();
+      const taskId = await taskDB.createRoot(prompt, runner.generateAgentId('code'));
+
+      const result = await runner.runAgent({
+        taskId,
+        agentType: 'code',
+        goal: prompt,
         provider: config,
         apiKey,
+        maxTurns: 20,
+        toolFilter,
+        customSystemPrompt: systemPrompts.skillGeneratorAgent,
+        onConfirm: async (command) => {
+          // execute_code 沙箱已禁 os/subprocess，自动放行；run_command 用系统对话框确认
+          if (command.startsWith('[')) return true;
+          try {
+            const { confirm } = await import('@tauri-apps/plugin-dialog');
+            return await confirm(`是否执行命令？\n${command}`, { title: '命令确认', kind: 'warning' });
+          } catch {
+            return window.confirm(`是否执行命令？\n${command}`);
+          }
+        },
+        onUserInput: async (message, fields) => {
+          const values: Record<string, string> = {};
+          for (const f of fields) {
+            try {
+              values[f.key] = window.prompt(`${message}\n${f.label}`) ?? '';
+            } catch {
+              values[f.key] = '';
+            }
+          }
+          return values;
+        },
       });
 
-      let text = '';
-      for await (const chunk of stream) {
-        if (chunk.startsWith('__ERROR__:')) throw new Error(chunk.substring(10));
-        if (chunk.startsWith('__TOOLS__:') || chunk.startsWith('__REASONING__:')) continue;
-        text += chunk;
-      }
+      // 提取 SKILL.md 文本：优先 finalize 的 summary，其次 lastResponseText / 最后成功工具结果
+      let text = (result.summary || result.lastResponseText || result.lastSuccessfulToolResult || '').trim();
+      if (!text) throw new Error('Agent 未产出有效结果');
+
+      // 去掉可能的 ``` 代码块围栏
+      text = text.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+      // 提取 ---...--- frontmatter 块（容忍前后杂文）
+      const m = text.match(/---[\s\S]*?---/);
+      if (!m) throw new Error('Agent 输出中未找到 SKILL.md frontmatter');
+      text = m[0];
 
       // Parse the response as standard SKILL.md format
       let cfg: UserSkillConfig;
@@ -347,6 +393,7 @@ export function GenerateSkillDialog({ onClose, onGenerated }: { onClose: () => v
           usageCn: sc['x-i18n']?.usage_cn,
           license: sc.license,
           compatibility: sc.compatibility,
+          implementation: sc.implementation,
         };
       } catch {
         // Fallback: try old JSON format for backward compatibility

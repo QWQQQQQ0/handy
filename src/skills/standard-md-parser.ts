@@ -41,6 +41,8 @@ export interface StandardSkillConfig {
   tools?: ToolDefinition[];
   /** Handy extension: Chinese i18n */
   'x-i18n'?: SkillI18n;
+  /** Handy extension: skill-level JS implementation body (executed via new Function) */
+  implementation?: string;
   /** Raw markdown body after YAML frontmatter (Level 2 content) */
   body: string;
 }
@@ -59,6 +61,7 @@ interface RawFrontmatter {
     parameters?: Record<string, unknown>;
     returns?: string;
   }>;
+  implementation?: string;
   'x-i18n'?: SkillI18n;
   // Allow unknown keys (standard parsers add fields we don't use)
   [key: string]: unknown;
@@ -118,6 +121,7 @@ export function parseStandardSkillMd(md: string): StandardSkillConfig {
     compatibility: raw.compatibility,
     usage: raw.usage,
     tools: tools && tools.length > 0 ? tools : undefined,
+    implementation: raw.implementation,
     'x-i18n': i18n,
     body,
   };
@@ -140,6 +144,7 @@ export function generateStandardSkillMd(config: StandardSkillConfig): string {
   if (config.license) frontmatterObj.license = config.license;
   if (config.compatibility) frontmatterObj.compatibility = config.compatibility;
   if (config.usage) frontmatterObj.usage = config.usage;
+  if (config.implementation) frontmatterObj.implementation = config.implementation;
 
   if (config.tools && config.tools.length > 0) {
     frontmatterObj.tools = config.tools.map((t) => ({
